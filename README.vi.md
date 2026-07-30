@@ -28,9 +28,15 @@ khoá màn hình hoặc chuyển sang app khác là thông báo trở lại ngay
 Vẫn **không** mirror phiên và **không** chat từ xa: mỗi daemon gắn đúng một pane, không
 mở thêm pane hay cửa sổ nào.
 
-> 📖 **Người dùng mới bắt đầu từ đây:** [`docs/huong-dan.md`](docs/huong-dan.md) — cài đặt
-> từng bước, cách dùng hằng ngày, và bảng tra khi trục trặc. README này thiên về kiến trúc
-> và vận hành.
+> 📖 **Đi tiếp từ đâu**
+>
+> | Bạn muốn | Đọc |
+> |---|---|
+> | Tự dựng hub cho mình hoặc cho nhóm | [`docs/self-hosting.md`](docs/self-hosting.md) (tiếng Anh) |
+> | Cài máy và điện thoại, khi đã được cấp token | [`docs/huong-dan.md`](docs/huong-dan.md) |
+> | Biết hệ thống chống được gì và KHÔNG chống được gì | [`SECURITY.md`](SECURITY.md) (tiếng Anh) |
+>
+> README này thiên về kiến trúc và vận hành.
 
 ## Ba mảnh
 

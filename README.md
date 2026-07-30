@@ -31,15 +31,21 @@ lock the screen or switch apps and notifications resume immediately.
 Still **no** session mirroring and **no** remote chat: each daemon is bound to exactly one
 pane and never opens another pane or window.
 
-> 📖 **Step-by-step setup, daily use, and a troubleshooting table:**
-> [`docs/huong-dan.md`](docs/huong-dan.md) — currently Vietnamese only. This README covers
-> architecture and operations. A Vietnamese version of this file lives at
+> 📖 **Where to go next**
+>
+> | You want to | Read |
+> |---|---|
+> | Run a hub for yourself or a team | [`docs/self-hosting.md`](docs/self-hosting.md) |
+> | Set up a machine and phone, having been given a token | [`docs/user-guide.md`](docs/user-guide.md) · [🇻🇳 tiếng Việt](docs/huong-dan.md) |
+> | Know what this defends against, and what it does not | [`SECURITY.md`](SECURITY.md) |
+>
+> This README covers architecture and operations. A Vietnamese version of it lives at
 > [`README.vi.md`](README.vi.md).
 
 ## Status
 
 Personal project, running in production for its author since July 2026, published in the
-hope it is useful. Test suite: 644 tests. It has **not** been through an external security
+hope it is useful. Test suite: 650 tests. It has **not** been through an external security
 audit — read [`SECURITY.md`](SECURITY.md) before pointing it at anything you care about,
 particularly the part about what the threat model does and does not cover.
 
@@ -69,15 +75,36 @@ particularly the part about what the threat model does and does not cover.
 
 ```bash
 git clone https://github.com/TranHuyQn/ccrc && cd ccrc
-cp .env.example .env             # set CCRC_TOKEN (openssl rand -hex 24)
-docker compose --profile cloudflare up -d --build
+./deploy.sh                      # generates CCRC_TOKEN, asks for a tunnel token, builds
 ./deploy.sh adduser some-name    # issue a personal token per team member
 ```
 
-`deploy.sh` uses the same Docker Compose setup: it generates `CCRC_TOKEN`, asks for a
-Cloudflare Tunnel token, then builds and health-checks the hub. Also available:
-`./deploy.sh status` · `down`. Without Cloudflare Tunnel, use `--profile tls` (Caddy,
-needs a domain) or run Node directly: `npm install && CCRC_TOKEN=<token> npm run server`.
+Use `deploy.sh` rather than driving Docker Compose yourself: it generates `CCRC_TOKEN`,
+then asks for a Cloudflare Tunnel token and tells you exactly where to get one
+(Zero Trust → Networks → Tunnels → Create a tunnel), which is the step that is easy to
+miss. Also available: `./deploy.sh status` · `down`.
+
+Running Compose by hand works too, but **both** variables have to be set in `.env` —
+`CCRC_TOKEN` and, for the `cloudflare` profile, `CCRC_TUNNEL_TOKEN`. Without the second
+one the tunnel container starts and immediately fails, so the hub is up but unreachable
+from the internet, and Web Push (which requires public HTTPS) never works:
+
+```bash
+cp .env.example .env             # set CCRC_TOKEN (openssl rand -hex 24)
+                                 # AND CCRC_TUNNEL_TOKEN (from Cloudflare Zero Trust)
+docker compose --profile cloudflare up -d --build
+```
+
+Not using Cloudflare Tunnel? `--profile tls` runs Caddy instead and needs a domain
+pointed at the machine (`CCRC_DOMAIN`). To try it locally with no tunnel and no TLS,
+run Node directly — no Web Push in that mode, since browsers require HTTPS:
+
+```bash
+npm install && CCRC_TOKEN=<token> npm run server
+```
+
+Step-by-step, including which port to expose and how to back up your data:
+[`docs/self-hosting.md`](docs/self-hosting.md).
 
 ### 2. Dev machine
 
@@ -200,7 +227,7 @@ hook/                 Notification hook for the dev machine + the /notify CLI
 term/                 Terminal daemon, its web page, and the /remote CLI
 shared/               Session registry shared by hook/ and term/
 deploy/               systemd unit, example Caddyfile, slash-command definitions
-docs/                 User guide (Vietnamese) and the design specs behind each feature
+docs/                 Self-hosting guide, user guide (English + Vietnamese), design specs
 ```
 
 ## Tests

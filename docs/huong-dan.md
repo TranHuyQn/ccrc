@@ -1,6 +1,11 @@
 # CC Remote Control — hướng dẫn sử dụng
 
-Dành cho người dùng mới. Đọc hết mất khoảng 10 phút; cài đặt mất khoảng 15 phút.
+Dành cho người **đã được cấp token** từ người quản trị hub. Đọc hết mất khoảng 10 phút;
+cài đặt mất khoảng 15 phút.
+
+Bạn tự dựng hub? Đọc [`self-hosting.md`](self-hosting.md) (tiếng Anh) thay vì file này.
+
+> 🇬🇧 English version: [`user-guide.md`](user-guide.md)
 
 ---
 
