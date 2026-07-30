@@ -1,0 +1,907 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import http from 'node:http';
+import os from 'node:os';
+import path from 'node:path';
+import { execFile, execFileSync, spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { tmuxBin } from '../src/tmux.js';
+
+const CLI = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'ccrc-term-cli.js');
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+function tmpHome(cfg) {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccrc-cli-'));
+  fs.mkdirSync(path.join(home, '.ccrc'), { recursive: true });
+  if (cfg) fs.writeFileSync(path.join(home, '.ccrc', 'config'), cfg);
+  return home;
+}
+
+// Mirrors ccrc-term-cli.js's own pidFilePath(): one file per pane, under
+// ~/.ccrc/term-pane-<paneId>.pid. Kept here as a single source of truth for
+// the test suite so every test that pokes at a pid file agrees with the CLI
+// on where it lives, instead of duplicating the path shape at each call site.
+function pidFilePath(home, pane) {
+  return path.join(home, '.ccrc', `term-pane-${pane}.pid`);
+}
+
+function stubHub(handler) {
+  return new Promise((resolve) => {
+    const srv = http.createServer(handler);
+    srv.listen(0, '127.0.0.1', () => resolve({ srv, base: `http://127.0.0.1:${srv.address().port}` }));
+  });
+}
+
+function run(args, env, opts = {}) {
+  return new Promise((r) => execFile('node', [CLI, ...args], { env: { ...process.env, ...env }, ...opts },
+    (err, stdout, stderr) => r({ code: err ? (err.code ?? 1) : 0, stdout, stderr })));
+}
+
+function isAlive(pid) {
+  try { process.kill(pid, 0); return true; } catch { return false; }
+}
+
+// A live process that is emphatically NOT our daemon — used to prove that a
+// PID file naming an unrelated (but real, running) process is never trusted
+// or signalled just because the number matches.
+function spawnForeign() {
+  const p = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)'], { stdio: 'ignore' });
+  return p;
+}
+
+// A pid that is guaranteed dead: spawn a process, wait for it to exit, then
+// hand back its former pid.
+function deadPid() {
+  return new Promise((resolve) => {
+    const p = spawn(process.execPath, ['-e', '0'], { stdio: 'ignore' });
+    const pid = p.pid;
+    p.on('exit', () => resolve(pid));
+  });
+}
+
+// A live process that merely MENTIONS the daemon's path — as a trailing,
+// incidental argument, not as the script being run. `node -e '<code>'
+// <path>` executes <code> via -e; <path> just lands in argv unused. This is
+// exactly the shape a naive `command.includes(daemonPath)` would misidentify
+// as our daemon (a linter, a file watcher, anything invoked with the path as
+// an argument), even though the process running is plainly something else.
+const DAEMON_PATH = path.join(path.dirname(CLI), 'ccrc-term.js');
+function spawnLookalike() {
+  return spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)', DAEMON_PATH], { stdio: 'ignore' });
+}
+
+// Round 4, bypass 1: the SAME shape as spawnLookalike, spelled with `=`.
+// node accepts `--eval=<code>` for every one of -e/--eval/-p/--print, and the
+// guard used to compare whole argv entries against that set — so `--eval=…`
+// never matched it, and the daemon path trailing behind was read as a script
+// this process had run. A real victim: the code below keeps it alive for 30s,
+// so if `off` signals it the assertion sees a corpse.
+//
+// The inline code deliberately contains NO WHITESPACE. `ps -o command=` hands
+// back one flat string, so a payload with spaces splits into several pseudo-
+// arguments and the very first of them (`=>`) is a non-flag that fails the
+// path comparison — the check would then pass for an accidental reason and a
+// mutation removing the `--flag=value` normalisation would stay green. With a
+// space-free payload the daemon path really is the first non-flag argument,
+// so only the flag normalisation can save it.
+function spawnEvalEqualsLookalike() {
+  return spawn(process.execPath, ['--eval=setTimeout(function(){},30000)', DAEMON_PATH], { stdio: 'ignore' });
+}
+
+// Round 4, bypass 3 (not in the report, found while checking that "first
+// non-flag argument only" is load-bearing): a REAL node script, run with the
+// daemon's path as that script's OWN argument — `node lint.js
+// <daemon path>`. Round 3 accepted the daemon's path in any argument
+// position, so this was ours too. Everything after the script name is the
+// script's argv, and node never looked at it.
+function spawnScriptWithDaemonArg(dir) {
+  const script = path.join(dir, 'khong-phai-daemon.js');
+  fs.writeFileSync(script, 'setTimeout(function () {}, 30000);\n');
+  return { script, proc: spawn(process.execPath, [script, DAEMON_PATH], { stdio: 'ignore' }) };
+}
+
+// Round 4, bypass 2: not node at all. `tail -f <daemon path>` merely READS
+// the file — as would an editor, `less`, `grep`, `cp`. argv[0] was never
+// required to be a node binary, so any command carrying the daemon's path as
+// an argument was accepted as our daemon and signalled. `-f` keeps it alive.
+function spawnNonNodeHolder() {
+  return spawn('tail', ['-f', DAEMON_PATH], { stdio: 'ignore' });
+}
+
+// A directory containing one executable that never answers, placed first on
+// PATH so the CLI's `execFileSync('ps'|'lsof', ...)` resolves to it instead
+// of the real tool. `exec` keeps it a single process, so the timeout's
+// SIGTERM lands on the thing that is actually sleeping. The sleep is far
+// longer than the CLI's own timeout on purpose: it only ever elapses in full
+// if that timeout is missing, so it costs the suite nothing when the code is
+// correct.
+function hangingBin(name) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccrc-hang-'));
+  const file = path.join(dir, name);
+  fs.writeFileSync(file, '#!/bin/sh\nexec sleep 30\n');
+  fs.chmodSync(file, 0o755);
+  return dir;
+}
+
+// Generous enough that a slow machine never trips it, far below the 30s the
+// fake would take if the CLI waited for it.
+const BOUNDED_MS = 8000;
+
+// Env for a real daemon that never touches Tailscale or a real hub — the
+// same pattern daemon.test.js uses for its fakes.
+function daemonEnv(pane, port) {
+  return {
+    ...process.env,
+    CCRC_TERM_PANE: pane,
+    CCRC_TERM_SESSION_ID: 's-test',
+    CCRC_TERM_PORT: String(port),
+    CCRC_TERM_BIND: '127.0.0.1',
+    CCRC_TERM_NO_HUB: '1',
+  };
+}
+
+function newTmuxPane(name) {
+  const T = tmuxBin();
+  const sess = `${name}-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
+  execFileSync(T, ['new-session', '-d', '-s', sess, '-x', '80', '-y', '24']);
+  const pane = execFileSync(T, ['display-message', '-p', '-t', sess, '#{pane_id}'], { encoding: 'utf8' }).trim();
+  return {
+    sess, pane,
+    kill() { try { execFileSync(T, ['kill-session', '-t', sess]); } catch { /* already gone */ } },
+  };
+}
+
+test('chạy ngoài tmux: báo lỗi rõ, KHÔNG bật gì', async () => {
+  const home = tmpHome('CCRC_HUB_URL=http://127.0.0.1:9\nCCRC_TOKEN=t\nCCRC_MACHINE_NAME=m\n');
+  const r = await run(['on'], { HOME: home, TMUX_PANE: '', TMUX: '' });
+  assert.notEqual(r.code, 0);
+  assert.match(r.stdout + r.stderr, /tmux/i);
+});
+
+test('trạng thái khi chưa có phiên nào', async () => {
+  const { srv, base } = await stubHub((req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ sessions: [] }));
+  });
+  const home = tmpHome(`CCRC_HUB_URL=${base}\nCCRC_TOKEN=t\nCCRC_MACHINE_NAME=m\n`);
+  const r = await run([], { HOME: home, TMUX_PANE: '', TMUX: '' });
+  srv.close();
+  assert.equal(r.code, 0);
+  assert.match(r.stdout, /TẮT|chưa mở/i);
+});
+
+test('trạng thái khi đang có phiên: báo hub OK và tên máy', async () => {
+  const { srv, base } = await stubHub((req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ sessions: [{ sessionId: 's1', machine: 'may-dev', url: 'wss://x/attach', label: 'proj', alive: true }] }));
+  });
+  const home = tmpHome(`CCRC_HUB_URL=${base}\nCCRC_TOKEN=t\nCCRC_MACHINE_NAME=may-dev\n`);
+  const r = await run([], { HOME: home, TMUX_PANE: '', TMUX: '' });
+  srv.close();
+  assert.match(r.stdout, /BẬT|đang mở/i);
+  assert.match(r.stdout, /may-dev/);
+});
+
+test('trạng thái gọi THẬT lên hub, không đọc mỗi file', async () => {
+  let hits = 0;
+  const { srv, base } = await stubHub((req, res) => {
+    hits++;
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ sessions: [] }));
+  });
+  const home = tmpHome(`CCRC_HUB_URL=${base}\nCCRC_TOKEN=t\nCCRC_MACHINE_NAME=m\n`);
+  await run([], { HOME: home, TMUX_PANE: '', TMUX: '' });
+  srv.close();
+  assert.equal(hits, 1, 'phải gọi hub đúng một lần — đây là chẩn đoán duy nhất người dùng có');
+});
+
+test('hub chết: báo rõ chứ không im lặng', async () => {
+  const home = tmpHome('CCRC_HUB_URL=http://127.0.0.1:1\nCCRC_TOKEN=t\nCCRC_MACHINE_NAME=m\n');
+  const r = await run([], { HOME: home });
+  assert.match(r.stdout + r.stderr, /không gọi được|lỗi/i);
+});
+
+test('chưa cấu hình: chỉ ra việc cần làm', async () => {
+  const home = tmpHome(null);
+  const r = await run([], { HOME: home });
+  assert.match(r.stdout + r.stderr, /chưa cấu hình|setup/i);
+});
+
+// --- Review finding: PID reuse must never let `off` sign someone else's ----
+// --- death warrant just because the number in the file happens to match. --
+// All of these give the CLI a plain fake pane id — `off` needs SOME pane to
+// know which file to look at, but nothing below requires that pane to be a
+// real, live tmux pane; the file it addresses is what's under test.
+
+test('off gặp PID lạ: KHÔNG giết, KHÔNG nhận vơ, xoá file cũ', async () => {
+  const home = tmpHome('CCRC_HUB_URL=http://127.0.0.1:9\nCCRC_TOKEN=t\nCCRC_MACHINE_NAME=m\n');
+  const pane = '%fake-1';
+  const foreign = spawnForeign();
+  try {
+    await sleep(200); // để tiến trình lạ thực sự lên bảng ps trước khi ta ghi pid của nó
+    const pidfile = pidFilePath(home, pane);
+    fs.writeFileSync(pidfile, JSON.stringify({ pid: foreign.pid, sessionId: 's-fake' }));
+
+    const r = await run(['off'], { HOME: home, TMUX_PANE: pane });
+
+    assert.equal(isAlive(foreign.pid), true, 'off không được đụng tới tiến trình không phải daemon của mình');
+    assert.doesNotMatch(r.stdout, /ĐÃ TẮT/, 'không được báo như thể vừa tắt được một phiên');
+    assert.match(r.stdout, /vốn đã tắt/i);
+    assert.equal(fs.existsSync(pidfile), false, 'file pid sai chủ phải bị dọn, không để lại đánh lừa lần sau');
+  } finally {
+    try { process.kill(foreign.pid, 'SIGKILL'); } catch { /* already gone */ }
+  }
+});
+
+// --- Review finding: matching the daemon's path ANYWHERE on the command ---
+// --- line is still a weak signal — it must be the script actually run. ----
+
+test('off gặp tiến trình chỉ NHẮC TỚI đường dẫn daemon (không phải chạy nó): không giết, dọn file', async () => {
+  const home = tmpHome('CCRC_HUB_URL=http://127.0.0.1:9\nCCRC_TOKEN=t\nCCRC_MACHINE_NAME=m\n');
+  const pane = '%fake-2';
+  const lookalike = spawnLookalike();
+  try {
+    await sleep(200);
+    // Sanity check the setup: the daemon's path really is on this process's
+    // command line, just not in the position that identifies it.
+    const cmd = execFileSync('ps', ['-ww', '-p', String(lookalike.pid), '-o', 'command='], { encoding: 'utf8' });
+    assert.match(cmd, /ccrc-term\.js/, 'setup sanity: đường dẫn daemon phải thực sự xuất hiện trên command line');
+
+    const pidfile = pidFilePath(home, pane);
+    fs.writeFileSync(pidfile, JSON.stringify({ pid: lookalike.pid, sessionId: 's-fake' }));
+
+    const r = await run(['off'], { HOME: home, TMUX_PANE: pane });
+
+    assert.equal(isAlive(lookalike.pid), true,
+      'chỉ nhắc tới đường dẫn daemon trên command line không đủ để bị coi là daemon và bị giết');
+    assert.doesNotMatch(r.stdout, /ĐÃ TẮT/);
+    assert.match(r.stdout, /vốn đã tắt/i);
+    assert.equal(fs.existsSync(pidfile), false);
+  } finally {
+    try { process.kill(lookalike.pid, 'SIGKILL'); } catch { /* already gone */ }
+  }
+});
+
+// --- MED (đợt sửa cuối, mục 3): hai lối lách còn lại của phép nhận diện ----
+// --- Cả hai đều đã tái hiện được với một nạn nhân THẬT bị giết. ------------
+
+test('off gặp `node --eval=<code> <đường dẫn daemon>`: KHÔNG giết — dạng cờ nối bằng "=" cũng là chạy code nội tuyến', async () => {
+  const home = tmpHome('CCRC_HUB_URL=http://127.0.0.1:9\nCCRC_TOKEN=t\nCCRC_MACHINE_NAME=m\n');
+  const pane = '%fake-eval-eq';
+  const victim = spawnEvalEqualsLookalike();
+  try {
+    await sleep(200);
+    const cmd = execFileSync('ps', ['-ww', '-p', String(victim.pid), '-o', 'command='], { encoding: 'utf8' });
+    assert.match(cmd, /--eval=/, 'setup sanity: phải đúng dạng cờ nối bằng dấu "="');
+    assert.match(cmd, /ccrc-term\.js/, 'setup sanity: đường dẫn daemon phải thực sự nằm trên command line');
+
+    const pidfile = pidFilePath(home, pane);
+    fs.writeFileSync(pidfile, JSON.stringify({ pid: victim.pid, sessionId: 's-fake' }));
+
+    const r = await run(['off'], { HOME: home, TMUX_PANE: pane });
+
+    assert.equal(isAlive(victim.pid), true,
+      '`--eval=` là chạy code nội tuyến y như `-e` — đường dẫn đi sau nó KHÔNG phải script được chạy, không được giết');
+    assert.doesNotMatch(r.stdout, /ĐÃ TẮT/);
+    assert.match(r.stdout, /vốn đã tắt/i);
+    assert.equal(fs.existsSync(pidfile), false);
+  } finally {
+    try { process.kill(victim.pid, 'SIGKILL'); } catch { /* already gone */ }
+  }
+});
+
+test('off gặp `node <script khác> <đường dẫn daemon>`: KHÔNG giết — mọi thứ sau tên script là argv CỦA SCRIPT', async () => {
+  const home = tmpHome('CCRC_HUB_URL=http://127.0.0.1:9\nCCRC_TOKEN=t\nCCRC_MACHINE_NAME=m\n');
+  const pane = '%fake-argv';
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccrc-argv-'));
+  const { proc: victim } = spawnScriptWithDaemonArg(dir);
+  try {
+    await sleep(200);
+    const cmd = execFileSync('ps', ['-ww', '-p', String(victim.pid), '-o', 'command='], { encoding: 'utf8' });
+    assert.match(cmd, /ccrc-term\.js/, 'setup sanity: đường dẫn daemon phải thực sự nằm trên command line');
+    assert.match(cmd, /khong-phai-daemon\.js/, 'setup sanity: script được chạy phải là một script KHÁC');
+
+    const pidfile = pidFilePath(home, pane);
+    fs.writeFileSync(pidfile, JSON.stringify({ pid: victim.pid, sessionId: 's-fake' }));
+
+    const r = await run(['off'], { HOME: home, TMUX_PANE: pane });
+
+    assert.equal(isAlive(victim.pid), true,
+      'chỉ tham số ĐẦU TIÊN không phải cờ mới là script node chạy — phần còn lại là argv của script đó, chứng minh không gì cả');
+    assert.doesNotMatch(r.stdout, /ĐÃ TẮT/);
+    assert.match(r.stdout, /vốn đã tắt/i);
+    assert.equal(fs.existsSync(pidfile), false);
+  } finally {
+    try { process.kill(victim.pid, 'SIGKILL'); } catch { /* already gone */ }
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
+  }
+});
+
+test('off gặp `tail -f <đường dẫn daemon>`: KHÔNG giết — đọc một file không phải là chạy nó', async () => {
+  const home = tmpHome('CCRC_HUB_URL=http://127.0.0.1:9\nCCRC_TOKEN=t\nCCRC_MACHINE_NAME=m\n');
+  const pane = '%fake-tail';
+  const victim = spawnNonNodeHolder();
+  try {
+    await sleep(200);
+    const cmd = execFileSync('ps', ['-ww', '-p', String(victim.pid), '-o', 'command='], { encoding: 'utf8' });
+    assert.match(cmd, /ccrc-term\.js/, 'setup sanity: đường dẫn daemon phải thực sự nằm trên command line');
+    assert.doesNotMatch(cmd, /(^|\/)node(js)?[0-9.]*\s/, 'setup sanity: tiến trình này KHÔNG được là node');
+
+    const pidfile = pidFilePath(home, pane);
+    fs.writeFileSync(pidfile, JSON.stringify({ pid: victim.pid, sessionId: 's-fake' }));
+
+    const r = await run(['off'], { HOME: home, TMUX_PANE: pane });
+
+    assert.equal(isAlive(victim.pid), true,
+      'bất kỳ lệnh nào (tail, less, grep, cp, trình soạn thảo) mang đường dẫn daemon làm tham số đều KHÔNG phải daemon của ta');
+    assert.doesNotMatch(r.stdout, /ĐÃ TẮT/);
+    assert.match(r.stdout, /vốn đã tắt/i);
+    assert.equal(fs.existsSync(pidfile), false);
+  } finally {
+    try { process.kill(victim.pid, 'SIGKILL'); } catch { /* already gone */ }
+  }
+});
+
+test('off gặp PID đã chết hẳn: báo vốn đã tắt, dọn file', async () => {
+  const home = tmpHome('CCRC_HUB_URL=http://127.0.0.1:9\nCCRC_TOKEN=t\nCCRC_MACHINE_NAME=m\n');
+  const pane = '%fake-3';
+  const pid = await deadPid();
+  const pidfile = pidFilePath(home, pane);
+  fs.writeFileSync(pidfile, JSON.stringify({ pid, sessionId: 's-fake' }));
+
+  const r = await run(['off'], { HOME: home, TMUX_PANE: pane });
+
+  assert.match(r.stdout, /vốn đã tắt/i);
+  assert.equal(fs.existsSync(pidfile), false);
+});
+
+test('trạng thái với PID lạ trong file: coi như đang TẮT', async () => {
+  const { srv, base } = await stubHub((req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ sessions: [] }));
+  });
+  const home = tmpHome(`CCRC_HUB_URL=${base}\nCCRC_TOKEN=t\nCCRC_MACHINE_NAME=m\n`);
+  const pane = '%fake-4';
+  const foreign = spawnForeign();
+  try {
+    await sleep(200);
+    fs.writeFileSync(pidFilePath(home, pane), JSON.stringify({ pid: foreign.pid, sessionId: 's-fake' }));
+
+    const r = await run([], { HOME: home, TMUX_PANE: pane });
+    srv.close();
+
+    assert.match(r.stdout, /ĐANG TẮT/, 'PID lạ không được đọc thành daemon đang chạy');
+  } finally {
+    try { process.kill(foreign.pid, 'SIGKILL'); } catch { /* already gone */ }
+  }
+});
+
+test('on gặp PID lạ trong file: không bị chặn khởi động vì trùng số', async () => {
+  const tp = newTmuxPane('ccrc-cli-on');
+  const home = tmpHome('CCRC_HUB_URL=http://127.0.0.1:9\nCCRC_TOKEN=t\nCCRC_MACHINE_NAME=m\n');
+  const foreign = spawnForeign();
+  const pidfile = pidFilePath(home, tp.pane);
+  try {
+    await sleep(200);
+    fs.writeFileSync(pidfile, JSON.stringify({ pid: foreign.pid, sessionId: 's-fake' }));
+
+    // CCRC_TERM_BIND/NO_HUB because `on` really does start the daemon here,
+    // and the daemon must not touch real Tailscale state or a real hub in a
+    // test — pin the bind address to loopback exactly like daemon.test.js
+    // does for its fakes.
+    const r = await run(['on'], {
+      HOME: home, TMUX_PANE: tp.pane, CCRC_TERM_PORT: '8799',
+      CCRC_TERM_BIND: '127.0.0.1', CCRC_TERM_NO_HUB: '1',
+    });
+
+    assert.match(r.stdout, /ĐÃ BẬT/, 'PID lạ trùng số không được làm on nghĩ là "đã bật sẵn"');
+    assert.doesNotMatch(r.stdout, /đã bật sẵn/i);
+  } finally {
+    try { process.kill(foreign.pid, 'SIGKILL'); } catch { /* already gone */ }
+    try {
+      const started = JSON.parse(fs.readFileSync(pidfile, 'utf8')).pid;
+      if (started) process.kill(started, 'SIGKILL');
+    } catch { /* nothing left to clean up */ }
+    tp.kill();
+  }
+});
+
+// Positive case: a genuine daemon this CLI itself started must still be
+// recognised and stoppable — the identity check tightening must not turn
+// into a false NEGATIVE for the one process it exists to recognise.
+// CCRC_TERM_BIND/CCRC_TERM_NO_HUB keep the real daemon from touching
+// Tailscale or a real hub, exactly as daemon.test.js does for its fakes.
+test('off gặp daemon THẬT do chính on khởi động: nhận diện đúng và tắt được', async () => {
+  const tp = newTmuxPane('ccrc-cli-realoff');
+  const home = tmpHome('CCRC_HUB_URL=http://127.0.0.1:9\nCCRC_TOKEN=t\nCCRC_MACHINE_NAME=m\n');
+  const pidfile = pidFilePath(home, tp.pane);
+  try {
+    const on = await run(['on'], {
+      HOME: home, TMUX_PANE: tp.pane, CCRC_TERM_PORT: '8798',
+      CCRC_TERM_BIND: '127.0.0.1', CCRC_TERM_NO_HUB: '1',
+    });
+    assert.match(on.stdout, /ĐÃ BẬT/);
+    const startedPid = JSON.parse(fs.readFileSync(pidfile, 'utf8')).pid;
+    assert.equal(isAlive(startedPid), true, 'daemon thật phải còn sống ngay sau khi bật');
+
+    const off = await run(['off'], { HOME: home, TMUX_PANE: tp.pane });
+    assert.match(off.stdout, /ĐÃ TẮT/, 'daemon thật phải được nhận diện đúng, không bị coi là lạ');
+    await sleep(300);
+    assert.equal(isAlive(startedPid), false, 'daemon thật phải thực sự bị dừng');
+    assert.equal(fs.existsSync(pidfile), false);
+  } finally {
+    tp.kill();
+  }
+});
+
+// --- Review round 3: refusing to recognise a REAL daemon is worse than -----
+// --- the round-2 false positive it replaced — off must not lie "nothing ---
+// --- here" while a daemon is still up and still serving a shell. ----------
+
+test('daemon thật khởi động bằng đường dẫn TƯƠNG ĐỐI vẫn được nhận diện', async () => {
+  const tp = newTmuxPane('ccrc-cli-rel');
+  const home = tmpHome('CCRC_HUB_URL=http://127.0.0.1:9\nCCRC_TOKEN=t\nCCRC_MACHINE_NAME=m\n');
+  const pidfile = pidFilePath(home, tp.pane);
+  // Not reachable through cmdOn (it always spawns the absolute path), but
+  // argv[1] === DAEMON (the round-2 fix) would refuse to recognise this —
+  // "ccrc-term.js" is not the absolute DAEMON path as a bare string.
+  const proc = spawn(process.execPath, ['ccrc-term.js'], {
+    cwd: path.dirname(DAEMON_PATH),
+    env: daemonEnv(tp.pane, 8797),
+    stdio: 'ignore',
+  });
+  try {
+    await sleep(500);
+    fs.writeFileSync(pidfile, JSON.stringify({ pid: proc.pid, sessionId: 's-test' }));
+
+    const r = await run(['off'], { HOME: home, TMUX_PANE: tp.pane });
+
+    assert.match(r.stdout, /ĐÃ TẮT/,
+      'daemon thật khởi động bằng đường dẫn tương đối vẫn phải được nhận diện và tắt được, không phải báo "vốn đã tắt"');
+    await sleep(300);
+    assert.equal(isAlive(proc.pid), false, 'daemon phải thực sự bị dừng');
+    assert.equal(fs.existsSync(pidfile), false);
+  } finally {
+    try { process.kill(proc.pid, 'SIGKILL'); } catch { /* already gone */ }
+    tp.kill();
+  }
+});
+
+// --- Review finding: neither shelled-out identification call had a timeout. --
+// --- `off` runs on the shutdown path: a hung `ps`/`lsof` there blocks the ----
+// --- one command that stops the daemon, forever, with no way out. -----------
+
+test('ps treo: off vẫn trả về trong thời gian có hạn, không nhận vơ, dọn file', async () => {
+  const home = tmpHome('CCRC_HUB_URL=http://127.0.0.1:9\nCCRC_TOKEN=t\nCCRC_MACHINE_NAME=m\n');
+  const pane = '%fake-ps-hang';
+  const fakeDir = hangingBin('ps');
+  const foreign = spawnForeign();
+  const pidfile = pidFilePath(home, pane);
+  try {
+    await sleep(200);
+    fs.writeFileSync(pidfile, JSON.stringify({ pid: foreign.pid, sessionId: 's-fake' }));
+
+    const t0 = Date.now();
+    const r = await run(['off'], { HOME: home, TMUX_PANE: pane, PATH: `${fakeDir}:${process.env.PATH}` });
+    const elapsed = Date.now() - t0;
+
+    assert.ok(elapsed < BOUNDED_MS,
+      `off phải bỏ cuộc theo hạn của chính nó chứ không chờ ps mãi (mất ${elapsed}ms)`);
+    assert.equal(isAlive(foreign.pid), true, 'không đọc được ps thì tuyệt đối không được giết ai');
+    assert.doesNotMatch(r.stdout, /ĐÃ TẮT/);
+    assert.match(r.stdout, /vốn đã tắt/i);
+    assert.equal(fs.existsSync(pidfile), false, 'file pid không xác minh được vẫn phải bị dọn');
+  } finally {
+    try { process.kill(foreign.pid, 'SIGKILL'); } catch { /* already gone */ }
+    fs.rmSync(fakeDir, { recursive: true, force: true });
+  }
+});
+
+// lsof is only reached for a command line with no inline-script flag, so this
+// needs a genuine daemon — and one started by a RELATIVE path, where lsof's
+// answer is the only thing that could resolve it. Hanging lsof must therefore
+// end in "not ours": bounded, silent, and emphatically not a SIGTERM.
+//
+// The CLI is deliberately run FROM the daemon's own directory. That is the
+// one cwd where falling back to our own working directory instead of failing
+// closed would resolve the daemon's relative argv and "identify" a process we
+// in fact learned nothing about — so this test fails if the timeout is
+// missing (unbounded) AND if the timeout is handled by guessing (kills the
+// daemon it never identified).
+test('lsof treo: off vẫn trả về trong thời gian có hạn và fail closed (không giết daemon)', async () => {
+  const tp = newTmuxPane('ccrc-cli-lsofhang');
+  const home = tmpHome('CCRC_HUB_URL=http://127.0.0.1:9\nCCRC_TOKEN=t\nCCRC_MACHINE_NAME=m\n');
+  const pidfile = pidFilePath(home, tp.pane);
+  const fakeDir = hangingBin('lsof');
+  const proc = spawn(process.execPath, ['ccrc-term.js'], {
+    cwd: path.dirname(DAEMON_PATH),
+    env: daemonEnv(tp.pane, 8795),
+    stdio: 'ignore',
+  });
+  try {
+    await sleep(500);
+    assert.equal(isAlive(proc.pid), true, 'setup sanity: daemon phải đang chạy trước khi thử');
+    fs.writeFileSync(pidfile, JSON.stringify({ pid: proc.pid, sessionId: 's-test' }));
+
+    const t0 = Date.now();
+    const r = await run(['off'], { HOME: home, TMUX_PANE: tp.pane, PATH: `${fakeDir}:${process.env.PATH}` },
+      { cwd: path.dirname(DAEMON_PATH) });
+    const elapsed = Date.now() - t0;
+
+    assert.ok(elapsed < BOUNDED_MS,
+      `off phải bỏ cuộc theo hạn của chính nó chứ không chờ lsof mãi (mất ${elapsed}ms)`);
+    assert.doesNotMatch(r.stdout, /ĐÃ TẮT/, 'không xác minh được thì không được báo như thể vừa tắt');
+    assert.match(r.stdout, /vốn đã tắt/i);
+    await sleep(300);
+    assert.equal(isAlive(proc.pid), true, 'không xác minh được danh tính thì tuyệt đối không gửi tín hiệu');
+    assert.equal(fs.existsSync(pidfile), false);
+  } finally {
+    try { process.kill(proc.pid, 'SIGKILL'); } catch { /* already gone */ }
+    tp.kill();
+    fs.rmSync(fakeDir, { recursive: true, force: true });
+  }
+});
+
+test('daemon thật khởi động kèm CỜ trước đường dẫn script vẫn được nhận diện', async () => {
+  const tp = newTmuxPane('ccrc-cli-flag');
+  const home = tmpHome('CCRC_HUB_URL=http://127.0.0.1:9\nCCRC_TOKEN=t\nCCRC_MACHINE_NAME=m\n');
+  const pidfile = pidFilePath(home, tp.pane);
+  // Not reachable through cmdOn (it never passes flags), but argv[1] ===
+  // DAEMON (the round-2 fix) would refuse to recognise this — the flag sits
+  // at argv[1], the daemon path at argv[2].
+  const proc = spawn(process.execPath, ['--enable-source-maps', DAEMON_PATH], {
+    env: daemonEnv(tp.pane, 8796),
+    stdio: 'ignore',
+  });
+  try {
+    await sleep(500);
+    fs.writeFileSync(pidfile, JSON.stringify({ pid: proc.pid, sessionId: 's-test' }));
+
+    const r = await run(['off'], { HOME: home, TMUX_PANE: tp.pane });
+
+    assert.match(r.stdout, /ĐÃ TẮT/,
+      'daemon thật khởi động kèm cờ trước script vẫn phải được nhận diện và tắt được, không phải báo "vốn đã tắt"');
+    await sleep(300);
+    assert.equal(isAlive(proc.pid), false, 'daemon phải thực sự bị dừng');
+    assert.equal(fs.existsSync(pidfile), false);
+  } finally {
+    try { process.kill(proc.pid, 'SIGKILL'); } catch { /* already gone */ }
+    tp.kill();
+  }
+});
+
+// --- Final fix wave, item 4: `/remote on` phải in ra URL của daemon ------
+// (§4.2 of the design spec claims it already does — it did not).
+
+test('on: in ra URL khi daemon báo có URL (CCRC_TERM_URL)', async () => {
+  const tp = newTmuxPane('ccrc-cli-url');
+  const home = tmpHome('CCRC_HUB_URL=http://127.0.0.1:9\nCCRC_TOKEN=t\nCCRC_MACHINE_NAME=m\n');
+  const pidfile = pidFilePath(home, tp.pane);
+  try {
+    const r = await run(['on'], {
+      HOME: home, TMUX_PANE: tp.pane, CCRC_TERM_PORT: '8794',
+      CCRC_TERM_BIND: '127.0.0.1', CCRC_TERM_NO_HUB: '1',
+      CCRC_TERM_URL: 'http://100.9.9.9:8730/',
+    });
+    assert.match(r.stdout, /ĐÃ BẬT/);
+    assert.match(r.stdout, /http:\/\/100\.9\.9\.9:8730\//,
+      '/remote on phải in ra URL — người dùng thường muốn mở terminal ngay trên máy đang đứng cạnh');
+  } finally {
+    try {
+      const started = JSON.parse(fs.readFileSync(pidfile, 'utf8')).pid;
+      if (started) process.kill(started, 'SIGKILL');
+    } catch { /* nothing left to clean up */ }
+    tp.kill();
+  }
+});
+
+// --- Việc 5: đặt tên phiên bằng `/remote on <tên>` -----------------------
+//
+// The label is the only thing distinguishing one card from another on the
+// phone now that the directory name is gone, so `/remote on` has to echo back
+// what the session will actually be called — and that string has to come from
+// the daemon, which is what decides it (including the fall back to a random
+// id).
+
+// Runs `/remote on ...`, returns the CLI output, and always kills whatever
+// daemon it started.
+async function onWithArgs(args, suffix) {
+  const tp = newTmuxPane(`ccrc-cli-name-${suffix}`);
+  const home = tmpHome('CCRC_HUB_URL=http://127.0.0.1:9\nCCRC_TOKEN=t\nCCRC_MACHINE_NAME=m\n');
+  const pidfile = pidFilePath(home, tp.pane);
+  try {
+    const r = await run(['on', ...args], {
+      HOME: home, TMUX_PANE: tp.pane, CCRC_TERM_PORT: '0',
+      CCRC_TERM_BIND: '127.0.0.1', CCRC_TERM_NO_HUB: '1',
+    });
+    return r;
+  } finally {
+    try {
+      const started = JSON.parse(fs.readFileSync(pidfile, 'utf8')).pid;
+      if (started) process.kill(started, 'SIGKILL');
+    } catch { /* nothing left to clean up */ }
+    tp.kill();
+  }
+}
+
+test('on không kèm tên: hiện một id ngẫu nhiên, KHÔNG phải tên thư mục', async () => {
+  const r = await onWithArgs([], 'khongten');
+  assert.match(r.stdout, /ĐÃ BẬT/);
+  const m = /Tên hiện trên web: (.+)/.exec(r.stdout);
+  assert.ok(m, `không in ra tên phiên:\n${r.stdout}`);
+  assert.match(m[1].trim(), /^[a-z2-9]{4}$/, `phải là id ngẫu nhiên, nhận được: ${m[1]}`);
+});
+
+test('on kèm tên: dùng đúng tên đó', async () => {
+  const r = await onWithArgs(['test'], 'coten');
+  assert.match(r.stdout, /Tên hiện trên web: test/);
+});
+
+test('tên nhiều chữ không cần dấu ngoặc', async () => {
+  const r = await onWithArgs(['du', 'an', 'moi'], 'nhieuchu');
+  assert.match(r.stdout, /Tên hiện trên web: du an moi/);
+});
+
+// Refusing to open a terminal over a bad label would be wildly
+// disproportionate — but silently ignoring what the user typed would leave
+// them staring at an id wondering why their name did not take.
+test('tên có ký tự không cho phép: cảnh báo rõ rồi vẫn bật với id ngẫu nhiên', async () => {
+  const r = await onWithArgs(['<script>'], 'tenhong');
+  assert.match(r.stdout, /ĐÃ BẬT/, 'tên hỏng không được làm hỏng cả việc bật remote');
+  assert.match(r.stdout, /không dùng được/);
+  const m = /Tên hiện trên web: (.+)/.exec(r.stdout);
+  assert.match(m[1].trim(), /^[a-z2-9]{4}$/);
+});
+
+// --- Final fix wave, item 5: `/remote on` phải chờ daemon CHỨNG MINH nó ---
+// đã bật thật, không được báo ✓ ngay sau khi spawn.
+
+test('on: cổng đã bị chiếm thì báo lỗi thật, không báo ĐÃ BẬT, không để lại pid file', async () => {
+  const tp = newTmuxPane('ccrc-cli-portbusy');
+  const home = tmpHome('CCRC_HUB_URL=http://127.0.0.1:9\nCCRC_TOKEN=t\nCCRC_MACHINE_NAME=m\n');
+  const pidfile = pidFilePath(home, tp.pane);
+
+  const busy = http.createServer();
+  await new Promise((resolve) => busy.listen(0, '127.0.0.1', resolve));
+  const port = busy.address().port;
+  try {
+    const r = await run(['on'], {
+      HOME: home, TMUX_PANE: tp.pane, CCRC_TERM_PORT: String(port),
+      CCRC_TERM_BIND: '127.0.0.1', CCRC_TERM_NO_HUB: '1',
+    });
+    assert.notEqual(r.code, 0, 'on phải thoát khác 0 khi daemon không thực sự bật được');
+    assert.doesNotMatch(r.stdout, /ĐÃ BẬT/,
+      'không được báo thành công khi daemon chưa chứng minh được nó đã nghe cổng — đúng lỗi "báo ✓ trước khi daemon chứng minh gì"');
+    assert.match(r.stdout + r.stderr, /cổng|đã có tiến trình khác/i);
+    // Đợt sửa cuối, mục 5: thông điệp phải nêu đúng cổng đã YÊU CẦU. Ở đây
+    // CCRC_TERM_PORT ghim một cổng thật nên phải thấy đúng con số đó — và
+    // không bao giờ được thấy "cổng 0", con số vô nghĩa mà bản cũ in ra với
+    // mặc định sản xuất. (Nhánh port-0 tự nó không dựng ra được ở tầng này;
+    // nó được kiểm trực tiếp trong env.test.js.)
+    assert.match(r.stdout + r.stderr, new RegExp(`cổng ${port}\\b`, 'i'),
+      'phải nêu đúng cổng đã yêu cầu, để người dùng biết đi kiểm tra cái gì');
+    assert.doesNotMatch(r.stdout + r.stderr, /cổng 0\b/i,
+      '"cổng 0" là câu vô nghĩa — không có gì nghe trên cổng 0 bao giờ');
+    assert.equal(fs.existsSync(pidfile), false, 'không được để lại pid file cho một daemon chưa từng chạy được');
+  } finally {
+    busy.close();
+    tp.kill();
+  }
+});
+
+// --- Task 5: nhiều phiên cùng lúc ------------------------------------------
+//
+// Every test above exercises a SINGLE pane against a single per-pane file.
+// These exercise the actual point of Task 5: with two panes, each with its
+// own daemon and its own file, `on`/`off` on one must never see or touch the
+// other's.
+
+test('hai daemon trên hai pane: off ở pane 1 không đụng daemon của pane 2', async () => {
+  const tp1 = newTmuxPane('ccrc-cli-multi-1');
+  const tp2 = newTmuxPane('ccrc-cli-multi-2');
+  const home = tmpHome('CCRC_HUB_URL=http://127.0.0.1:9\nCCRC_TOKEN=t\nCCRC_MACHINE_NAME=m\n');
+  const pidfile1 = pidFilePath(home, tp1.pane);
+  const pidfile2 = pidFilePath(home, tp2.pane);
+  try {
+    const on1 = await run(['on'], {
+      HOME: home, TMUX_PANE: tp1.pane, CCRC_TERM_PORT: '8791',
+      CCRC_TERM_BIND: '127.0.0.1', CCRC_TERM_NO_HUB: '1',
+    });
+    assert.match(on1.stdout, /ĐÃ BẬT/, 'pane 1 phải bật được');
+
+    const on2 = await run(['on'], {
+      HOME: home, TMUX_PANE: tp2.pane, CCRC_TERM_PORT: '8792',
+      CCRC_TERM_BIND: '127.0.0.1', CCRC_TERM_NO_HUB: '1',
+    });
+    assert.match(on2.stdout, /ĐÃ BẬT/, 'pane 2 phải bật được độc lập với pane 1');
+
+    const pid1 = JSON.parse(fs.readFileSync(pidfile1, 'utf8')).pid;
+    const pid2 = JSON.parse(fs.readFileSync(pidfile2, 'utf8')).pid;
+    assert.notEqual(pid1, pid2, 'hai pane phải có hai daemon khác nhau');
+    assert.equal(isAlive(pid1), true);
+    assert.equal(isAlive(pid2), true);
+
+    const off1 = await run(['off'], { HOME: home, TMUX_PANE: tp1.pane });
+    assert.match(off1.stdout, /ĐÃ TẮT/);
+
+    await sleep(300);
+    assert.equal(isAlive(pid1), false, 'off ở pane 1 phải thực sự tắt daemon của pane 1');
+    assert.equal(fs.existsSync(pidfile1), false, 'file pid của pane 1 phải bị dọn');
+
+    assert.equal(isAlive(pid2), true, 'off ở pane 1 KHÔNG được đụng tới daemon của pane 2');
+    assert.equal(fs.existsSync(pidfile2), true, 'file pid của pane 2 phải còn nguyên');
+
+    const off2 = await run(['off'], { HOME: home, TMUX_PANE: tp2.pane });
+    assert.match(off2.stdout, /ĐÃ TẮT/, 'pane 2 vẫn phải tắt được bình thường sau đó');
+    await sleep(300);
+    assert.equal(isAlive(pid2), false);
+  } finally {
+    try {
+      const p1 = JSON.parse(fs.readFileSync(pidfile1, 'utf8')).pid;
+      process.kill(p1, 'SIGKILL');
+    } catch { /* already gone or never started */ }
+    try {
+      const p2 = JSON.parse(fs.readFileSync(pidfile2, 'utf8')).pid;
+      process.kill(p2, 'SIGKILL');
+    } catch { /* already gone or never started */ }
+    tp1.kill();
+    tp2.kill();
+  }
+});
+
+test('on trong pane đã có daemon: báo đã bật sẵn, KHÔNG mở thêm', async () => {
+  const tp = newTmuxPane('ccrc-cli-nodup');
+  const home = tmpHome('CCRC_HUB_URL=http://127.0.0.1:9\nCCRC_TOKEN=t\nCCRC_MACHINE_NAME=m\n');
+  const pidfile = pidFilePath(home, tp.pane);
+  try {
+    const on1 = await run(['on'], {
+      HOME: home, TMUX_PANE: tp.pane, CCRC_TERM_PORT: '8793',
+      CCRC_TERM_BIND: '127.0.0.1', CCRC_TERM_NO_HUB: '1',
+    });
+    assert.match(on1.stdout, /ĐÃ BẬT/);
+    const firstPid = JSON.parse(fs.readFileSync(pidfile, 'utf8')).pid;
+
+    // Same port on purpose: if `on` mistakenly tried to start a second
+    // daemon here it would fail on EADDRINUSE, which would make this test
+    // pass for the wrong reason (a crash, not a correct "already on"
+    // decision). Getting a clean "already on" despite the busy port proves
+    // the early return happened before any spawn was attempted.
+    const on2 = await run(['on'], {
+      HOME: home, TMUX_PANE: tp.pane, CCRC_TERM_PORT: '8793',
+      CCRC_TERM_BIND: '127.0.0.1', CCRC_TERM_NO_HUB: '1',
+    });
+    assert.match(on2.stdout, /đã bật sẵn/i, 'on lần hai trong cùng pane phải báo đã bật sẵn, không mở thêm');
+    assert.doesNotMatch(on2.stdout, /ĐÃ BẬT\n/, 'không được in ra như thể vừa bật thành công lần nữa');
+
+    const stillPid = JSON.parse(fs.readFileSync(pidfile, 'utf8')).pid;
+    assert.equal(stillPid, firstPid, 'pid file không được đổi — không có daemon thứ hai nào được tạo');
+  } finally {
+    try {
+      const p = JSON.parse(fs.readFileSync(pidfile, 'utf8')).pid;
+      process.kill(p, 'SIGKILL');
+    } catch { /* already gone */ }
+    tp.kill();
+  }
+});
+
+test('/remote không tham số: liệt kê MỌI phiên từ hub, đánh dấu đúng phiên hiện tại', async () => {
+  const tp = newTmuxPane('ccrc-cli-list');
+  // hubUrl is a placeholder here — `on` itself never calls the hub
+  // (CCRC_TERM_NO_HUB=1), only the later `status` call does, once the config
+  // file below has been rewritten to point at the stub.
+  const home = tmpHome('CCRC_HUB_URL=http://127.0.0.1:9\nCCRC_TOKEN=t\nCCRC_MACHINE_NAME=m\n');
+  const pidfile = pidFilePath(home, tp.pane);
+  let srv;
+  try {
+    const on = await run(['on'], {
+      HOME: home, TMUX_PANE: tp.pane, CCRC_TERM_PORT: '8790',
+      CCRC_TERM_BIND: '127.0.0.1', CCRC_TERM_NO_HUB: '1',
+    });
+    assert.match(on.stdout, /ĐÃ BẬT/);
+    const mySessionId = JSON.parse(fs.readFileSync(pidfile, 'utf8')).sessionId;
+    assert.ok(mySessionId, 'setup sanity: on phải ghi sessionId vào pid file');
+
+    // Now point the config at a stub hub that reports TWO sessions: this
+    // pane's own (by sessionId) and one belonging to some other pane/machine
+    // entirely — exactly the situation `/remote` must report honestly.
+    const stub = await stubHub((req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({
+        sessions: [
+          { sessionId: mySessionId, machine: 'may-a', label: 'proj-a', alive: true },
+          { sessionId: 'other-session-xyz', machine: 'may-b', label: 'proj-b', alive: true },
+        ],
+      }));
+    });
+    srv = stub.srv;
+    fs.writeFileSync(path.join(home, '.ccrc', 'config'), `CCRC_HUB_URL=${stub.base}\nCCRC_TOKEN=t\nCCRC_MACHINE_NAME=m\n`);
+
+    const status = await run([], { HOME: home, TMUX_PANE: tp.pane });
+
+    assert.match(status.stdout, /proj-a/, 'phải liệt kê phiên của chính pane này');
+    assert.match(status.stdout, /proj-b/, 'phải liệt kê CẢ phiên của pane/máy khác — đây là chẩn đoán toàn cảnh, không chỉ phần cục bộ');
+
+    const lines = status.stdout.split('\n');
+    const mineLine = lines.find((l) => l.includes('proj-a'));
+    const otherLine = lines.find((l) => l.includes('proj-b'));
+    assert.match(mineLine, /phiên này/i, 'dòng của phiên hiện tại phải được đánh dấu');
+    assert.doesNotMatch(otherLine, /phiên này/i, 'dòng của phiên khác KHÔNG được đánh dấu là phiên hiện tại');
+  } finally {
+    if (srv) srv.close();
+    try {
+      const p = JSON.parse(fs.readFileSync(pidfile, 'utf8')).pid;
+      process.kill(p, 'SIGKILL');
+    } catch { /* already gone */ }
+    tp.kill();
+  }
+});
+
+// --- off-all: chỉ lệnh gỡ cài đặt dùng ------------------------------------
+//
+// `off` thường ngày cố ý chỉ đụng pane của chính nó. Lúc GỠ thì ngược lại: bỏ
+// sót một daemon là để lại một tiến trình vẫn phục vụ shell trên tailnet sau
+// khi người dùng tưởng đã gỡ sạch — và file pid, thứ duy nhất ghi lại nó, nằm
+// trong ~/.ccrc, sắp bị xoá cùng thư mục đó.
+
+test('off-all dừng MỌI daemon thật, ở mọi pane', async () => {
+  const a = newTmuxPane('ccrc-offall-a');
+  const b = newTmuxPane('ccrc-offall-b');
+  const home = tmpHome('CCRC_HUB_URL=http://127.0.0.1:9\nCCRC_TOKEN=t\nCCRC_MACHINE_NAME=m\n');
+  try {
+    // KHÔNG ghim cổng: cổng cố định trong test là một tài nguyên dùng chung,
+    // và hai test chạy song song ghim trùng nhau thì thua cuộc chết lặng lẽ.
+    // Bỏ trống là đúng mặc định production — daemon bind cổng 0, hệ điều hành
+    // cấp cổng nào còn trống.
+    const env = { HOME: home, CCRC_TERM_BIND: '127.0.0.1', CCRC_TERM_NO_HUB: '1' };
+    assert.match((await run(['on'], { ...env, TMUX_PANE: a.pane })).stdout, /ĐÃ BẬT/);
+    assert.match((await run(['on'], { ...env, TMUX_PANE: b.pane })).stdout, /ĐÃ BẬT/);
+    const pidA = JSON.parse(fs.readFileSync(pidFilePath(home, a.pane), 'utf8')).pid;
+    const pidB = JSON.parse(fs.readFileSync(pidFilePath(home, b.pane), 'utf8')).pid;
+    assert.equal(isAlive(pidA) && isAlive(pidB), true, 'cả hai daemon phải sống trước đã');
+
+    // Không đặt TMUX_PANE: lệnh gỡ chạy từ shell thường, không ở trong tmux.
+    const r = await run(['off-all'], { HOME: home });
+    assert.match(r.stdout, /Đã dừng 2 phiên/);
+
+    await sleep(400);
+    assert.equal(isAlive(pidA), false, 'daemon pane A vẫn sống — vẫn phục vụ shell sau khi gỡ');
+    assert.equal(isAlive(pidB), false, 'daemon pane B vẫn sống — vẫn phục vụ shell sau khi gỡ');
+    assert.equal(fs.existsSync(pidFilePath(home, a.pane)), false);
+    assert.equal(fs.existsSync(pidFilePath(home, b.pane)), false);
+  } finally {
+    a.kill();
+    b.kill();
+  }
+});
+
+// Cùng một luật với `off`: một số pid được cấp lại cho tiến trình khác thì
+// không bao giờ được bắn. Gỡ cài đặt không phải cái cớ để nới lỏng điều đó.
+test('off-all gặp PID lạ: KHÔNG giết, chỉ dọn file', async () => {
+  const home = tmpHome('CCRC_HUB_URL=http://127.0.0.1:9\nCCRC_TOKEN=t\nCCRC_MACHINE_NAME=m\n');
+  const foreign = spawnForeign();
+  const pidfile = pidFilePath(home, '%99');
+  try {
+    await sleep(200);
+    fs.writeFileSync(pidfile, JSON.stringify({ pid: foreign.pid, sessionId: 's-la' }));
+
+    const r = await run(['off-all'], { HOME: home });
+    assert.match(r.stdout, /Không có phiên remote nào/);
+    assert.equal(isAlive(foreign.pid), true, 'đã giết một tiến trình không phải của mình');
+    assert.equal(fs.existsSync(pidfile), false, 'file pid cũ phải được dọn');
+  } finally {
+    foreign.kill('SIGKILL');
+  }
+});
+
+// Chạy trên máy chưa từng cài, hoặc chạy lần thứ hai: phải im lặng thành công,
+// không được lỗi và làm hỏng phần còn lại của lệnh gỡ.
+test('off-all khi không có ~/.ccrc: không lỗi', async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccrc-cli-empty-'));
+  fs.mkdirSync(path.join(home, '.ccrc'), { recursive: true });
+  fs.writeFileSync(path.join(home, '.ccrc', 'config'),
+    'CCRC_HUB_URL=http://127.0.0.1:9\nCCRC_TOKEN=t\nCCRC_MACHINE_NAME=m\n');
+  const r = await run(['off-all'], { HOME: home });
+  assert.equal(r.code, 0);
+  assert.match(r.stdout, /Không có phiên remote nào/);
+});

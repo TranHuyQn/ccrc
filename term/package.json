@@ -1,0 +1,17 @@
+{
+  "name": "ccrc-term",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "//test": "--test-concurrency=4 is load-bearing, not tuning. These are integration tests: most files start real tmux sessions and real daemons, and each tmux session holds a pty. Running all 18 files at node's default concurrency (one per core) exhausted the machine's ptys — tmux failed with 'fork failed: Device not configured' and 82 tests fell over at once, none of them for a reason to do with the code.",
+    "test": "node --test --test-concurrency=4 test/*.test.js",
+    "vendor": "node tools/vendor-xterm.mjs"
+  },
+  "dependencies": {
+    "ws": "^8.18.0",
+    "@xterm/xterm": "^6.0.0",
+    "@xterm/addon-fit": "^0.11.0"
+  }
+}

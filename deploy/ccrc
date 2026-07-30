@@ -1,0 +1,175 @@
+#!/bin/sh
+# `ccrc` — chạy Claude Code y hệt lệnh `claude`, chỉ khác là bên trong tmux.
+#
+# Vì sao có lệnh này: `/remote` cần một pane tmux để gắn vào, và nhớ chạy
+# `tmux` trước mỗi lần là thứ người ta sẽ quên. Gõ `ccrc` thay cho `claude` là
+# xong — không phải biết tmux là gì.
+#
+# Đóng Claude thì phiên tmux tự đóng theo: một phiên tmux chỉ chạy một lệnh sẽ
+# chấm dứt khi lệnh đó thoát. Không có gì phải dọn, và không có phiên nào bị
+# bỏ lại cho `/remote` gắn nhầm vào sau này.
+set -eu
+
+say() { printf '%s\n' "$*" >&2; }
+
+CLAUDE_BIN=$(command -v claude 2>/dev/null || true)
+[ -n "$CLAUDE_BIN" ] || { say "✗ Không tìm thấy lệnh 'claude'. Cài Claude Code rồi thử lại."; exit 127; }
+
+# --- những trường hợp KHÔNG được bọc trong tmux -----------------------------
+#
+# Mục tiêu là "giống hệt claude". Ba trường hợp dưới đây mà bọc vào tmux thì
+# không còn giống nữa — output sẽ chảy vào một pane thay vì ra stdout của
+# người gọi.
+
+run_plain() { exec "$CLAUDE_BIN" "$@"; }
+
+# Đường dẫn tới CLI của /remote, do lệnh cài điền vào. Chỉ dùng cho nhánh
+# "đã ở trong tmux" ngay dưới đây.
+REMOTE_CLI="{{CCRC_REPO}}/term/bin/ccrc-term-cli.js"
+
+# Đã ở trong tmux rồi: chạy thẳng trong pane này, không lồng thêm phiên —
+# `/remote` vốn đã dùng được.
+#
+# Nhưng ở đây lời hứa "đóng Claude là đóng luôn terminal trên web" KHÔNG tự
+# đúng như trường hợp ccrc mở phiên riêng. Đo được: Claude thoát, pane vẫn
+# sống và trở về shell, daemon vẫn chạy — nghĩa là điện thoại nhìn thấy, và
+# gõ được vào, shell trần của người dùng.
+#
+# Phiên tmux này là của người dùng, có thể còn cửa sổ khác đang làm việc, nên
+# đóng nó là sai. Thứ đóng được, và đúng thứ cần đóng, là remote của CHÍNH
+# pane này.
+if [ -n "${TMUX:-}" ]; then
+  rc=0
+  "$CLAUDE_BIN" "$@" || rc=$?
+  if [ -f "$REMOTE_CLI" ] && command -v node >/dev/null 2>&1; then
+    # Im lặng khi vốn đã tắt — đây là dọn dẹp, không phải việc người dùng vừa
+    # yêu cầu. Chỉ lên tiếng khi KHÔNG tắt được, vì lúc đó điện thoại vẫn còn
+    # với tới được cái shell vừa hiện ra.
+    node "$REMOTE_CLI" off >/dev/null 2>&1 \
+      || say "⚠ Không tắt được /remote cho pane này — chạy '/remote off' hoặc đóng pane."
+  fi
+  exit "$rc"
+fi
+
+# Không phải terminal thật (đang bị pipe, hoặc chạy trong script): tmux không
+# gắn vào đâu được.
+{ [ -t 0 ] && [ -t 1 ]; } || run_plain "$@"
+
+# Chế độ in một lần (`claude -p "..."`) dùng để lấy kết quả ra stdout, thường
+# là để nối vào lệnh khác. Bọc tmux là hỏng đúng công dụng đó.
+for arg in "$@"; do
+  case "$arg" in
+    -p|--print) run_plain "$@" ;;
+    --) break ;;
+  esac
+done
+
+# --- tmux ------------------------------------------------------------------
+
+install_tmux() {
+  # Cài phần mềm hệ thống là việc của người ngồi trước máy, không phải của
+  # script — nên hỏi, và chỉ chạy đúng một lệnh cài quen thuộc của nền tảng đó.
+  if command -v brew >/dev/null 2>&1;      then set -- brew install tmux
+  elif command -v apt-get >/dev/null 2>&1; then set -- sudo apt-get install -y tmux
+  elif command -v dnf >/dev/null 2>&1;     then set -- sudo dnf install -y tmux
+  elif command -v pacman >/dev/null 2>&1;  then set -- sudo pacman -S --noconfirm tmux
+  else
+    say "  Không nhận ra trình quản lý gói của máy này — cài tmux bằng tay rồi chạy lại."
+    return 1
+  fi
+
+  say "  Sẽ chạy: $*"
+  if [ -r /dev/tty ] && { : < /dev/tty; } 2>/dev/null; then
+    printf '  Cài tmux bây giờ? [y/N] ' > /dev/tty
+    IFS= read -r ans < /dev/tty || ans=""
+  else
+    ans=""
+  fi
+  case "$ans" in
+    y|Y|yes|YES|c|C) ;;
+    *) return 1 ;;
+  esac
+  "$@" || return 1
+  command -v tmux >/dev/null 2>&1
+}
+
+if ! command -v tmux >/dev/null 2>&1; then
+  say "⚠ Máy này chưa có tmux — /remote (terminal trên điện thoại) cần nó."
+  if ! install_tmux; then
+    # Không cài được, hoặc người dùng từ chối. Vẫn mở Claude: chặn công việc
+    # đang làm chỉ vì một thứ phụ trợ thì thiệt hơn nhiều so với việc mất
+    # `/remote` trong phiên này.
+    say "  Mở Claude bình thường; phiên này sẽ không dùng được /remote."
+    run_plain "$@"
+  fi
+fi
+
+TMUX_BIN=$(command -v tmux)
+
+# --- dựng câu lệnh cho tmux -------------------------------------------------
+#
+# tmux nhận MỘT chuỗi rồi giao cho `/bin/sh -c`, nên mọi tham số phải được
+# trích dẫn lại bằng tay. Không làm việc này thì `ccrc -p "hai từ"` vỡ, và một
+# tham số chứa dấu nháy có thể chạy thành lệnh khác.
+quote() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
+
+# Đường dẫn TUYỆT ĐỐI, không phải tên lệnh: tiến trình bên trong tmux chạy với
+# môi trường của tmux server, có thể được khởi động từ lúc khác với PATH khác —
+# đúng cái bẫy đã làm daemon không tìm thấy tmux trước đây.
+CMD=$(quote "$CLAUDE_BIN")
+for arg in "$@"; do
+  CMD="$CMD $(quote "$arg")"
+done
+
+# Mã thoát của Claude phải là mã thoát của `ccrc` — tmux chỉ trả về mã của
+# CHÍNH NÓ, nên lệnh bên trong tự ghi mã ra một file rồi đọc lại.
+RC_FILE=$(mktemp -t ccrc-rc)
+trap 'rm -f "$RC_FILE"' EXIT INT TERM
+CMD="$CMD; printf %s \$? > $(quote "$RC_FILE")"
+
+# Tên phiên chỉ tồn tại trên máy này, không bao giờ gửi đi đâu — nhãn hiện trên
+# điện thoại là chuyện riêng của `/remote on <tên>`.
+SESSION="ccrc-$$"
+
+# --- mang môi trường của người gọi vào trong phiên -------------------------
+#
+# Đây là chỗ "giống hệt claude" suýt sai. Lệnh chạy trong một phiên tmux mới
+# KHÔNG thừa hưởng môi trường của người gọi: nó lấy môi trường của tmux
+# SERVER, vốn có thể đã được khởi động từ một lần đăng nhập khác, rất lâu
+# trước đó. Đo được ngay khi thử: biến đặt ngay trước lệnh không tới được
+# tiến trình bên trong.
+#
+# Hậu quả thật: PATH, cấu hình proxy, biến ngôn ngữ, hay bất cứ thứ gì shell
+# của người dùng đặt ra đều có thể khác đi — và Claude chạy bằng `ccrc` sẽ cư
+# xử khác Claude chạy trực tiếp, đúng thứ lệnh này hứa là không.
+#
+# `-e` (tmux 3.2 trở lên) đặt biến cho riêng phiên, và vì nó là tham số của
+# tmux nên tmux tự lo phần trích dẫn.
+set -- new-session -s "$SESSION"
+
+if "$TMUX_BIN" new-session -e X=1 -d -s "ccrc-thu-$$" true 2>/dev/null; then
+  "$TMUX_BIN" kill-session -t "ccrc-thu-$$" 2>/dev/null || true
+  # TERM và TMUX* bị bỏ qua có chủ ý: tmux tự đặt chúng cho pane, và ghi đè
+  # bằng giá trị của terminal bên ngoài sẽ làm ứng dụng vẽ sai.
+  while IFS= read -r line; do
+    case "$line" in
+      TERM=*|TMUX=*|TMUX_PANE=*|_=*|'') continue ;;
+    esac
+    # Chỉ nhận tên biến hợp lệ: một dòng lạ trong printenv (giá trị nhiều
+    # dòng) không được biến thành tham số rác cho tmux.
+    case "${line%%=*}" in
+      *[!A-Za-z0-9_]*|'') continue ;;
+    esac
+    set -- "$@" -e "$line"
+  done <<EOF_ENV
+$(printenv)
+EOF_ENV
+fi
+
+"$TMUX_BIN" "$@" "$CMD"
+
+RC=$(cat "$RC_FILE" 2>/dev/null || echo 0)
+case "$RC" in
+  ''|*[!0-9]*) RC=0 ;;
+esac
+exit "$RC"

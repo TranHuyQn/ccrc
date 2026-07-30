@@ -1,0 +1,5 @@
+# Caddyfile mẫu: đặt hub sau TLS (tự động Let's Encrypt).
+# Sau đó máy dev dùng CCRC_HUB_URL=https://ccrc.example.com
+ccrc.example.com {
+    reverse_proxy 127.0.0.1:8720
+}

@@ -1,0 +1,67 @@
+# CC Remote Control — docker compose
+#
+# Nhanh nhất:
+#   cp .env.example .env      # sửa CCRC_TOKEN
+#   docker compose up -d      # hub chạy ở http://<máy-này>:8720
+#
+# Kèm HTTPS tự động (cần domain trỏ về máy này, sửa CCRC_DOMAIN trong .env):
+#   docker compose --profile tls up -d
+#
+# Cloudflare Tunnel (home server sau NAT, không cần mở port):
+#   docker compose --profile cloudflare up -d
+
+services:
+  hub:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.hub
+    image: ccrc-hub:latest
+    restart: unless-stopped
+    ports:
+      # CCRC_BIND=127.0.0.1 để chỉ mở cổng cho localhost (khi đã có tunnel/reverse proxy)
+      - "${CCRC_BIND:-0.0.0.0}:${CCRC_PORT:-8720}:8720"
+    environment:
+      CCRC_TOKEN: ${CCRC_TOKEN:?Đặt CCRC_TOKEN trong file .env (openssl rand -hex 24)}
+      CCRC_VAPID_SUBJECT: ${CCRC_VAPID_SUBJECT:-mailto:admin@localhost}
+    volumes:
+      # users.json / khoá VAPID / push subs
+      - ccrc-data:/data
+
+  # --- HTTPS bằng Caddy (profile: tls) ---------------------------------------
+  caddy:
+    profiles: ["tls"]
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      # Nhớ đặt CCRC_DOMAIN trong .env khi dùng profile tls; "localhost" chỉ để
+      # thử tại chỗ (Caddy tự ký chứng chỉ nội bộ cho localhost).
+      CCRC_DOMAIN: ${CCRC_DOMAIN:-localhost}
+    volumes:
+      - ./deploy/Caddyfile.docker:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - hub
+
+  # --- Cloudflare Tunnel (profile: cloudflare) -------------------------------
+  # Cho home server sau NAT: không cần mở port nào, không cần IP tĩnh.
+  # Tạo tunnel trong Cloudflare Zero Trust -> lấy token -> đặt CCRC_TUNNEL_TOKEN
+  # trong .env -> docker compose --profile cloudflare up -d
+  # (Public hostname trong dashboard trỏ về: HTTP -> hub:8720)
+  cloudflared:
+    profiles: ["cloudflare"]
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${CCRC_TUNNEL_TOKEN:-}
+    depends_on:
+      - hub
+
+volumes:
+  ccrc-data:
+  caddy-data:
+  caddy-config:

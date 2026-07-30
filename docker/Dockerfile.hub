@@ -1,0 +1,48 @@
+# CC Remote Control — Hub image
+FROM node:22-alpine
+
+WORKDIR /app
+
+COPY server/package.json ./server/package.json
+RUN cd server && npm install --omit=dev && npm cache clean --force
+
+COPY server/src ./server/src
+COPY server/public ./server/public
+COPY term/src/ticket.js ./term/src/ticket.js
+
+# --- gói cài cho máy dev ----------------------------------------------------
+#
+# The one-command installer needs the dev-machine half of the repo, and the hub
+# hands it out itself rather than pointing at a code host: a dev machine then
+# needs neither git nor an account anywhere, and the version it installs is by
+# construction the version this hub is running. Kept behind the same token
+# everything else uses (see /api/install/bundle.tar.gz) — not because the source
+# is secret (it is MIT and public), but because an unauthenticated tarball
+# endpoint is free bandwidth for anyone who finds the URL.
+#
+# Built at image build time rather than per request: the artefact is then
+# deterministic, and the running container needs no tar and no writable
+# scratch space. `node_modules` never reaches here — .dockerignore drops it.
+COPY hook ./bundle/hook
+COPY term ./bundle/term
+COPY shared ./bundle/shared
+COPY deploy/commands ./bundle/deploy/commands
+COPY deploy/ccrc ./bundle/deploy/ccrc
+COPY setup-notify.sh remove-notify.sh ./bundle/
+RUN cd bundle \
+ && chmod +x setup-notify.sh remove-notify.sh \
+ && tar czf /app/ccrc-bundle.tar.gz . \
+ && cd /app && rm -rf bundle
+
+ENV CCRC_PORT=8720 \
+    CCRC_DATA_DIR=/data
+
+RUN mkdir -p /data && chown -R node:node /data /app
+USER node
+VOLUME /data
+EXPOSE 8720
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \
+  CMD wget -qO- http://127.0.0.1:8720/healthz || exit 1
+
+CMD ["node", "server/src/index.js"]

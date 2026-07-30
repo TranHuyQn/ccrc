@@ -1,0 +1,197 @@
+/* Minimal layout scaffold — the real terminal styling lives in the vendored
+   xterm.css; this file only arranges this page's own elements around it. */
+
+/* JetBrains Mono, vendored (term/vendor/jetbrains-mono.woff2, 90 KB, OFL).
+   Chosen against three others by looking at what it DRAWS, not only at what
+   it measures — the distinction cost this project a wrong answer once
+   already:
+     · Hack Nerd Font — rejected on measurement: no ế, no ữ; they fell back
+       at DOUBLE width, which tears the grid.
+     · DejaVu Sans Mono — passed every width check (all 134 Vietnamese
+       letters, all 160 box characters, one advance width) and was vendored,
+       then rejected on sight: it renders ế as "ê´", stacking the tone mark
+       off to the side. Correct metrics, wrong letters. Width was the easier
+       question, not the one that mattered.
+     · JetBrains Mono — full Vietnamese AND all 128 box-drawing characters at
+       one width, and the tone marks sit where a Vietnamese reader expects.
+   Not covered, and left to the fallback stack: ⏺ ⏵ ⎿ and the Braille spinner
+   frames ⠋⠙⠹. No monospace font examined carries those together with
+   Vietnamese; they are a handful of decorative glyphs, weighed against every
+   box border and every accented letter on the screen.
+   `font-display: block` — a brief blank beats drawing the screen at the wrong
+   cell size and re-flowing it a moment later. */
+@font-face {
+  font-family: 'JetBrains Mono Web';
+  src: url('/vendor/jetbrains-mono.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: block;
+}
+
+/* Symbols Nerd Font Mono, vendored (term/vendor/symbols-nerd-font-mono.ttf,
+   2.4 MB) — CHỈ icon, không có một chữ cái nào.
+   Shell prompts draw their segment separators and their folder/git/clock
+   glyphs from the Nerd Font private-use area. Without them the phone shows a
+   row of empty boxes where the prompt should be.
+   Read straight out of the two fonts' cmap tables rather than guessed:
+     · full Hack Nerd Font — rejected: it carries a whole Latin alphabet we do
+       not need AND is missing 84 of the 134 Vietnamese letters (ả ạ ằ ắ ẳ ẵ ặ
+       ầ …), so it could not have been the text font either
+     · Symbols-only — 10,410 glyphs, none of them letters. Text keeps coming
+       from JetBrains Mono, which is why this sits AFTER it in the stack.
+   `unicode-range` is what keeps 2.4 MB honest: the browser fetches this file
+   only when a character inside these ranges actually appears on screen, and
+   never uses it for anything else. static.js serves it `immutable`, so it is
+   downloaded once per device, ever.
+   The ranges are measured, not assumed: the three private-use planes, plus
+   the exact 14 non-PUA codepoints this font ships (U+23FB-23FE ⏻⏼⏽⏾,
+   U+2630 ☰, U+2665 ♥, U+26A1 ⚡, U+276C-2771 ❯ and friends, U+2B58 ⭘).
+   Not covered anywhere, and left to the system font: ✔ U+2714, which is in
+   neither vendored font. */
+@font-face {
+  font-family: 'Nerd Icons Web';
+  src: url('/vendor/symbols-nerd-font-mono.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: block;
+  unicode-range:
+    U+E000-F8FF, U+F0000-FFFFD, U+100000-10FFFD,
+    U+23FB-23FE, U+2630, U+2665, U+26A1, U+276C-2771, U+2B58;
+}
+
+html, body {
+  height: 100%;
+  margin: 0;
+  background: #111;
+  color: #eee;
+  font-family: system-ui, sans-serif;
+  /* `pan-x pan-y` keeps scrolling but withholds pinch and double-tap zoom —
+     on Chrome/Android this, not the viewport meta, is what actually holds
+     the page at 1×. Zoom here would desynchronise what the user sees from
+     the grid size tmux was told about. */
+  touch-action: pan-x pan-y;
+  overscroll-behavior: none;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  /* iPhone landscape puts the safe-area inset on the left or right (notch
+     side / rounded corners) — viewport-fit=cover in index.html opts into
+     this, so without it the key bar and terminal would run edge to edge. */
+  padding-left: env(safe-area-inset-left, 0px);
+  padding-right: env(safe-area-inset-right, 0px);
+}
+
+#trangthai {
+  padding: 4px 8px;
+  /* iPhone notch / status-bar safe area (viewport-fit=cover in index.html
+     opts into this) — without it the status line sits under the system
+     clock/notch. Same pattern as #soan's bottom inset below. */
+  padding-top: calc(4px + env(safe-area-inset-top, 0px));
+  font-size: 12px;
+}
+
+#trangthai.dim {
+  color: #888;
+}
+
+/* Cuộn được bằng ngón tay.
+   `touch-action: none` because this surface owns the vertical drag: there is
+   nothing here for the browser to scroll (tmux drives the screen directly, so
+   xterm's own buffer stays exactly one screen tall — measured), and term.js
+   turns the drag into a tmux copy-mode command instead. Leaving this at the
+   default would have the browser swallow the gesture trying to pan a
+   scrollable area that never has anything to pan.
+   Long-press text selection is unaffected — selection is not a touch-action
+   gesture — and term.js additionally stands down the moment a selection
+   exists. */
+#term {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  touch-action: none;
+}
+
+/* Bôi đen để copy.
+   xterm.css sets `user-select: none` on `.xterm` — for a keyboard terminal
+   that is right, but this one never takes keyboard input, and on a phone
+   that rule is exactly what makes a long-press do nothing. Re-enabled on the
+   text the DOM renderer actually draws, so a long-press raises the system
+   selection handles and the Copy callout.
+   NOT re-enabled on `.xterm-helper-textarea`: that element must stay inert
+   (see term.js) — selecting it would hand it focus and raise the on-screen
+   keyboard, the one thing this page is built to prevent. */
+#term .xterm .xterm-screen,
+#term .xterm .xterm-rows {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+#term .xterm .xterm-helper-textarea {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+#phim {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  background: #1a1a1a;
+}
+
+#phim button {
+  flex: 1;
+  padding: 8px 0;
+  background: #2a2a2a;
+  color: #eee;
+  border: 1px solid #3a3a3a;
+  border-radius: 4px;
+  font-size: 14px;
+}
+
+#soan {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  /* iPhone home-indicator / rounded-corner safe area (viewport-fit=cover in
+     index.html opts into this) — without it the compose box's bottom edge
+     sits under the gesture bar instead of above it. */
+  padding-bottom: calc(4px + env(safe-area-inset-bottom, 0px));
+  background: #1a1a1a;
+}
+
+#oto {
+  flex: 1;
+  resize: none;
+  background: #2a2a2a;
+  color: #eee;
+  border: 1px solid #3a3a3a;
+  border-radius: 4px;
+  padding: 8px;
+  font: inherit;
+  font-size: 16px; /* below 16px, iOS Safari zooms the page in on focus */
+}
+
+#soan button[type="submit"] {
+  padding: 0 16px;
+  background: #2a2a2a;
+  color: #eee;
+  border: 1px solid #3a3a3a;
+  border-radius: 4px;
+}
+
+/* Chỉ hiện khi phiên đã đóng hẳn — xem term.js, mã đóng 4001. */
+#quaylai {
+  display: block;
+  width: calc(100% - 16px);
+  margin: 8px;
+  padding: 12px;
+  font: inherit;
+  font-size: 15px;
+  color: #ddd;
+  background: #333;
+  border: 1px solid #555;
+  border-radius: 8px;
+}
+#quaylai[hidden] { display: none; }

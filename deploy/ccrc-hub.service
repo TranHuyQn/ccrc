@@ -1,0 +1,21 @@
+# /etc/systemd/system/ccrc-hub.service — Hub server (chạy trên máy chủ nội bộ/VPS)
+# Sửa WorkingDirectory, User và CCRC_TOKEN trước khi bật.
+[Unit]
+Description=CC Remote Control Hub
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ccrc
+WorkingDirectory=/opt/cc-remote-control
+Environment=CCRC_PORT=8720
+Environment=CCRC_TOKEN=thay-token-cua-ban-vao-day
+# Mặc định hub KHÔNG lưu lịch sử ra đĩa (ephemeral). Bỏ comment nếu muốn lưu:
+# Environment=CCRC_PERSIST=1
+ExecStart=/usr/bin/node server/src/index.js
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,7 @@
+{
+  "//": "Not an npm workspace and not published — this file exists for one reason: shared/ sits outside server/, hook/ and term/, so without a package.json here Node walks up to the repo root, finds no \"type\", and prints a MODULE_TYPELESS_PACKAGE_JSON warning to stderr every time the notification hook loads session-registry.js. That warning would surface inside Claude Code on every single notification (caught by hook/test/ccrc-notify.test.js's stderr test).",
+  "name": "ccrc-shared",
+  "private": true,
+  "license": "MIT",
+  "type": "module"
+}

@@ -1,0 +1,5 @@
+# Caddyfile dùng trong docker compose (profile tls).
+# Domain lấy từ biến CCRC_DOMAIN trong .env
+{$CCRC_DOMAIN} {
+    reverse_proxy hub:8720
+}

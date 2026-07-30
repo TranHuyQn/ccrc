@@ -1,0 +1,78 @@
+:root {
+  --bg: #0f1115; --card: #161a21; --border: #23262d;
+  --text: #e6e8eb; --dim: #9aa3b2; --accent: #d97757; --err: #f87171;
+  --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+* { box-sizing: border-box; }
+/* `pan-x pan-y` permits scrolling but withholds the pinch and double-tap
+   zoom gestures — this is what actually stops zoom on Chrome/Android, where
+   the viewport meta's user-scalable=no is only advisory. Scrolling itself is
+   untouched, which the pull-to-refresh gesture in app.js depends on.
+   `overscroll-behavior-y: contain` suppresses the browser's own rubber-band
+   and native pull-to-refresh so the custom one is the only thing that
+   responds at the top of the page. */
+html { touch-action: pan-x pan-y; overscroll-behavior-y: contain; }
+body { margin: 0; padding: 16px; background: var(--bg); color: var(--text);
+  font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  touch-action: pan-x pan-y; overscroll-behavior-y: contain; }
+/* iOS PWA (viewport-fit=cover + black-translucent status bar) draws the page
+   edge to edge, so the notch/status bar and home indicator can overlap the
+   header and content unless we add the safe-area insets on top of the base
+   16px padding. Fallback padding above keeps browsers without env() support
+   at the plain 16px. */
+body { padding: calc(16px + env(safe-area-inset-top, 0px))
+  calc(16px + env(safe-area-inset-right, 0px))
+  calc(16px + env(safe-area-inset-bottom, 0px))
+  calc(16px + env(safe-area-inset-left, 0px)); }
+h1 { font-size: 20px; margin: 0 0 4px; }
+h2 { font-size: 14px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); margin: 24px 0 8px; }
+.hidden { display: none; }
+.dim { color: var(--dim); }
+.small { font-size: 13px; }
+.err { color: var(--err); }
+.card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 16px; margin-bottom: 12px; }
+.row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+input { width: 100%; padding: 12px; margin: 12px 0; background: var(--bg); color: var(--text);
+  border: 1px solid var(--border); border-radius: 8px; font-family: var(--mono); }
+button { width: 100%; padding: 12px; background: var(--accent); color: #fff; border: 0;
+  border-radius: 8px; font-size: 15px; cursor: pointer; }
+button.ghost { width: auto; background: transparent; color: var(--dim); border: 1px solid var(--border); padding: 6px 12px; font-size: 13px; }
+.note { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 12px; margin-bottom: 8px; }
+.note-title { font-family: var(--mono); font-size: 14px; }
+.note-body { margin-top: 2px; }
+.note-when { font-size: 12px; margin-top: 6px; }
+code { font-family: var(--mono); background: var(--bg); padding: 1px 5px; border-radius: 4px; }
+.terminal-card button { margin-top: 4px; }
+.terminal-card button:disabled { opacity: .6; cursor: default; }
+
+/* Chỉ báo "kéo xuống để nạp lại" (app.js). Sits above the top edge and is
+   pulled down into view by a transform, so it costs no layout space and
+   cannot shift the page while idle. `top` accounts for the notch inset the
+   same way body's padding does. */
+#ptr { position: fixed; left: 0; right: 0; top: calc(-36px + env(safe-area-inset-top, 0px));
+  height: 36px; display: flex; align-items: center; justify-content: center;
+  font-size: 13px; color: var(--dim); background: var(--card);
+  border-bottom: 1px solid var(--border); opacity: 0; pointer-events: none; z-index: 10; }
+#ptr.visible { opacity: 1; }
+
+/* Danh sách thiết bị nhận thông báo */
+.devices-head { margin: 14px 0 6px; }
+.device { border-top: 1px solid var(--border); padding: 10px 0; }
+.device:first-child { border-top: 0; }
+.device-name { font-size: 14px; }
+.device-current .device-name { color: var(--accent); }
+.device button { width: auto; margin-top: 6px; }
+#devices > button.ghost { width: 100%; margin-top: 12px; }
+
+/* Chấm "phiên này có thông báo chưa xem" trên thẻ terminal (app.js).
+   `.row` mặc định là justify-content: space-between — để nguyên thì chấm bị
+   đẩy sang tận mép phải, xa cái tên nó đang nói về. Quầng sáng mờ quanh chấm
+   là thứ làm nó nổi trên nền --card tối mà không phải tô cả thẻ. */
+.terminal-title { justify-content: flex-start; gap: 8px; }
+.unread-dot { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto;
+  background: var(--accent); box-shadow: 0 0 0 3px rgba(217, 119, 87, .20); }
+
+/* Số so khớp khi ghép cặp thiết bị — to, giãn cách, số đều hàng để không bị
+   nhầm hai số cạnh nhau trông giống nhau. */
+.sas { font-size: 2rem; letter-spacing: .4em; text-align: center; font-variant-numeric: tabular-nums; }

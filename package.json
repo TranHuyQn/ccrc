@@ -1,0 +1,12 @@
+{
+  "name": "cc-remote-control",
+  "version": "0.2.0",
+  "private": true,
+  "license": "MIT",
+  "description": "Gửi thông báo tới điện thoại khi Claude Code dừng lại chờ bạn",
+  "workspaces": ["server", "hook", "term"],
+  "scripts": {
+    "server": "npm run start --workspace server",
+    "test": "npm test --workspace server && npm test --workspace hook && npm test --workspace term"
+  }
+}

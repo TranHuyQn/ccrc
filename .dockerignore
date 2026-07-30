@@ -1,0 +1,9 @@
+node_modules
+server/data
+.git
+*.log
+.env
+.env.*
+!.env.example
+docs
+deploy/*.service

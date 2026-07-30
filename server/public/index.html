@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<!-- maximum-scale + user-scalable pin the page at 1× so a stray pinch or a
+     double-tap can't leave the UI zoomed. iOS Safari deliberately ignores
+     user-scalable=no for accessibility, so app.js also cancels Safari's
+     `gesturestart` — the meta alone is not enough on iPhone. -->
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>CC Notify</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon-180.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#0f1115">
+<!-- Bump ?v= whenever app.js or style.css changes. An installed PWA also caches
+     index.html itself, so a markup change needs the app reinstalled. -->
+<link rel="stylesheet" href="style.css?v=9">
+</head>
+<body>
+
+<div id="login" class="card">
+  <h1>CC Notify</h1>
+  <p class="dim">Dán token cá nhân để nhận thông báo khi Claude Code dừng lại chờ bạn.</p>
+  <input id="token" type="password" placeholder="Token cá nhân" autocomplete="off">
+  <button id="login-btn">Đăng nhập</button>
+  <p id="login-err" class="err hidden"></p>
+</div>
+
+<div id="main" class="hidden">
+  <header>
+    <span id="who"></span>
+    <button id="logout" class="ghost">Đăng xuất</button>
+  </header>
+  <div class="card">
+    <div class="row">
+      <span>Thông báo đẩy</span>
+      <span id="push-state" class="dim">đang kiểm tra…</span>
+    </div>
+    <button id="enable-push">Bật thông báo trên thiết bị này</button>
+    <p class="dim small">iPhone: phải thêm vào màn hình chính rồi mở từ đó thì mới nhận được.</p>
+
+    <div id="devices-wrap" class="hidden">
+      <div class="row devices-head">
+        <span class="dim small">Thiết bị đang nhận thông báo</span>
+        <button id="devices-toggle" class="ghost">Xem</button>
+      </div>
+      <div id="devices" class="hidden"></div>
+      <p id="devices-err" class="err small hidden"></p>
+    </div>
+  </div>
+
+  <div id="pair-panel" class="card hidden">
+    <div class="row" id="pair-title">Ghép máy này</div>
+    <p class="dim small" id="pair-step">Đang chờ máy dev…</p>
+    <p id="pair-sas" class="sas"></p>
+    <p class="dim small" id="pair-help">Khi có số, chạy trên máy dev: <code>/remote pair xac-nhan &lt;số&gt;</code></p>
+    <button id="pair-cancel" class="ghost">Huỷ</button>
+    <p id="pair-err" class="err hidden"></p>
+  </div>
+
+  <h2>Terminal</h2>
+  <div id="terminal-list" class="hidden"></div>
+  <p id="terminal-empty" class="dim small hidden">Chưa có terminal nào đang mở. Gõ <code>/remote on</code> trên máy để bật.</p>
+  <p id="terminal-err" class="err hidden"></p>
+
+  <h2>Gần đây</h2>
+  <div id="list"></div>
+</div>
+
+<script src="app.js?v=9"></script>
+</body>
+</html>

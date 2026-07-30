@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<!-- maximum-scale + user-scalable pin the page at 1×: a zoomed terminal is
+     worse than useless, since xterm sizes its grid to the viewport and a
+     pinch would desynchronise it from the pane size tmux was told about.
+     iOS Safari ignores user-scalable=no on purpose, so term.js also cancels
+     Safari's `gesturestart` — the meta alone is not enough on iPhone. -->
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content">
+<title>Terminal</title>
+<link rel="stylesheet" href="/vendor/xterm.css">
+<link rel="stylesheet" href="/term.css">
+</head>
+<body>
+<div id="trangthai" class="dim">đang nối…</div>
+<!-- Hiện ra khi phiên đã đóng hẳn, cho ai không muốn đợi hết 1,5 giây. Nằm
+     NGOÀI #trangthai có chủ ý: setStatus() ghi đè textContent của nó, nút
+     nằm bên trong sẽ bị xoá mất ngay lần cập nhật trạng thái kế tiếp. -->
+<button id="quaylai" hidden>← Quay lại danh sách</button>
+<div id="term"></div>
+<div id="phim">
+  <button data-seq="\x1b">Esc</button>
+  <button data-seq="\x1b[A">↑</button>
+  <button data-seq="\x1b[B">↓</button>
+  <button data-seq="\x1b[D">←</button>
+  <button data-seq="\x1b[C">→</button>
+  <button data-seq="\r">⏎</button>
+  <button data-seq="\t">Tab</button>
+  <!-- CSI Z, the "back-tab" sequence Shift+Tab sends — it is what moves the
+       selection backwards through Claude Code's option lists. -->
+  <button data-seq="\x1b[Z">⇧Tab</button>
+  <button data-seq="\x03">^C</button>
+</div>
+<form id="soan">
+  <textarea id="oto" rows="1" autocapitalize="none" autocorrect="off"
+            autocomplete="off" spellcheck="false" enterkeyhint="send"
+            placeholder="Nhắn cho Claude…"></textarea>
+  <button type="submit">Gửi</button>
+</form>
+<script src="/vendor/xterm.js"></script>
+<script src="/vendor/addon-fit.js"></script>
+<script src="/term.js"></script>
+</body>
+</html>
