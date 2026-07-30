@@ -11,7 +11,7 @@ import { WebSocket } from 'ws';
 import { tmuxBin, paneAlive, hasSession } from '../src/tmux.js';
 import { checkPrereqs } from '../src/tailscale.js';
 import {
-  DAEMON, startDaemon, waitExit, childPids, EVENT_TIMEOUT_MS, sleep,
+  DAEMON, startDaemon, waitExit, childPids, waitCtlPids, EVENT_TIMEOUT_MS, sleep,
   taoThietBiTest, ghiDevices,
 } from './helpers.mjs';
 
@@ -24,20 +24,42 @@ function connect(url) {
       ws,
       data,
       ok: true,
-      // Reads the FIRST message the socket ever receives and parses it as
-      // the `ccrc_session` control frame. Only meaningful right after a
-      // ticket connection — callers must call this before anything else
-      // reads from `data`, since it is racing the same message stream.
-      sessionKey: () => new Promise((res, rej) => {
-        const t = setTimeout(() => rej(new Error('không nhận được sessionKey kịp lúc')), EVENT_TIMEOUT_MS);
-        ws.once('message', (m) => {
-          clearTimeout(t);
-          try {
-            const msg = JSON.parse(m.toString());
-            res(msg.key);
-          } catch (e) { rej(e); }
-        });
-      }),
+      // Reads the `ccrc_session` control frame, which the daemon guarantees is
+      // the socket's very first message (ccrc-term.js sends it at line 339,
+      // ahead of the pane snapshot at 348).
+      //
+      // Reads it out of `data`, which has been collecting from before 'open',
+      // rather than waiting for the NEXT message. That distinction is the whole
+      // fix: `ws.once('message')` subscribes at the moment it is CALLED, so if
+      // the control frame and the snapshot have both already arrived by then,
+      // it skips the frame this function exists to read and hands back whatever
+      // comes third. On an idle machine the caller always got here first and it
+      // worked; under load it did not, and four tests failed with
+      // `Unexpected token '\x1B' ... is not valid JSON` — the pane snapshot,
+      // caught in the control frame's place. What matters is "has the first
+      // frame arrived", not "what is the next frame", and only the buffer can
+      // answer the first question.
+      sessionKey: async () => {
+        const t0 = Date.now();
+        while (data.length === 0) {
+          if (Date.now() - t0 > EVENT_TIMEOUT_MS) {
+            throw new Error(`không nhận được sessionKey kịp lúc (sau ${Date.now() - t0}ms)`);
+          }
+          await sleep(10);
+        }
+        let msg;
+        try {
+          msg = JSON.parse(data[0]);
+        } catch (e) {
+          throw new Error(`khung đầu tiên không phải JSON — daemon phải gửi ccrc_session trước ảnh chụp pane. Nhận được: ${JSON.stringify(data[0].slice(0, 60))}`);
+        }
+        // Nói rõ khi gọi sai chỗ: một kết nối không mint khoá (mintKey=false)
+        // thì khung đầu là ảnh chụp pane, và trước bản này lỗi đó hiện ra dưới
+        // dạng `msg.key === undefined` trôi xuống tận assertion ở xa.
+        assert.equal(msg.type, 'ccrc_session',
+          `khung đầu phải là ccrc_session, nhận được type=${msg.type} — sessionKey() chỉ dùng được ngay sau một kết nối bằng vé`);
+        return msg.key;
+      },
     }));
     ws.on('error', () => resolve({ ws: null, data, ok: false }));
     ws.on('unexpected-response', () => resolve({ ws: null, data, ok: false }));
@@ -436,9 +458,14 @@ test('PANE CHẾT (đóng Claude) → vẫn là mã 4001, không phải mã lỗ
     //
     // Tiến trình `tmux -C` là bằng chứng trực tiếp: daemon sinh đúng một cái
     // cho mỗi kết nối, và chỉ sau khi mọi bước dựng đã xong.
-    for (let i = 0; i < 200 && childPids(d.proc.pid).length === 0; i += 1) await sleep(20);
-    assert.ok(childPids(d.proc.pid).length > 0,
-      'đường tiếp sức chưa dựng xong — chưa đo được thứ cần đo');
+    //
+    // Phải là ctlPids, KHÔNG phải childPids: mọi bước dựng phía trước đều shell
+    // ra tmux qua execFileSync và cũng là con của daemon trong khoảnh khắc đó,
+    // nên `childPids().length > 0` trả lời "có con nào không", không phải "đường
+    // tiếp sức dựng xong chưa". Máy rảnh hai câu đó tình cờ cùng đáp án; máy
+    // tải thì không, và bài test này giết pane giữa lúc daemon còn đang dựng
+    // rồi nhận mã 1011 ở ccrc-term.js:364. Xem ctlPids trong helpers.mjs.
+    await waitCtlPids(d.proc);
 
     // Giết chính PANE, không phải phiên. `kill-session` ở đây không mô phỏng
     // được gì: phiên nhóm của daemon vẫn liên kết cùng window nên pane sống
@@ -1060,13 +1087,10 @@ test('control-mode child (tmux -C) chết bất ngờ thì socket đóng và dae
     // the same one every other wait here uses: the previous 5s went marginal
     // once the suite grew and this test started failing only in full runs,
     // never on its own.
-    let kids = [];
-    const kidsDeadline = Date.now() + EVENT_TIMEOUT_MS;
-    while (kids.length === 0 && Date.now() < kidsDeadline) {
-      kids = childPids(d.proc.pid);
-      if (kids.length === 0) await sleep(25);
-    }
-    assert.ok(kids.length > 0, 'phải tìm thấy tiến trình con tmux -C của daemon');
+    // ctlPids, không phải childPids: bài này SIGKILL thứ nó tìm được, nên nhận
+    // nhầm một tiến trình tmux dựng-kết-nối nghĩa là giết sai mục tiêu và đo
+    // sai chuyện — xem ctlPids trong helpers.mjs.
+    const kids = await waitCtlPids(d.proc);
 
     const closed = new Promise((resolve) => {
       c.ws.on('close', () => resolve(true));
@@ -1418,8 +1442,12 @@ test('daemon bị SIGKILL rồi khởi động lại HAI lần: vẫn đúng M�
     const c = await connect(`ws://127.0.0.1:${port}/attach?token=${encodeURIComponent(await token({ host: `127.0.0.1:${port}` }))}`);
     clients.push(c);
     assert.equal(c.ok, true, 'phải nối được để tạo phiên nhóm');
-    await sleep(400); // để phiên nhóm + tmux -C thực sự attach xong
-    return { d, c, ctlPids: childPids(d.pid) };
+    // Trước đây: `await sleep(400)` rồi `childPids(d.pid)`. Hai lỗi cùng lớp
+    // trong hai dòng — một khoảng ngủ cố định phải đủ cho máy chậm nhất, và
+    // childPids không phân biệt ctl với những tiến trình tmux mà daemon sinh
+    // ra khi dựng kết nối. waitCtlPids chờ đúng điều kiện thật và về ngay khi
+    // nó tới. Xem ctlPids trong helpers.mjs.
+    return { d, c, ctlPids: await waitCtlPids(d) };
   };
 
   const ctlBefore = ctlProcCount();

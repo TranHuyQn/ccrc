@@ -266,9 +266,10 @@ export function waitExit(proc, timeoutMs = EVENT_TIMEOUT_MS) {
   });
 }
 
-// Finds the direct child pids of a process (used to reach the `tmux -C`
-// control-mode child spawned per WebSocket connection, which has no other
-// externally visible handle).
+// Finds the direct child pids of a process. Correct for KILLING — a sweep
+// wants every child — but see ctlPids below before using it to WAIT for the
+// control-mode child: "has a child" and "has its ctl child" are not the same
+// question, and the difference is a flaky test.
 export function childPids(ppid) {
   try {
     return execFileSync('pgrep', ['-P', String(ppid)], { encoding: 'utf8' })
@@ -276,4 +277,64 @@ export function childPids(ppid) {
   } catch {
     return [];
   }
+}
+
+// The `tmux -C attach-session` children of a process, and nothing else.
+//
+// This exists because childPids() cannot answer "is the relay up yet?".  The
+// daemon spawns ctl only at the END of setting a connection up (ccrc-term.js
+// line 392), but every step before it shells out to tmux through
+// execFileSync — snapshotPane (348), reclaimPaneSession (362),
+// claimGroupName (373), createGroupSession (379) — and each of those is
+// briefly a child too. `pgrep -P` reports them all identically.
+//
+// Which made three waits in daemon.test.js pass for the wrong reason. On an
+// idle machine those helper processes live a few ms, and pgrep — itself a
+// process that has to be spawned and read, ~10-20ms — almost always missed
+// them, so the only child it ever saw WAS ctl. Under load they live longer,
+// pgrep starts catching them, and the wait returns while the daemon is still
+// mid-setup. The PANE CHẾT test then killed the pane inside that window and
+// got close code 1011 ('pane đã chết', ccrc-term.js:364) instead of 4001.
+// Measured: idle 8/8 waits landed on the real ctl; under load 13/14 landed on
+// a pid that had already exited by the time `ps` read it — which ctl, alive
+// for the whole connection, never is.
+//
+// One `ps` call for all the pids rather than one per pid: this runs inside a
+// poll loop, and the point is to spend less time here than the thing being
+// waited on.
+export function ctlPids(ppid) {
+  const pids = childPids(ppid);
+  if (!pids.length) return [];
+  try {
+    const out = execFileSync('ps', ['-o', 'pid=,command=', '-p', pids.join(',')], { encoding: 'utf8' });
+    return out.split('\n')
+      // The shape the daemon spawns, matched loosely enough to survive an
+      // absolute tmux path or extra flags, strictly enough that no other tmux
+      // invocation in this codebase looks like it.
+      .filter((line) => /-C\s+attach-session/.test(line))
+      .map((line) => line.trim().split(/\s+/)[0])
+      .filter(Boolean);
+  } catch {
+    // Every pid exited between pgrep and ps. That is the answer, not an
+    // error: whatever those were, they were not the long-lived ctl.
+    return [];
+  }
+}
+
+// Waits for the relay to exist, and THROWS if it never does. A wait that gives
+// up quietly is how the caller ends up proceeding as though the thing it
+// waited for had happened — the exact failure this whole helper is here to
+// stop.
+export async function waitCtlPids(proc, timeoutMs = EVENT_TIMEOUT_MS) {
+  const t0 = Date.now();
+  while (Date.now() - t0 < timeoutMs) {
+    const pids = ctlPids(proc.pid);
+    if (pids.length) return pids;
+    if (proc.exitCode !== null || proc.signalCode !== null) {
+      throw new Error('tiến trình thoát trước khi kịp dựng `tmux -C` '
+        + `(code=${proc.exitCode} sig=${proc.signalCode})`);
+    }
+    await sleep(25);
+  }
+  throw new Error(`không thấy tiến trình \`tmux -C\` nào sau ${Date.now() - t0}ms`);
 }
