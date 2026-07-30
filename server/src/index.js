@@ -20,6 +20,20 @@ const PORT = Number(process.env.CCRC_PORT || 8720);
 const TOKEN = process.env.CCRC_TOKEN; // hub token; also logs in as the "admin" user
 const DATA_DIR = process.env.CCRC_DATA_DIR || path.join(__dirname, '..', 'data');
 
+// Tạo TRƯỚC mọi thứ đọc/ghi bên dưới. Mặc định là `server/data/`, thư mục nằm
+// trong .gitignore vì nó giữ khoá VAPID và token của mọi người — và vì git
+// không track thư mục rỗng, một bản clone sạch KHÔNG có nó. Không có dòng này
+// thì hub chết ngay lúc khởi động, trước khi phục vụ được request nào:
+//
+//   Error: ENOENT ... open '.../server/data/vapid.json'
+//
+// Chỉ hiện ra với người vừa clone repo và chạy hub bằng Node trực tiếp; máy
+// nào từng chạy hub một lần rồi thì đã có sẵn thư mục, và Docker cũng không
+// dính vì Dockerfile.hub tự `mkdir -p /data`. Nghĩa là đúng những người mới
+// nhất gặp nó, còn người phát triển thì không bao giờ.
+// `recursive: true` cũng làm hàm này thành no-op khi thư mục đã có.
+fs.mkdirSync(DATA_DIR, { recursive: true });
+
 if (!TOKEN) {
   console.error('CCRC_TOKEN is required. Generate one, e.g.: openssl rand -hex 24');
   process.exit(1);
