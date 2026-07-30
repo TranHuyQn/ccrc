@@ -2525,3 +2525,35 @@ test('token wrong_host: daemon ghi log lý do kèm CẢ HAI host, không phải 
       `daemon phải ghi host CHÍNH NÓ chấp nhận (127.0.0.1:${c.port}) ra log. Log thực tế:\n${log}`);
   } finally { await c.dong(); }
 });
+
+// --- Thứ tự các dòng khởi động là một HỢP ĐỒNG với `/remote on` ----------
+//
+// ccrc-term-cli.js chờ dòng `[term] nghe …` để biết daemon đã lên, rồi NGAY
+// LÚC ĐÓ moi `[term] tên:` và `[term] URL:` ra khỏi cùng một bộ đệm stdout để
+// in cho người dùng. Nó không chờ thêm gì nữa — nên nếu `nghe` tới trước, ở
+// một chunk stdout riêng, thì tên và URL chưa tồn tại và `/remote on` in ra
+// một dòng "✓ Remote ĐÃ BẬT" cụt lủn, không nói phiên tên gì.
+//
+// Đó không phải chuyện giả định: nó là bài test `on không kèm tên` đỏ lúc máy
+// bận, với đúng output ấy. Người dùng gặp thì tệ hơn — họ không biết phải tìm
+// thẻ nào trên điện thoại.
+//
+// Sửa bằng cách để `nghe` in SAU CÙNG, nên bài này khoá đúng thứ tự đó lại.
+// Kiểm bằng vị trí trong chuỗi chứ không bằng thời gian: hai dòng cạnh nhau
+// trong cùng một lần ghi thì không có "khoảnh khắc" nào để đo, còn thứ tự thì
+// luôn xác định.
+test('dòng `nghe` in SAU `tên` — thứ tự mà /remote on dựa vào để in tên phiên', async () => {
+  const d = await startDaemon();
+  try {
+    const out = d.log();
+    const iTen = out.indexOf('[term] tên:');
+    const iNghe = out.indexOf('[term] nghe ');
+    assert.notEqual(iTen, -1, `daemon phải in tên phiên. Nó nói:\n${out}`);
+    assert.notEqual(iNghe, -1, `daemon phải in dòng nghe. Nó nói:\n${out}`);
+    assert.ok(iTen < iNghe,
+      '`[term] tên:` phải xuất hiện TRƯỚC `[term] nghe` — CLI đọc tên ngay khi thấy '
+      + `nghe, nên in ngược lại là /remote on mất tên phiên.\n${out}`);
+  } finally {
+    d.stop();
+  }
+});

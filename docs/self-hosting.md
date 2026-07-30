@@ -72,12 +72,19 @@ For a machine that can accept inbound traffic on ports 80 and 443.
 cp .env.example .env
 # set CCRC_TOKEN   (openssl rand -hex 24)
 # set CCRC_DOMAIN  (a domain whose DNS A/AAAA record points at this machine)
-docker compose --profile tls up -d --build
+docker compose -p cc-remote-control --profile tls up -d --build
 ```
 
 Caddy obtains and renews a Let's Encrypt certificate automatically. DNS has to
 resolve to this machine **before** you start it, or the certificate request
 fails.
+
+Keep the `-p cc-remote-control`. `deploy.sh` uses that project name, while
+Compose on its own names the project after whatever directory you cloned into.
+If the two disagree, `./deploy.sh status` prints an empty table and
+`./deploy.sh down` stops nothing, both while the hub is running fine — they are
+just looking at a different project. Nothing warns you; the output simply looks
+like the hub was never started.
 
 Note this puts the machine's hostname into public Certificate Transparency logs
 permanently. That is normal for a public service, but it is the exact tradeoff

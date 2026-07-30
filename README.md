@@ -92,8 +92,13 @@ from the internet, and Web Push (which requires public HTTPS) never works:
 ```bash
 cp .env.example .env             # set CCRC_TOKEN (openssl rand -hex 24)
                                  # AND CCRC_TUNNEL_TOKEN (from Cloudflare Zero Trust)
-docker compose --profile cloudflare up -d --build
+docker compose -p cc-remote-control --profile cloudflare up -d --build
 ```
+
+`-p cc-remote-control` is not optional if you ever intend to use `deploy.sh` as well:
+that is the project name it uses, and Compose otherwise names the project after the
+directory. Get them out of step and `./deploy.sh status` reports nothing at all while
+the hub is running perfectly — the two are simply looking at different projects.
 
 Not using Cloudflare Tunnel? `--profile tls` runs Caddy instead and needs a domain
 pointed at the machine (`CCRC_DOMAIN`). To try it locally with no tunnel and no TLS,

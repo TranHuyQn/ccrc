@@ -63,9 +63,14 @@ mở thêm pane hay cửa sổ nào.
 ```bash
 git clone https://github.com/TranHuyQn/ccrc && cd ccrc
 cp .env.example .env             # sửa CCRC_TOKEN (openssl rand -hex 24)
-docker compose --profile cloudflare up -d --build
+docker compose -p cc-remote-control --profile cloudflare up -d --build
 ./deploy.sh adduser ten-nguoi     # cấp token riêng cho từng thành viên
 ```
+
+`-p cc-remote-control` đừng bỏ nếu bạn còn định dùng `deploy.sh`: đó là tên project
+nó dùng, còn Compose mặc định lấy tên thư mục. Lệch nhau thì `./deploy.sh status` báo
+trống trơn trong khi hub vẫn chạy ngon lành — đơn giản vì hai bên đang nhìn hai project
+khác nhau.
 
 `deploy.sh` (dùng cùng Docker Compose ở trên) tự sinh `CCRC_TOKEN`, hỏi Cloudflare
 Tunnel token, build và kiểm tra hub. Tiện ích kèm theo: `./deploy.sh status` · `down`.

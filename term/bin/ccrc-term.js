@@ -737,18 +737,30 @@ server.listen(PORT, bindAddr, async () => {
   // "unknown, so skip the check".
   ownHost = publicUrl ? new URL(publicUrl).host : `${bindAddr}:${actualPort}`;
 
-  console.log(`[term] nghe ${bindAddr}:${actualPort}, pane ${PANE}`);
+  // ORDER MATTERS HERE, and `nghe` goes last.
+  //
+  // `/remote on` (ccrc-term-cli.js) waits for `[term] nghe` to know the daemon
+  // is up, and at that moment reads `tên` and `URL` straight out of the same
+  // stdout buffer — it does not wait again. Print `nghe` first and stdout can
+  // hand the CLI that line on its own, before the other two exist; the CLI then
+  // reports "✓ Remote ĐÃ BẬT" with no session name and no URL, leaving the user
+  // with no idea which card to look for on their phone. It showed up as the
+  // `on không kèm tên` test failing on a busy machine, with exactly that output.
+  //
+  // So `nghe` is the last line, which makes it mean what the CLI already
+  // assumed it meant: everything worth printing has been printed.
+  //
   // Announced by the daemon, not worked out by the CLI: the daemon is what
   // decides the name, including the fall back to a random id when the user
   // gave nothing usable. The CLI parses this line so the two can never
   // disagree about what the phone is going to show.
   console.log(`[term] tên: ${SESSION_NAME}`);
-  // ccrc-term-cli.js (`/remote on`) waits for exactly this line to know the
-  // daemon actually started, and parses the URL back out of it to print for
-  // the user (final fix wave, items 4 & 5) — printed only when we actually
-  // have one (CCRC_TERM_BIND test overrides with no CCRC_TERM_URL leave
-  // publicUrl blank on purpose, and there is nothing useful to print then).
+  // Printed only when we actually have one (CCRC_TERM_BIND test overrides with
+  // no CCRC_TERM_URL leave publicUrl blank on purpose, and there is nothing
+  // useful to print then) — which is also why the CLI cannot simply wait for
+  // this line instead: it is not always coming.
   if (publicUrl) console.log(`[term] URL: ${publicUrl}`);
+  console.log(`[term] nghe ${bindAddr}:${actualPort}, pane ${PANE}`);
 
   // Nothing reports to the hub before this point — the very first heartbeat
   // fires from right here, after publicUrl has been built from the real
