@@ -55,7 +55,7 @@ mở thêm pane hay cửa sổ nào.
 ### 1. Hub trên server
 
 ```bash
-git clone <repo-này> cc-remote-control && cd cc-remote-control
+git clone https://github.com/TranHuyQn/ccrc && cd ccrc
 cp .env.example .env             # sửa CCRC_TOKEN (openssl rand -hex 24)
 docker compose --profile cloudflare up -d --build
 ./deploy.sh adduser ten-nguoi     # cấp token riêng cho từng thành viên

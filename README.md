@@ -1,5 +1,8 @@
 # CC Remote Control
 
+[![test](https://github.com/TranHuyQn/ccrc/actions/workflows/test.yml/badge.svg)](https://github.com/TranHuyQn/ccrc/actions/workflows/test.yml)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 Push notifications and a phone-sized web terminal for [Claude Code](https://claude.com/claude-code),
 for the moment it stops and waits for you.
 
@@ -65,7 +68,7 @@ particularly the part about what the threat model does and does not cover.
 ### 1. Hub on a server
 
 ```bash
-git clone https://github.com/<you>/cc-remote-control && cd cc-remote-control
+git clone https://github.com/TranHuyQn/ccrc && cd ccrc
 cp .env.example .env             # set CCRC_TOKEN (openssl rand -hex 24)
 docker compose --profile cloudflare up -d --build
 ./deploy.sh adduser some-name    # issue a personal token per team member
