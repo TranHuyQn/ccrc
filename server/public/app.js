@@ -126,6 +126,110 @@ function pruneReadMarks(sessions) {
   for (const k of doomed) localStorage.removeItem(k);
 }
 
+// --- mở thẳng một phiên khi bấm thông báo (spec §3) -------------------------
+//
+// Service worker không đọc được localStorage, nên nó không cầm token đăng
+// nhập và không ký nổi một yêu cầu mở terminal. Nó chỉ nói được TÊN PHIÊN —
+// qua `?open=` khi phải mở cửa sổ mới, hoặc qua postMessage khi trang đã
+// chạy sẵn. Việc còn lại làm ở đây, đi đúng đường mà một cú bấm tay vẫn đi.
+
+let pendingOpen = null;
+
+// Cùng một sự việc thì phải cùng một câu, ở cả hai chỗ nó xuất hiện: thẻ của
+// một phiên không còn nhịp tim (buildTerminalCard), và lời từ chối khi một cú
+// bấm thông báo trỏ vào đúng phiên đó (consumePendingOpen). Hai bản chép tay
+// sẽ lệch nhau ở lần sửa câu chữ đầu tiên, và người dùng thì không có cách nào
+// biết hai câu khác nhau đang nói về cùng một chuyện.
+const MSG_MAY_KHONG_PHAN_HOI = 'Máy không phản hồi — có thể đã ngủ, hoặc /remote đã tắt.';
+
+function showTerminalErr(msg) {
+  const err = $('terminal-err');
+  err.textContent = msg;
+  err.classList.remove('hidden');
+}
+
+// Xoá tham số ngay khi đọc: một lần nạp lại trang (kéo xuống để nạp lại,
+// chẳng hạn) không được mở lại terminal lần nữa sau khi người dùng đã cố ý
+// quay ra.
+function readPendingOpenFromUrl() {
+  let raw = '';
+  try { raw = new URLSearchParams(location.search || '').get('open') || ''; }
+  catch (e) { raw = ''; }
+  if (!raw) return;
+  pendingOpen = raw;
+  try { history.replaceState(null, '', location.pathname || '/'); }
+  catch (e) { /* không xoá được thì cùng lắm mở lại một lần — không hỏng gì */ }
+}
+readPendingOpenFromUrl();
+
+if (navigator.serviceWorker && typeof navigator.serviceWorker.addEventListener === 'function') {
+  navigator.serviceWorker.addEventListener('message', (ev) => {
+    const d = ev && ev.data;
+    if (!d || d.type !== 'ccrc_open' || typeof d.sessionId !== 'string' || !d.sessionId) return;
+    pendingOpen = d.sessionId;
+    // Còn ở màn hình đăng nhập thì KHÔNG tự nạp lại: api() gặp 401 sẽ gọi
+    // logout() rồi ném, và câu lỗi được vẽ lên một phần tử nằm trong #main
+    // đang ẩn — người dùng bấm thông báo và thấy đúng không có gì xảy ra.
+    // `pendingOpen` cố ý được GIỮ NGUYÊN: showMain() kết thúc bằng
+    // refreshTerminal(), nên đăng nhập xong là phiên họ vừa bấm mở ra ngay.
+    // Cùng phép thử mà refreshOnReturn() dùng, vì cùng một lý do.
+    if ($('main').classList.contains('hidden')) return;
+    refreshTerminal();
+  });
+  // Hôm nay không có dòng này vẫn chạy, nhưng chỉ vì app.js là script CỔ ĐIỂN,
+  // không `async`: nó chạy xong trước khi trình duyệt bơm hàng đợi tin nhắn.
+  // Thêm `async` vào thẻ <script> sau này sẽ âm thầm làm rơi mọi `ccrc_open`
+  // đã xếp hàng trước đó — không lỗi, không dấu vết, chỉ là bấm thông báo thì
+  // không mở đúng phiên nữa. Gọi tường minh ở đây biến một chỗ dựa vô tình
+  // thành một lời yêu cầu.
+  if (typeof navigator.serviceWorker.startMessages === 'function') navigator.serviceWorker.startMessages();
+}
+
+// Array.from(card.children), KHÔNG gọi thẳng card.children.find(...): trên
+// DOM thật .children là một HTMLCollection và không có .find — chỉ mảng giả
+// trong bộ khung test mới có. Gọi thẳng sẽ vỡ ngay ở lần tải trang thật đầu
+// tiên dù mọi test ở đây vẫn xanh — đúng loại lỗi `f({a} = {})` đã lọt lưới
+// ba lần trong kế hoạch này, giờ đổi hình dạng. Một chỗ duy nhất cho lời giải
+// thích này — cả consumePendingOpen() và buildTerminalCardAsync() gọi vào đây.
+function openButtonOf(card) {
+  return card && Array.from(card.children).find((c) => c.tagName === 'BUTTON');
+}
+
+// `sessions` là null khi lượt nạp vừa rồi hỏng. Giữ nguyên yêu cầu mở trong
+// trường hợp đó: "không hỏi được hub" không phải bằng chứng phiên đã đóng, và
+// nói thế là nói dối về máy của người dùng.
+async function consumePendingOpen(sessions) {
+  if (!pendingOpen || !sessions) return;
+  const sid = pendingOpen;
+  // Tiêu thụ TRƯỚC khi hành động: openTerminal() có nhánh lỗi tự gọi
+  // refreshTerminal() lại, và một yêu cầu chưa tiêu thụ ở đây sẽ thành vòng
+  // lặp mở-hỏng-mở-hỏng.
+  pendingOpen = null;
+  const i = sessions.findIndex((s) => s && s.sessionId === sid);
+  if (i === -1) return showTerminalErr('Phiên đó đã đóng — không mở được.');
+  const session = sessions[i];
+  if (!session.alive) {
+    return showTerminalErr(MSG_MAY_KHONG_PHAN_HOI);
+  }
+  if (!(await pairedMachines()).includes(session.machine)) {
+    return showTerminalErr('Điện thoại này chưa ghép với máy đó — bấm "Ghép máy này".');
+  }
+  // renderTerminalList() dựng đúng một thẻ cho mỗi phiên, theo đúng thứ tự
+  // của `sessions`, nên chỉ số là mối nối duy nhất cần thiết giữa hai bên.
+  //
+  // Mối nối đó là BEST-EFFORT, không phải bất biến: `await pairedMachines()`
+  // ngay trên kia nhả quyền điều khiển, và một 'visibilitychange' rơi đúng vào
+  // khe đó dựng lại cả danh sách — `sessions` khi ấy là ảnh chụp cũ, còn
+  // children[i] là thẻ mới. Không sao, vì chuyến điều hướng đi từ `session`
+  // (biến đã bắt ở trên) chứ không từ cái thẻ: điều tệ nhất xảy ra được là
+  // thẻ khác hiện "Đang mở…", hoặc children[i] là undefined và rơi xuống câu
+  // "thử bấm vào thẻ trong danh sách" ngay dưới. Không có đường nào mở nhầm
+  // phiên, nên chỗ này không đáng đổi lấy một cấu trúc phức tạp hơn.
+  const btn = openButtonOf($('terminal-list').children[i]);
+  if (!btn) return showTerminalErr('Không mở được phiên đó — thử bấm vào thẻ trong danh sách.');
+  await openTerminal(session, btn);
+}
+
 // Renders the terminal list from GET /api/terminal. Silence is the wrong
 // default here (unlike the rest of this file) — the terminal spec (§7) is
 // explicit that a person is standing there waiting, so every branch below
@@ -135,14 +239,24 @@ function pruneReadMarks(sessions) {
 // 'pageshow' and 'visibilitychange' back to back (see the listeners below),
 // and both must resolve to exactly one GET /api/terminal — not one per
 // event, and not one per rendered card. Any caller during a refresh already
-// in flight just gets that same promise instead of starting a second one.
+// in flight just gets that same promise instead of starting a second one —
+// true for the fetch/render phase. The `consumePendingOpen` tail chained
+// onto it in refreshTerminal() below runs AFTER the flag is cleared (see the
+// comment there for why), so it sits deliberately outside this coalesced
+// window: a caller landing during that tail starts its own GET
+// /api/terminal rather than joining it. Harmless in practice — there is at
+// most one `pendingOpen` in flight regardless — but worth naming so this
+// comment stays true of the code below it.
 let terminalRefreshInFlight = null;
 
 function refreshTerminal() {
   if (terminalRefreshInFlight) return terminalRefreshInFlight;
-  terminalRefreshInFlight = doRefreshTerminal().finally(() => {
-    terminalRefreshInFlight = null;
-  });
+  // consumePendingOpen chạy SAU khi cờ đã được gỡ (`.finally` chạy trước
+  // `.then`): nhánh lỗi của openTerminal() gọi refreshTerminal() lại, và nếu
+  // cờ còn treo thì nó nhận về chính promise đang chờ chính nó — khoá chết.
+  terminalRefreshInFlight = doRefreshTerminal()
+    .finally(() => { terminalRefreshInFlight = null; })
+    .then((sessions) => consumePendingOpen(sessions));
   return terminalRefreshInFlight;
 }
 
@@ -169,12 +283,12 @@ async function doRefreshTerminal() {
     // Network hiccup or hub error: say so and leave the previous list alone
     // rather than guessing — clearing it here would be lying if sessions
     // actually exist.
-    err.textContent = 'Không lấy được trạng thái terminal, thử lại sau.';
-    err.classList.remove('hidden');
-    return;
+    showTerminalErr('Không lấy được trạng thái terminal, thử lại sau.');
+    return null;   // null = "chưa biết", khác hẳn [] = "không có phiên nào"
   }
 
   await renderTerminalList(sessions || []);
+  return sessions || [];
 }
 
 // Rebuilds the whole list from scratch on every refresh, one card per
@@ -209,12 +323,7 @@ async function renderTerminalList(sessions) {
 async function buildTerminalCardAsync(session) {
   const card = buildTerminalCard(session);
   if (session.alive && !(await pairedMachines()).includes(session.machine)) {
-    // Array.from(card.children), KHÔNG gọi thẳng card.children.find(...):
-    // trên DOM thật .children là một HTMLCollection và không có .find — chỉ
-    // mảng giả trong bộ khung test mới có. Gọi thẳng sẽ vỡ ngay ở lần tải
-    // trang thật đầu tiên dù mọi test ở đây vẫn xanh — đúng loại lỗi
-    // `f({a} = {})` đã lọt lưới ba lần trong kế hoạch này, giờ đổi hình dạng.
-    const btn = Array.from(card.children).find((c) => c.tagName === 'BUTTON');
+    const btn = openButtonOf(card);
     if (btn) {
       btn.textContent = 'Ghép máy này';
       btn.onclick = () => startPairing(session.machine);
@@ -272,7 +381,7 @@ function buildTerminalCard(session) {
     // heartbeats would just hang the tap — see brief.
     const note = document.createElement('p');
     note.className = 'dim small';
-    note.textContent = 'Máy không phản hồi — có thể đã ngủ, hoặc /remote đã tắt.';
+    note.textContent = MSG_MAY_KHONG_PHAN_HOI;
     card.appendChild(note);
   }
   return card;
@@ -386,6 +495,16 @@ async function openTerminal(session, btn) {
     sessionStorage.setItem(OPENED_KEY, session.sessionId);
     // Fragment, not query string — never sent to a server, stays out of most
     // logs, and term.js strips it from the address bar on arrival (spec §6).
+    //
+    // CHỈ token, không thêm tham số nào — không có `h` (origin của hub) hay
+    // bất cứ gì khác. Ghép thêm `&h=` vào đây từng là thiết kế, cho một cơ
+    // chế điều hướng cử chỉ back về danh sách phiên mà đo trên iPhone thật đã
+    // bác bỏ và đã bị gỡ hẳn (xem term.js — back giờ để iOS tự lo, qua nút
+    // Done của cửa sổ phụ). Nó cũng hỏng ở đúng chỗ khó thấy nhất: một máy dev
+    // chưa cập nhật vẫn chạy `term.js` bản cũ, bản đó đọc token bằng regex
+    // tham lam `/^#t=(.+)$/`, nên cái đuôi `&h=…` chui thẳng vào trong token
+    // và mọi chữ ký bị daemon từ chối — điện thoại chỉ thấy "đang nối lại…"
+    // quay mãi.
     location.href = session.url + '#t=' + encodeURIComponent(token);
   } catch (e) {
     // Ký thất bại (IndexedDB bị chặn, WebCrypto lỗi, …) hoặc phiên đã đóng:

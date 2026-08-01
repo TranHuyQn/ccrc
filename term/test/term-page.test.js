@@ -353,48 +353,21 @@ test('mã 4001 → dừng hẳn, KHÔNG hẹn nối lại', () => {
   assert.match(page.trangthai.textContent, /phiên đã đóng/i);
 });
 
-// The key belonged to a daemon that no longer exists; keeping it would have
-// the next visit spend a credential already known to be dead.
-// Closing the tab is not available: window.close() only works on a
-// script-opened window, and this page arrives via location.href in the SAME
-// tab — in a home-screen PWA there is no tab at all. Going back to the
-// session list is the equivalent, and it works everywhere.
-test('mã 4001 → quay lại danh sách sau khi kịp đọc câu giải thích', () => {
+// Không hẹn giờ, không điều hướng, không nút: cửa sổ phụ mà iOS mở cho trang
+// này có nút Done ngay trên thanh công cụ, làm đúng việc "về ứng dụng thật"
+// trong một thao tác — đứng yên và để người dùng bấm Done là đúng, không có
+// JS nào ở đây làm việc đó tốt hơn.
+test('mã 4001 → hiện đúng câu, không hẹn giờ, không tự điều hướng', () => {
   const page = loadTermPage({ storedKey: 'khoa-cu' });
   page.ws()[0].open();
+  const hrefBefore = page.location.href;
 
   page.ws()[0].dropped(4001);
 
-  assert.equal(page.backCalls.length, 0, 'quay lại ngay lập tức thì không ai kịp đọc vì sao');
-  assert.match(page.trangthai.textContent, /quay lại danh sách/i);
-  assert.equal(page.clock.fireNext(), 1500);
-  assert.equal(page.backCalls.length, 1);
-});
-
-test('mã 4001 → hiện nút quay lại ngay, bấm được', () => {
-  const page = loadTermPage({ storedKey: 'khoa-cu' });
-  page.ws()[0].open();
-  assert.equal(page.quaylai.hidden, true, 'nút phải ẩn khi phiên còn sống');
-
-  page.ws()[0].dropped(4001);
-  assert.equal(page.quaylai.hidden, false);
-
-  page.quaylai.dispatch('click');
-  assert.equal(page.backCalls.length, 1, 'bấm nút mà không quay lại thì nút là đồ trang trí');
-});
-
-// A typed URL or a bookmark leaves nowhere to go back TO — history.back()
-// would silently do nothing, and the page would sit there having promised a
-// return that never comes.
-test('không có chỗ để quay về → giữ nguyên câu hướng dẫn, không hứa suông', () => {
-  const page = loadTermPage({ storedKey: 'khoa-cu', historyLength: 1 });
-  page.ws()[0].open();
-
-  page.ws()[0].dropped(4001);
-
-  assert.equal(page.clock.pending.length, 0, 'không được hẹn giờ cho một việc không làm được');
-  assert.equal(page.quaylai.hidden, true, 'nút quay lại ở đây là nút không làm gì');
-  assert.match(page.trangthai.textContent, /remote on/i);
+  assert.equal(page.trangthai.textContent,
+    'Phiên đã đóng trên máy — bấm Done ở góc trên để quay về ứng dụng.');
+  assert.equal(page.clock.pending.length, 0, 'không được hẹn giờ cho việc gì cả — không có việc gì để làm sau đó');
+  assert.equal(page.location.href, hrefBefore, 'không được tự điều hướng đi đâu — Done của cửa sổ phụ lo việc đó');
 });
 
 test('mã 4001 → xoá luôn khoá của phiên đã chết', () => {
@@ -490,4 +463,16 @@ test('mã đóng 4003 khớp giữa daemon và trang', () => {
     return src.match(/CLOSE_SESSION_ENDED\s*=\s*(\d+)/)[1];
   };
   assert.notEqual(daemon, grabEnded('../public/term.js'));
+});
+
+// TƯƠNG THÍCH NGƯỢC, hướng "PWA cũ trong cache điện thoại". Bản app.js cũ —
+// từ khi hub origin còn đi qua fragment thay vì bị bỏ hẳn — ghép
+// `&h=<origin>` vào sau token. Trang này không đọc `h` nữa — nhưng nó cũng
+// KHÔNG được vì thế mà đọc sai token: tách fragment theo `&` (parseFragment)
+// là thứ giữ cho token vẫn nguyên vẹn ở đây, trong khi regex tham lam
+// `/^#t=(.+)$/` sẽ nuốt cả `&h=…` vào token và làm daemon từ chối chữ ký.
+test('fragment cũ còn mang &h= → token vẫn đọc đúng, h bị lờ đi', () => {
+  const page = loadTermPage({ hash: '#t=ve1&h=' + encodeURIComponent('https://gia-mao.example') });
+  assert.match(page.ws()[0].url, /[?&]token=ve1(&|$)/, 'token không được dính đuôi &h=');
+  assert.equal(page.location.hash, '', 'fragment vẫn phải bị xoá sạch');
 });

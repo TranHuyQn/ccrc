@@ -107,7 +107,7 @@ thành hai span:
 ```html
 <div class="row terminal-title">
   <span class="unread-dot"></span>       <!-- chỉ khi có chưa đọc -->
-  <span>sdk · Huy's MacBook Pro</span>   <!-- tên: LUÔN là span cuối -->
+  <span>sdk · may-dev</span>   <!-- tên: LUÔN là span cuối -->
 </div>
 ```
 

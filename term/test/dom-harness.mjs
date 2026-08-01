@@ -90,11 +90,11 @@ export class FakeDocument {
 }
 
 // A fake `window` — just enough to carry innerHeight (already used by
-// adjustTermHeight()) and now also 'hashchange', which term.js listens for
-// so a ticket that arrives via a second tap on the PWA card (same
-// origin+path, only the fragment differs — no page reload, no re-run of the
-// script) still gets picked up. Real browsers fire 'hashchange' on `window`,
-// never on `document`.
+// adjustTermHeight()) and 'hashchange', which term.js listens for so a
+// ticket that arrives via a second tap on the PWA card (same origin+path,
+// only the fragment differs — no page reload, no re-run of the script)
+// still gets picked up. Real browsers fire 'hashchange' on `window`, never
+// on `document`.
 export class FakeWindow {
   constructor(innerHeight) {
     this.innerHeight = innerHeight;
@@ -264,17 +264,12 @@ export function loadTermPage({
   // treating a drag as a scroll — a drag that is extending a selection
   // belongs to copy, not to scrolling.
   selectionCollapsed = true,
-  // How many entries the session history holds. 1 means "this tab has been
-  // nowhere else" — the shape you get from a typed URL or a bookmark, where
-  // there is nothing to go back to. Default 2: arrived from the session list.
-  historyLength = 2,
 } = {}) {
   FakeTerminal.instances.length = 0;
   FakeWebSocket.instances.length = 0;
   FakeFitAddon.instances.length = 0;
 
   const trangthai = new FakeElement('div'); trangthai.id = 'trangthai';
-  const quaylai = new FakeElement('button'); quaylai.id = 'quaylai'; quaylai.hidden = true;
   const termContainer = new FakeElement('div'); termContainer.id = 'term';
 
   const phim = new FakeElement('div'); phim.id = 'phim';
@@ -293,7 +288,7 @@ export function loadTermPage({
   submitBtn.setAttribute('type', 'submit');
   soan.appendChild(submitBtn);
 
-  const document_ = new FakeDocument({ trangthai, quaylai, term: termContainer, phim, soan, oto }, fontsImpl);
+  const document_ = new FakeDocument({ trangthai, term: termContainer, phim, soan, oto }, fontsImpl);
 
   let sessionStorage;
   if (sessionStorageImpl) {
@@ -308,12 +303,20 @@ export function loadTermPage({
     };
   }
 
-  const location = { hash, pathname: '/', search: '', host: 'localhost:8730', protocol: 'http:' };
+  // `href` không được term.js đọc hay ghi ở đâu cả nữa. Giữ lại vì `location`
+  // thật luôn có nó — một trang chạy thiếu thuộc tính chuẩn là bộ khung nói
+  // dối, không phải bộ khung tối giản. Giá trị khởi tạo phản chiếu đúng hash
+  // được truyền vào.
+  const location = {
+    hash,
+    href: 'http://localhost:8730/' + hash,
+    pathname: '/',
+    search: '',
+    host: 'localhost:8730',
+    protocol: 'http:',
+  };
   const historyCalls = [];
-  const backCalls = [];
   const history = {
-    length: historyLength,
-    back() { backCalls.push(true); },
     replaceState(state, title, url) {
       historyCalls.push({ state, title, url });
       const i = url.indexOf('#');
@@ -364,8 +367,6 @@ export function loadTermPage({
     window: window_,
     location,
     historyCalls,
-    backCalls,
-    quaylai,
     sessionStorage,
     clock,
     navigator: navigatorImpl,

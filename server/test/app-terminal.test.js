@@ -169,8 +169,12 @@ test('token tự ký xác minh được bằng đúng bộ kiểm của daemon',
   await context.refreshTerminal();
   await openButtonOf(byId['terminal-list'].children[0]).onclick();
 
-  const token = location.href.split('#t=')[1];
-  const r = verifyAttachToken(decodeURIComponent(token), {
+  // URLSearchParams thay vì split('#t='): fragment chỉ mang `t=` và test ngay
+  // dưới đây canh đúng điều đó, nhưng đọc nó như một bộ tham số thì bài kiểm
+  // vòng khép kín này vẫn đúng dù fragment có đổi hình dạng lần nữa.
+  const hash = location.href.slice(location.href.indexOf('#') + 1);
+  const token = new URLSearchParams(hash).get('t');
+  const r = verifyAttachToken(token, {
     findDevice: (id) => (id === deviceId ? { pubKey } : null),
     sessionId: SESSION_ALIVE.sessionId,
     // Host mà signAttachToken() vừa ký vào token (C3, spec §13) phải khớp
@@ -818,4 +822,232 @@ test('nhiều khoá mồ côi liền nhau đều bị xoá — không bỏ sót 
   await refreshBoth(context);
 
   assert.equal(localStorage.length, 0, 'xoá giữa vòng lặp key(i) là cách bỏ sót kinh điển');
+});
+
+// --- fragment CHỈ mang token, không gì khác ---------------------------------
+//
+// Đây là một khẳng định về TƯƠNG THÍCH NGƯỢC, không phải về hình thức. Hub và
+// từng máy dev cập nhật độc lập nhau, nên một PWA mới luôn có lúc gặp một
+// `term.js` cũ — và bản cũ đọc token bằng regex tham lam `/^#t=(.+)$/`. Thêm
+// bất cứ tham số nào vào sau token là nó nuốt luôn vào trong token: daemon từ
+// chối chữ ký, và điện thoại quay vòng "đang nối lại…" mà không nói được vì
+// sao. Hub origin (`&h=`) từng nằm ở đây, cho một cơ chế điều hướng cử chỉ
+// back về danh sách phiên — cơ chế đó đã bị gỡ hẳn (xem term.js).
+test('bấm Mở terminal: fragment CHỈ có t=<token>, không thêm tham số nào', async () => {
+  const fetchImpl = makeFetch(async () => ({ status: 200, body: { sessions: [SESSION_ALIVE] } }));
+  const { context, byId, location } = loadAppPage({ fetchImpl });
+  await pairMachine(context, SESSION_ALIVE.machine);
+  await context.refreshTerminal();
+  const card = byId['terminal-list'].children[0];
+  await openButtonOf(card).onclick();
+
+  const hash = location.href.slice(location.href.indexOf('#') + 1);
+  assert.ok(hash.startsWith('t='), 'fragment phải bắt đầu bằng t=, đã có: ' + hash);
+  assert.equal(hash.includes('&'), false,
+    'một tham số thứ hai trong fragment làm term.js bản cũ đọc sai token: ' + hash);
+  assert.ok(new URLSearchParams(hash).get('t'), 'phải có token trong fragment');
+});
+
+// --- bấm thông báo → mở thẳng terminal của phiên đó (spec §3) --------------
+
+test('?open=<sid> → tự mở đúng phiên, và xoá tham số khỏi thanh địa chỉ', async () => {
+  const fetchImpl = makeFetch(async () => ({ status: 200, body: { sessions: [SESSION_ALIVE] } }));
+  const { context, location, replaceCalls } = loadAppPage({ fetchImpl, search: '?open=s-1' });
+  await pairMachine(context, SESSION_ALIVE.machine);
+  await context.refreshTerminal();
+
+  assert.equal(replaceCalls.length, 1, 'phải xoá ?open= ngay khi đọc xong');
+  assert.ok(location.href.startsWith('http://100.86.1.2:8730/#t='),
+    'phải điều hướng thẳng vào terminal, đã có ' + location.href);
+});
+
+test('?open= tiêu thụ đúng một lần — refresh lần hai không mở lại', async () => {
+  const fetchImpl = makeFetch(async () => ({ status: 200, body: { sessions: [SESSION_ALIVE] } }));
+  const { context, byId, location } = loadAppPage({ fetchImpl, search: '?open=s-1' });
+  await pairMachine(context, SESSION_ALIVE.machine);
+  await context.refreshTerminal();
+  location.href = '';           // giả lập "đã đi rồi, giờ quay lại"
+  await context.refreshTerminal();
+  assert.equal(location.href, '', 'lần refresh sau không được tự điều hướng lần nữa');
+  // Không chỉ "không điều hướng" — phải là vì pendingOpen đã tiêu thụ hết,
+  // không phải vì lần refresh thứ hai đi vào một nhánh lỗi nào đó rồi tình
+  // cờ cũng không điều hướng. terminal-err còn ẩn mới đúng là lý do đó.
+  assert.equal(byId['terminal-err'].classList.contains('hidden'), true,
+    'lần refresh sau phải trôi qua êm, không phải im lặng vì lỗi khác');
+});
+
+test('?open= trỏ tới phiên không còn trong danh sách → nói rõ phiên đã đóng', async () => {
+  const fetchImpl = makeFetch(async () => ({ status: 200, body: { sessions: [SESSION_ALIVE_2] } }));
+  const { context, byId, location } = loadAppPage({ fetchImpl, search: '?open=s-khong-ton-tai' });
+  await pairMachine(context, 'may-dev');
+  await context.refreshTerminal();
+  assert.equal(location.href, '', 'không được điều hướng đi đâu cả');
+  assert.equal(byId['terminal-err'].classList.contains('hidden'), false);
+  assert.match(byId['terminal-err'].textContent, /đã đóng/);
+});
+
+test('?open= trỏ tới phiên máy không phản hồi → nói rõ, không điều hướng', async () => {
+  const fetchImpl = makeFetch(async () => ({ status: 200, body: { sessions: [SESSION_DEAD] } }));
+  const { context, byId, location } = loadAppPage({ fetchImpl, search: '?open=s-1' });
+  await pairMachine(context, SESSION_DEAD.machine);
+  await context.refreshTerminal();
+  assert.equal(location.href, '');
+  assert.match(byId['terminal-err'].textContent, /không phản hồi/);
+});
+
+test('?open= nhưng máy chưa ghép → chỉ đúng việc cần làm, không ký gì', async () => {
+  const fetchImpl = makeFetch(async () => ({ status: 200, body: { sessions: [SESSION_ALIVE] } }));
+  const { context, byId, location } = loadAppPage({ fetchImpl, search: '?open=s-1' });
+  // KHÔNG gọi pairMachine — đây chính là điều đang được kiểm.
+  await context.refreshTerminal();
+  assert.equal(location.href, '');
+  assert.match(byId['terminal-err'].textContent, /Ghép máy này/);
+});
+
+test('GET /api/terminal hỏng → giữ nguyên yêu cầu mở, không kết luận phiên đã đóng', async () => {
+  let lan = 0;
+  const fetchImpl = makeFetch(async () => {
+    lan += 1;
+    if (lan === 1) throw new Error('network down');
+    return { status: 200, body: { sessions: [SESSION_ALIVE] } };
+  });
+  const { context, byId, location } = loadAppPage({ fetchImpl, search: '?open=s-1' });
+  await pairMachine(context, SESSION_ALIVE.machine);
+  await context.refreshTerminal();
+  assert.match(byId['terminal-err'].textContent, /Không lấy được trạng thái/);
+  await context.refreshTerminal();
+  assert.ok(location.href.startsWith('http://100.86.1.2:8730/#t='),
+    'lượt sau thành công thì yêu cầu mở phải vẫn còn hiệu lực');
+});
+
+// --- postMessage({type:'ccrc_open'}) — lối vào khi trang đã đang chạy sẵn --
+//
+// Đây mới là lối chính theo Task 5: `?open=` chỉ là lối DỰ PHÒNG dùng khi
+// service worker phải MỞ CỬA SỔ MỚI vì chưa có cửa sổ nào đang chạy. Khi PWA
+// đã mở sẵn — trường hợp phổ biến nhất — service worker gửi thẳng
+// postMessage vào cửa sổ đó thay vì điều hướng gì cả. dom-harness.mjs cố ý
+// không gắn `serviceWorker` vào navigator mặc định (để refreshPushState() ở
+// nhánh "không hỗ trợ"), nên khối test này phải tự dựng một
+// navigator.serviceWorker giả qua `navigatorImpl` — cách duy nhất để đường
+// mã này thật sự CHẠY trong test, chứ không chỉ được đọc mắt.
+function makeSwNavigator({ startMessages = true } = {}) {
+  const listeners = {};
+  const started = { count: 0 };
+  const sw = {
+    // Bottom-of-file `navigator.serviceWorker.register('sw.js').catch(...)`
+    // chạy ngay khi app.js nạp xong nếu 'serviceWorker' in navigator —
+    // phải trả về một promise để .catch() không ném ngay lúc tải trang.
+    register: async () => ({}),
+    addEventListener(type, fn) { (listeners[type] = listeners[type] || []).push(fn); },
+  };
+  // Có mặt trong mọi trình duyệt thật; `startMessages: false` dựng một trình
+  // duyệt cũ không có nó, để chứng minh app.js không gọi bừa.
+  if (startMessages) sw.startMessages = () => { started.count += 1; };
+  return {
+    navigatorImpl: { serviceWorker: sw },
+    started,
+    // Đồng bộ, giống dispatchEvent thật: gọi thẳng mọi listener đã đăng ký
+    // cho 'message', với `{data}` — đúng hình dạng MessageEvent mà app.js đọc
+    // qua `ev.data`.
+    dispatchMessage(data) { (listeners.message || []).forEach((fn) => fn({ data })); },
+  };
+}
+
+test('postMessage ccrc_open từ service worker → mở đúng phiên, không cần ?open=', async () => {
+  const fetchImpl = makeFetch(async () => ({ status: 200, body: { sessions: [SESSION_ALIVE] } }));
+  const { navigatorImpl, dispatchMessage } = makeSwNavigator();
+  const { context, byId, location } = loadAppPage({ fetchImpl, navigatorImpl });
+  // Đã đăng nhập — đúng cảnh mà lối này phục vụ, và là thứ làm cho khẳng định
+  // bên dưới nói về LISTENER: còn ở màn hình đăng nhập thì listener cố ý
+  // không tự nạp lại gì cả (xem test ngay sau đây).
+  byId['main'].classList.remove('hidden');
+  await pairMachine(context, SESSION_ALIVE.machine);
+  // Dựng danh sách/thẻ TRƯỚC — đúng cảnh thật: trang đã đang mở, danh sách đã
+  // có sẵn khi thông báo tới. consumePendingOpen() cần thẻ đó để lấy nút bấm.
+  await context.refreshTerminal();
+
+  dispatchMessage({ type: 'ccrc_open', sessionId: SESSION_ALIVE.sessionId });
+  // Listener của app.js gọi refreshTerminal() nhưng không AI await nó (đúng
+  // như một event handler thật) — gọi lại refreshTerminal() từ đây chỉ nhận
+  // về CHÍNH promise đó (coalescing), nên await được tới lúc nó xong.
+  await context.refreshTerminal();
+
+  assert.ok(location.href.startsWith('http://100.86.1.2:8730/#t='),
+    'phải điều hướng thẳng vào terminal, đã có ' + location.href);
+});
+
+// Thông báo có thể tới lúc app đang mở nhưng CHƯA đăng nhập (token hết hạn,
+// vừa đăng xuất). Gọi refreshTerminal() ở đó sẽ 401 → logout() → rồi vẽ câu
+// lỗi lên một phần tử nằm trong #main đang ẩn: cú bấm của người dùng trông
+// như không làm gì cả. Yêu cầu mở phải được GIỮ LẠI, không phải vứt đi.
+test('ccrc_open lúc còn ở màn hình đăng nhập → không gọi hub, và giữ yêu cầu cho lần đăng nhập sau', async () => {
+  let terminalCalls = 0;
+  const fetchImpl = makeFetch(async (url) => {
+    if (url === '/api/terminal') { terminalCalls += 1; return { status: 200, body: { sessions: [SESSION_ALIVE] } }; }
+    throw new Error('unexpected url ' + url);
+  });
+  const { navigatorImpl, dispatchMessage } = makeSwNavigator();
+  const { context, byId, location } = loadAppPage({ fetchImpl, navigatorImpl });
+  await pairMachine(context, SESSION_ALIVE.machine);
+  byId['main'].classList.add('hidden'); // vẫn ở màn hình đăng nhập
+
+  dispatchMessage({ type: 'ccrc_open', sessionId: SESSION_ALIVE.sessionId });
+  await Promise.resolve();
+  assert.equal(terminalCalls, 0, 'không được hỏi hub bằng một token đã hỏng — 401 sẽ đá người dùng ra');
+  assert.equal(location.href, '', 'chưa đăng nhập thì chưa đi đâu cả');
+
+  // Đăng nhập xong: showMain() kết thúc bằng đúng refreshTerminal() này, và
+  // yêu cầu mở còn nguyên nên nó được nhặt lên ngay lượt đó.
+  byId['main'].classList.remove('hidden');
+  await context.refreshTerminal();
+  assert.ok(location.href.startsWith('http://100.86.1.2:8730/#t='),
+    'yêu cầu mở phải sống sót qua lần đăng nhập, đã có: ' + location.href);
+});
+
+// app.js là script cổ điển, không `async`, nên listener 'message' được gắn
+// trước khi trình duyệt bơm hàng đợi tin nhắn — hôm nay nó chạy được là nhờ
+// đúng điều đó. Thêm `async` vào thẻ <script> sau này sẽ âm thầm làm rơi mọi
+// `ccrc_open` đã xếp hàng trước khi script kịp chạy. startMessages() là thứ
+// biến chỗ dựa ngầm ấy thành một lời yêu cầu tường minh.
+test('gọi startMessages() sau khi gắn listener — không phụ thuộc vào việc script không async', async () => {
+  const fetchImpl = makeFetch(async () => ({ status: 200, body: { sessions: [] } }));
+  const { navigatorImpl, started } = makeSwNavigator();
+  loadAppPage({ fetchImpl, navigatorImpl });
+  assert.equal(started.count, 1);
+});
+
+test('trình duyệt không có startMessages() → không gọi bừa, trang vẫn nạp', async () => {
+  const fetchImpl = makeFetch(async () => ({ status: 200, body: { sessions: [SESSION_ALIVE] } }));
+  const { navigatorImpl, dispatchMessage } = makeSwNavigator({ startMessages: false });
+  const { context, byId, location } = loadAppPage({ fetchImpl, navigatorImpl });
+  byId['main'].classList.remove('hidden');
+  await pairMachine(context, SESSION_ALIVE.machine);
+  await context.refreshTerminal();
+
+  dispatchMessage({ type: 'ccrc_open', sessionId: SESSION_ALIVE.sessionId });
+  await context.refreshTerminal();
+  assert.ok(location.href.startsWith('http://100.86.1.2:8730/#t='),
+    'thiếu startMessages() thì vẫn phải chạy như cũ, đã có: ' + location.href);
+});
+
+test('postMessage với type sai, thiếu sessionId, hoặc sessionId không phải chuỗi → bỏ qua, không mở gì', async () => {
+  const fetchImpl = makeFetch(async () => ({ status: 200, body: { sessions: [SESSION_ALIVE] } }));
+  const { navigatorImpl, dispatchMessage } = makeSwNavigator();
+  const { context, byId, location } = loadAppPage({ fetchImpl, navigatorImpl });
+  // Đã đăng nhập, để lý do "không mở gì" chỉ có thể là payload — chứ không
+  // phải cái chặn "còn ở màn hình đăng nhập" ở trên.
+  byId['main'].classList.remove('hidden');
+  await pairMachine(context, SESSION_ALIVE.machine);
+  await context.refreshTerminal();
+
+  dispatchMessage({ type: 'khong_phai_ccrc_open', sessionId: SESSION_ALIVE.sessionId });
+  dispatchMessage({ type: 'ccrc_open' });                       // thiếu sessionId
+  dispatchMessage({ type: 'ccrc_open', sessionId: 12345 });     // không phải chuỗi
+  dispatchMessage(null);                                        // ev.data không tồn tại
+
+  // refreshTerminal() thủ công ở đây không tự mở gì (không có postMessage hợp
+  // lệ nào đặt pendingOpen) — chỉ dùng để chắc chắn không có gì đang treo lại
+  // mở muộn ở lượt sau.
+  await context.refreshTerminal();
+  assert.equal(location.href, '', 'không có payload nào ở trên là hợp lệ — không được điều hướng đi đâu cả');
 });

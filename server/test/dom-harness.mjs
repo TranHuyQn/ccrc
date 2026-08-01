@@ -201,6 +201,7 @@ export function makeFetch(impl) {
 
 export function loadAppPage({
   token = '', fetchImpl = null, navigatorImpl = null, indexedDBImpl = null, cryptoImpl = null,
+  search = '',
 } = {}) {
   const byId = {};
   const BUTTON_IDS = new Set([
@@ -238,15 +239,39 @@ export function loadAppPage({
   const fetchFn = fetchImpl || makeFetch(async () => ({ status: 404, body: {} }));
   // `reload` counts calls instead of navigating — the pull-to-refresh tests
   // assert on whether it fired, and how many times.
-  const location = { href: '', reloads: 0, reload() { this.reloads += 1; } };
+  // `pathname`/`search` là thứ app.js đọc `?open=` ra rồi xoá đi. `origin`
+  // KHÔNG được app.js đọc ở đâu cả — nó từng bị ghép vào fragment để trang
+  // terminal biết đường quay về, cơ chế đó đã bị gỡ hẳn (xem term.js). Giữ
+  // lại vì `location` thật luôn có nó: một trang chạy thiếu thuộc tính chuẩn
+  // là bộ khung nói dối, không phải bộ khung tối giản.
+  const location = {
+    href: '',
+    origin: 'https://hub.example.com',
+    pathname: '/',
+    search,
+    reloads: 0,
+    reload() { this.reloads += 1; },
+  };
   const window_ = new FakeWindow();
   window_.scrollY = 0;
+
+  // app.js xoá `?open=` khỏi thanh địa chỉ ngay sau khi đọc, để một lần nạp
+  // lại trang (kéo xuống để nạp lại, chẳng hạn) không được mở lại terminal
+  // lần nữa. Test đọc `replaceCalls` để chứng minh việc xoá đó có xảy ra.
+  const replaceCalls = [];
+  const history = {
+    replaceState(state, title, url) {
+      replaceCalls.push({ state, title, url });
+      location.search = '';
+    },
+  };
 
   const contextObj = {
     document: document_,
     localStorage,
     sessionStorage,
     location,
+    history,
     fetch: fetchFn,
     // No serviceWorker/PushManager on purpose: keeps refreshPushState() on
     // its "trình duyệt không hỗ trợ" branch, and skips the bottom-of-file
@@ -278,6 +303,7 @@ export function loadAppPage({
     // check's catch turns every url — including good ones — into "not
     // allowed", and the page silently refuses to open any terminal at all.
     URL,
+    URLSearchParams,
     console,
     // Real Node webcrypto by default — a signature made in a test must be a
     // real signature. `cryptoImpl` lets a test swap in a partial wrapper
@@ -297,6 +323,7 @@ export function loadAppPage({
     document: document_,
     window: window_,
     location,
+    replaceCalls,
     localStorage,
     sessionStorage,
     fetch: fetchFn,

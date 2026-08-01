@@ -29,9 +29,6 @@
   // máy này". Xem bin/ccrc-term.js — vì sao phải bắt tay xong rồi mới đóng
   // bằng mã riêng, thay vì 401 câm mà JS không đọc được.
   var CLOSE_DEVICE_NOT_PAIRED = 4003;
-  // Sau khi phiên đóng hẳn: đủ lâu để đọc xong câu giải thích, đủ ngắn để
-  // không thành ra đứng hình. Có nút bấm cho ai không muốn đợi.
-  var BACK_DELAY_MS = 1500;
   var BACKOFF_START_MS = 1000;
   var BACKOFF_MAX_MS = 30000;
 
@@ -61,60 +58,49 @@
     trangthaiEl.className = cls || '';
   }
 
-  // --- quay lại danh sách phiên khi phiên đã đóng hẳn ----------------------
-  //
-  // Đóng tab thì KHÔNG làm được: `window.close()` chỉ chạy với cửa sổ do
-  // script mở ra, mà trang này được mở bằng `location.href` từ danh sách
-  // phiên — cùng một tab. Với PWA cài ra màn hình chính lại còn không có tab
-  // nào để đóng. Nhưng vì terminal nằm ĐÈ LÊN danh sách trong cùng tab, quay
-  // lại chính là thứ tương đương, và làm được ở mọi trình duyệt.
-
-  var quaylaiEl = document.getElementById('quaylai');
-
-  // `document.referrer` KHÔNG dùng được ở đây: hub chạy https còn trang này
-  // chạy http trên IP tailnet, và chính sách referrer mặc định không gửi gì
-  // khi hạ cấp https → http. Còn lại history.length: tab mới tinh là 1, còn
-  // đi từ danh sách phiên sang thì ít nhất là 2.
-  function canGoBack() {
-    try {
-      return !!(history && history.length > 1);
-    } catch (e) {
-      return false;
-    }
-  }
-
-  function goBack() {
-    try {
-      history.back();
-    } catch (e) {
-      /* không quay lại được thì câu thông báo vẫn còn nguyên trên màn hình */
-    }
-  }
-
-  // Gắn MỘT lần ở đây, không gắn trong onclose: nút đang ẩn nên không ai bấm
-  // được, còn gắn trong onclose thì mỗi lần đóng lại chồng thêm một listener —
-  // bấm một cái sẽ lùi lịch sử nhiều bước.
-  if (quaylaiEl) quaylaiEl.addEventListener('click', goBack);
-
-  // --- ticket from the URL fragment, wiped immediately (spec §6) ----------
+  // --- token từ URL fragment, xoá ngay (spec §6) ---------------------------
   //
   // Done first, before anything else — including terminal setup below — so
   // a ticket never lingers in the address bar or history regardless of
   // whether the rest of the page manages to come up.
+  //
+  // Fragment chỉ mang MỘT thứ: `t`, cái token. Nó từng mang thêm `h` (origin
+  // của hub, dùng để điều hướng cử chỉ back về danh sách phiên) — cơ chế đó
+  // đã bị gỡ hẳn: đo trên iPhone thật cho thấy nó không sửa được màn hình
+  // trắng nó nhắm tới, còn tự sinh ra một lỗi mới, và chủ dự án chốt back
+  // nên thoát thẳng về PWA bằng nút Done của cửa sổ phụ — một thao tác,
+  // không cần JS nào can thiệp.
+  //
+  // Vẫn tách bằng parseFragment() chứ không quay lại regex `/^#t=(.+)$/`, dù
+  // fragment giờ chỉ còn một tham số: một điện thoại có thể còn giữ bản app.js
+  // CŨ trong cache, và bản đó ghép `&h=<origin>` vào sau token. Regex tham lam
+  // sẽ nuốt cả cái đuôi ấy vào trong token, daemon từ chối chữ ký, và trang
+  // rơi vào vòng nối lại im lặng. Tách theo `&` thì `h` chỉ đơn giản là một
+  // khoá không ai đọc.
 
   var ticket = readAndClearTicket();
 
+  function parseFragment(raw) {
+    var out = {};
+    String(raw || '').replace(/^#/, '').split('&').forEach(function (pair) {
+      var i = pair.indexOf('=');
+      if (i === -1) return;
+      try { out[pair.slice(0, i)] = decodeURIComponent(pair.slice(i + 1)); }
+      catch (e) { /* phần bị mã hoá hỏng — bỏ qua đúng phần đó thôi */ }
+    });
+    return out;
+  }
+
   function readAndClearTicket() {
-    var m = /^#t=(.+)$/.exec(location.hash || '');
-    var t = m ? decodeURIComponent(m[1]) : null;
-    // Only replace when there was actually a ticket to strip — but when
+    var hash = location.hash || '';
+    if (!hash) return null;
+    var p = parseFragment(hash);
+    // Only replace when there was actually a fragment to strip — but when
     // there WAS one, it must never survive as a history entry or in the
     // visible address bar. replaceState (not setting location.hash) is what
     // avoids adding a new history entry.
-    if (m) {
-      history.replaceState(null, '', location.pathname + (location.search || ''));
-    }
-    return t;
+    history.replaceState(null, '', location.pathname + (location.search || ''));
+    return p.t || null;
   }
 
   // --- giữ trang ở 1×, không cho phóng to ---------------------------------
@@ -310,16 +296,11 @@
         // The key belonged to a daemon that is gone; keeping it would only
         // have the next visit try a credential already known to be dead.
         safeStorageRemove(STORAGE_KEY);
-        if (!canGoBack()) {
-          // Mở thẳng URL này (gõ tay, hoặc bookmark) thì không có chỗ nào để
-          // quay về — `history.back()` sẽ im lặng không làm gì. Giữ nguyên câu
-          // thông báo, đừng hứa một việc không xảy ra.
-          setStatus('Phiên đã đóng trên máy — mở lại bằng /remote on rồi vào lại từ ứng dụng.', 'err');
-          return;
-        }
-        setStatus('Phiên đã đóng trên máy — đang quay lại danh sách…', 'err');
-        if (quaylaiEl) quaylaiEl.hidden = false;
-        setTimeout(goBack, BACK_DELAY_MS);
+        // Đứng yên: nói ra sự thật rồi dừng. Cửa sổ phụ mà iOS mở cho trang
+        // này có nút Done ngay trên thanh công cụ, làm đúng việc "về ứng dụng
+        // thật" trong một thao tác — không JS nào ở đây làm việc đó tốt hơn
+        // việc để iOS làm. Không hẹn giờ, không điều hướng, không nút.
+        setStatus('Phiên đã đóng trên máy — bấm Done ở góc trên để quay về ứng dụng.', 'err');
         return;
       }
       if (ev && ev.code === CLOSE_DEVICE_NOT_PAIRED) {

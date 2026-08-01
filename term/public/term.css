@@ -180,18 +180,3 @@ body {
   border: 1px solid #3a3a3a;
   border-radius: 4px;
 }
-
-/* Chỉ hiện khi phiên đã đóng hẳn — xem term.js, mã đóng 4001. */
-#quaylai {
-  display: block;
-  width: calc(100% - 16px);
-  margin: 8px;
-  padding: 12px;
-  font: inherit;
-  font-size: 15px;
-  color: #ddd;
-  background: #333;
-  border: 1px solid #555;
-  border-radius: 8px;
-}
-#quaylai[hidden] { display: none; }

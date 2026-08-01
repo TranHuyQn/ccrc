@@ -50,7 +50,7 @@ Hợp đồng API đổi:
 
 **Files:** `term/bin/ccrc-term.js`, `server/src/terminal-sessions.js`, test tương ứng
 
-Hai thẻ "Terminal đang mở · Huy's MacBook Pro" thì không phân biệt được. Daemon gửi thêm `label` — **tên thư mục** của pane (`#{pane_current_path}` → basename), giống cách hệ thống thông báo lấy tên dự án từ `cwd`.
+Hai thẻ "Terminal đang mở · may-dev" thì không phân biệt được. Daemon gửi thêm `label` — **tên thư mục** của pane (`#{pane_current_path}` → basename), giống cách hệ thống thông báo lấy tên dự án từ `cwd`.
 
 Hub lưu và trả lại nguyên văn. **Không** gửi đường dẫn đầy đủ — chỉ basename, cùng lý do với thông báo: không rò nội dung công việc.
 
