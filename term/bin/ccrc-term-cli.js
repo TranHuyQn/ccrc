@@ -423,6 +423,37 @@ async function cmdOn(rawName, explicitPane = null) {
 // The fix: stop asking "is the pane's foreground process claude?" and ask
 // "is a claude process running ANYWHERE under this pane?" — walk the process
 // tree rooted at #{pane_pid} looking for one.
+//
+// ROUND 2 (design-approved tightening). Subtree-only matching was itself
+// still too loose. Measured live on the user's own machine:
+//
+//   pane %2  pane_pid=16953  pane_tty=/dev/ttys004  (real, interactive claude)
+//   pane %0  pane_pid=5877   pane_tty=/dev/ttys001  (real, interactive claude)
+//   pid 64105  ppid 6002  tty ??       stat Ss  .../claude --output-format
+//     stream-json ... --permission-prompt-tool stdio ...
+//
+// pid 64105 is a HEADLESS claude, spawned by a background plugin worker —
+// carrying no `-p`/`--print` flag (so argv-sniffing would not have caught it
+// either), and with NO controlling terminal at all (`tty ??`, `stat Ss` — a
+// session leader created via something like setsid, exactly the shape
+// Node's own `spawn(..., { detached: true })` produces on POSIX). Wherever
+// in the process tree this landed, subtree-only matching would make that
+// pane look like it has an interactive Claude session running in it — and
+// `on --pane` deliberately does no second check (see deploy/ccrc's own
+// comment), so `candidates` is the ONLY gate before a phone is offered a
+// terminal onto that pane.
+//
+// The fix: a pane is a candidate only if a claude process in its subtree is
+// ALSO attached to the pane's OWN tty (#{pane_tty}, from tmux.js's
+// listPanes). The two real sessions above each had their claude's tty match
+// their own pane's tty exactly; the headless one's tty (`??`) can never
+// equal a real pane's tty string, so it is excluded by construction — no
+// special-case check for `?`/`??` is needed.
+//
+// Accepted trade-off, not a bug: a claude running inside a NESTED tmux
+// (attached to an inner pty, not the outer pane's) is invisible to this
+// check from the outer pane. Recovering that case was explicitly declined —
+// no fallback is added for it.
 
 // How long a single system-wide `ps -eo pid=,ppid=,command=` is given before
 // candidates gives up on it. This is not per-pid like PROBE_TIMEOUT_MS above
@@ -446,25 +477,40 @@ const PS_ALL_TIMEOUT_MS = 4000;
 // through `ccrc remote`'s output (or none, if every pane fails this way),
 // a false "yes" would offer to attach `/remote` to a pane that has nothing
 // to do with Claude Code.
+// `-ww` here too, for the same reason isOurDaemon uses it above (~line 189):
+// untruncated command lines regardless of terminal width. Measured harmless
+// without it today (no command here has been long enough to truncate), but
+// leaving the two `ps` calls in this file to disagree on width invites
+// someone reading one to assume the other behaves the same way.
 function listProcesses() {
   let out;
   try {
-    out = execFileSync('ps', ['-eo', 'pid=,ppid=,command='],
+    out = execFileSync('ps', ['-ww', '-eo', 'pid=,ppid=,tty=,command='],
       { encoding: 'utf8', timeout: PS_ALL_TIMEOUT_MS, maxBuffer: 8 << 20 });
   } catch {
     return null;
   }
   const kids = new Map();
   const cmdOf = new Map();
+  const ttyOf = new Map();
   for (const line of out.split('\n')) {
-    const m = /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(line);
+    const m = /^\s*(\d+)\s+(\d+)\s+(\S+)\s+(.*)$/.exec(line);
     if (!m) continue;
-    const [, pid, ppid, cmd] = m;
+    const [, pid, ppid, tty, cmd] = m;
+    // `ps` never lists the same pid twice — a real process table has each
+    // pid exactly once. A duplicate here means the output was malformed
+    // (a wrapped/corrupted line, say), and `cmdOf.set(pid, cmd)` used to
+    // overwrite blindly: a stray malformed line landing on a pid already
+    // seen would silently replace that pid's REAL command with garbage.
+    // Skip the duplicate entirely (command and parentage both) rather than
+    // let unreliable input clobber data already read correctly.
+    if (cmdOf.has(pid)) continue;
     if (!kids.has(ppid)) kids.set(ppid, []);
     kids.get(ppid).push(pid);
     cmdOf.set(pid, cmd);
+    ttyOf.set(pid, tty);
   }
-  return { kids, cmdOf };
+  return { kids, cmdOf, ttyOf };
 }
 
 // Does this `ps` command line look like Claude Code itself, as opposed to
@@ -483,16 +529,36 @@ function isClaudeCommand(cmd) {
   return first ? path.basename(first) === 'claude' : false;
 }
 
+// tmux's #{pane_tty} (used by listPanes) and `ps`'s `tty=` column spell the
+// same device two different ways: tmux prints `/dev/ttys004`, `ps` prints
+// `ttys004`. Normalised here, in exactly one place, by stripping the prefix
+// off tmux's spelling down to ps's — never the other way around, so there is
+// only ever one direction to get right. A `ps` tty of `??` (no controlling
+// terminal — the headless-claude shape this check exists to reject) has no
+// `/dev/` counterpart and so can never equal a normalised pane tty by
+// construction; no separate `?`/`??` special-case is needed.
+function stripDevPrefix(tty) {
+  return typeof tty === 'string' && tty.startsWith('/dev/') ? tty.slice('/dev/'.length) : tty;
+}
+
 // Walks DOWN the process tree from `rootPid` (a pane's #{pane_pid}) looking
-// for a process whose command passes isClaudeCommand. `rootPid` itself is
-// checked first — a pid is trivially a one-node subtree of itself, which is
-// what keeps this recognising the OTHER real shape (claude exec'd directly
-// as the pane's own foreground process, no wrapping shell in the way) and
-// not just the shell-parent shape described above. `seen` guards against a
-// pid appearing as its own descendant, which should never happen on a real
-// process tree but would infinite-loop this walk if it somehow did — cheap
-// insurance, not a scenario this project has hit.
-function subtreeHasClaude(rootPid, kids, cmdOf) {
+// for a process that is BOTH a claude command (isClaudeCommand) AND
+// attached to `paneTty` — the pane's own controlling terminal, already
+// normalised to ps's spelling via stripDevPrefix by the caller. `rootPid`
+// itself is checked first — a pid is trivially a one-node subtree of itself,
+// which is what keeps this recognising the OTHER real shape (claude exec'd
+// directly as the pane's own foreground process, no wrapping shell in the
+// way) and not just the shell-parent shape described above. `seen` guards
+// against a pid appearing as its own descendant, which should never happen
+// on a real process tree but would infinite-loop this walk if it somehow
+// did — cheap insurance, not a scenario this project has hit.
+//
+// The tty requirement is what rejects the headless-claude shape (see the
+// design comment above this section): a claude process elsewhere in the
+// subtree with no controlling terminal, or the WRONG one, passes
+// isClaudeCommand but fails this and is correctly not treated as this
+// pane's claude.
+function subtreeHasClaude(rootPid, paneTty, kids, cmdOf, ttyOf) {
   if (typeof rootPid !== 'string' || !rootPid) return false;
   const stack = [rootPid];
   const seen = new Set();
@@ -501,7 +567,7 @@ function subtreeHasClaude(rootPid, kids, cmdOf) {
     if (seen.has(pid)) continue;
     seen.add(pid);
     const cmd = cmdOf.get(pid);
-    if (cmd && isClaudeCommand(cmd)) return true;
+    if (cmd && isClaudeCommand(cmd) && ttyOf.get(pid) === paneTty) return true;
     for (const child of kids.get(pid) || []) stack.push(child);
   }
   return false;
@@ -533,9 +599,21 @@ async function cmdCandidates() {
   const panes = listPanes();
   if (!panes.length) return; // nothing to check — skip the system-wide ps call entirely
   const procs = listProcesses();
+  if (!procs) {
+    // Every pane below now fails the claude-subtree check for lack of data,
+    // and stdout ends up empty — exactly what an honestly idle machine also
+    // produces. Without this line, deploy/ccrc shows the SAME "Không có
+    // phiên Claude Code nào đang chạy trong tmux" message that this whole
+    // detection incident produced in the first place: a real failure
+    // reading as truth. This is diagnostic only, to stderr — stdout is left
+    // empty either way, so the fail-closed behaviour (offer nothing rather
+    // than guess) is unchanged.
+    process.stderr.write('[candidates] không đọc được bảng tiến trình (ps) — không thể xác định pane nào đang chạy claude.\n');
+  }
   const byPane = new Map();
   for (const p of panes) {
-    if (!procs || !subtreeHasClaude(p.panePid, procs.kids, procs.cmdOf)) continue;
+    const paneTty = stripDevPrefix(p.paneTty);
+    if (!procs || !subtreeHasClaude(p.panePid, paneTty, procs.kids, procs.cmdOf, procs.ttyOf)) continue;
     const isOurGroupName = sessionPartOfTarget(p.target).endsWith(GROUP_SESSION_SUFFIX);
     const existing = byPane.get(p.paneId);
     if (!existing || (existing.isOurGroupName && !isOurGroupName)) {

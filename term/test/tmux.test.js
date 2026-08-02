@@ -714,6 +714,15 @@ test('listPanes liệt kê pane vừa tạo, đúng target và cwd', () => {
     assert.equal(typeof row.cmd, 'string');
     assert.ok(row.cmd.length > 0, 'pane vừa tạo luôn đang chạy MỘT shell nào đó');
     assert.equal(typeof row.cwd, 'string');
+    // panePid/paneTty are what candidates' subtree+tty match actually reads
+    // (see tmux.js's own comment on listPanes) — asserted here so a
+    // positional-field regression in the `-F` format string (an inserted or
+    // reordered field shifting everything after it) is caught in THIS test,
+    // against a real tmux server, rather than showing up indirectly as a
+    // mysterious candidates failure in remote-cli.test.js.
+    assert.match(row.panePid, /^\d+$/, `panePid phải là một số pid, nhận được: ${row.panePid}`);
+    assert.equal(Number(row.panePid) > 0, true);
+    assert.match(row.paneTty, /^\/dev\//, `paneTty phải có tiền tố /dev/ (định dạng của tmux), nhận được: ${row.paneTty}`);
   });
 });
 

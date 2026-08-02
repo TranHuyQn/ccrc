@@ -105,11 +105,24 @@ export function paneCwd(paneId) {
 // pane" (see ccrc-term-cli.js's isClaudeCommand/subtreeHasClaude for the
 // full incident). `panePid` (#{pane_pid}) is what candidates actually needs:
 // the root of the pane's process tree, to walk downward from.
+//
+// `paneTty` (#{pane_tty}) was added after subtree-only matching was itself
+// found too loose: a `claude` process ANYWHERE in a pane's subtree includes
+// one that has nothing to do with that pane's own terminal — measured live,
+// a headless `claude` spawned by a background plugin worker, detached with
+// no controlling terminal of its own, living under an unrelated pane's
+// subtree purely by process-tree accident. `candidates` now also requires
+// the matching `claude` process's OWN tty (from `ps`) to equal the pane's
+// tty, and #{pane_tty} is what it compares against. tmux prints this WITH a
+// leading `/dev/` (`/dev/ttys004`); `ps` prints it WITHOUT (`ttys004`) — see
+// ccrc-term-cli.js's stripDevPrefix for where that's normalised (exactly
+// once, so the two spellings are never compared directly against each
+// other in more than one place).
 export function listPanes() {
   let out;
   try {
     out = tmux(['list-panes', '-a', '-F',
-      '#{pane_id}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}\t#{window_index}\t#{pane_index}\t#{session_name}']);
+      '#{pane_id}\t#{pane_pid}\t#{pane_tty}\t#{pane_current_command}\t#{pane_current_path}\t#{window_index}\t#{pane_index}\t#{session_name}']);
   } catch {
     return []; // no server running, or no panes
   }
@@ -117,10 +130,10 @@ export function listPanes() {
   for (const line of out.split('\n')) {
     if (!line) continue;
     const parts = line.split('\t');
-    if (parts.length < 7) continue;
-    const [paneId, panePid, cmd, cwd, windowIndex, paneIndex, ...nameParts] = parts;
+    if (parts.length < 8) continue;
+    const [paneId, panePid, paneTty, cmd, cwd, windowIndex, paneIndex, ...nameParts] = parts;
     const sessionName = nameParts.join('\t');
-    rows.push({ paneId, panePid, cmd, cwd, target: `${sessionName}:${windowIndex}.${paneIndex}` });
+    rows.push({ paneId, panePid, paneTty, cmd, cwd, target: `${sessionName}:${windowIndex}.${paneIndex}` });
   }
   return rows;
 }
