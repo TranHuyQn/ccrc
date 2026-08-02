@@ -29,8 +29,13 @@ REMOTE_CLI="{{CCRC_REPO}}/term/bin/ccrc-term-cli.js"
 cmd_remote() {
   [ -f "$REMOTE_CLI" ] || { say "✗ Không tìm thấy $REMOTE_CLI."; exit 1; }
   command -v node >/dev/null 2>&1 || { say "✗ Cần Node.js."; exit 1; }
+  command -v tmux >/dev/null 2>&1 || { say "✗ Cần tmux."; exit 1; }
 
-  list=$(node "$REMOTE_CLI" candidates) || { say "✗ Không lấy được danh sách phiên."; exit 1; }
+  if ! list=$(node "$REMOTE_CLI" candidates 2>&1); then
+    say "✗ Không lấy được danh sách phiên."
+    if [ -n "$list" ]; then say "$list"; fi
+    exit 1
+  fi
   if [ -z "$list" ]; then
     say "Không có phiên Claude Code nào đang chạy trong tmux."
     exit 1
@@ -38,6 +43,7 @@ cmd_remote() {
 
   count=$(printf '%s\n' "$list" | wc -l | tr -d ' ')
   say "Các phiên Claude Code đang chạy:"
+  i=0
   printf '%s\n' "$list" | while IFS="$(printf '\t')" read -r p on cwd target; do
     i=$((${i:-0} + 1))
     state="TẮT"
@@ -60,17 +66,23 @@ cmd_remote() {
   pane=$(printf '%s' "$chosen" | cut -f1)
   target=$(printf '%s' "$chosen" | cut -f4)
 
+  printf 'Tên hiện trên điện thoại (bỏ trống = ngẫu nhiên): ' > /dev/tty
+  IFS= read -r name < /dev/tty || name=""
+
   # Xác nhận lại NGAY trước khi bật — phòng pane đổi trạng thái giữa lúc liệt
-  # kê và lúc người dùng gõ xong số (Claude ở pane đó vừa thoát, chẳng hạn).
+  # kê và lúc người dùng gõ xong tên (Claude ở pane đó vừa thoát, chẳng hạn).
+  # Phải đứng NGAY TRƯỚC `on --pane`, sau bước hỏi tên: hỏi tên chờ bàn phím
+  # không giới hạn thời gian, nên xác nhận trước đó (như bản cũ) vẫn để hở
+  # đúng khoảng hở TOCTOU mà nó sinh ra để đóng — `on --pane` không tự kiểm
+  # lại `pane_current_command === 'claude'` (xem lý do trong
+  # docs/superpowers/specs/2026-08-02-kich-hoat-remote-tu-pane-khac-design.md),
+  # dựa hẳn vào việc caller xác nhận NGAY TRƯỚC khi gọi nó.
   still=""
   still=$(node "$REMOTE_CLI" candidates | cut -f1 | grep -Fx "$pane") || true
   if [ -z "$still" ]; then
     say "✗ Phiên $target không còn nữa. Chạy lại 'ccrc remote'."
     exit 1
   fi
-
-  printf 'Tên hiện trên điện thoại (bỏ trống = ngẫu nhiên): ' > /dev/tty
-  IFS= read -r name < /dev/tty || name=""
 
   if [ -n "$name" ]; then
     node "$REMOTE_CLI" on --pane "$pane" "$name"
