@@ -13,7 +13,7 @@ import { spawn, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { readConfig } from '../src/config.js';
 import { requestedPortLabel } from '../src/env.js';
-import { currentPane, paneAlive } from '../src/tmux.js';
+import { currentPane, paneAlive, listPanes } from '../src/tmux.js';
 import { cleanSessionName } from '../src/session-name.js';
 import { randomNonce, commitMatches, shortAuthString } from '../src/pairing.js';
 import { addDevice, listDevices, removeDevice } from '../src/devices.js';
@@ -386,6 +386,18 @@ async function cmdOn(rawName) {
   if (result.name) say(`  Tên hiện trên web: ${result.name}`);
   if (result.url) say(`  URL: ${result.url}`);
   say('⚠ Máy ngủ là mất kết nối. Hãy đặt máy không ngủ trước khi rời đi.');
+}
+
+// Machine-readable listing for `ccrc remote` (deploy/ccrc): every pane on
+// this tmux server currently running claude, one per line, tab-separated
+// `pane\ton\tcwd\ttarget` — target LAST because it embeds the session name,
+// the one field (per term/src/tmux.js's own convention) that could in
+// principle contain a tab.
+async function cmdCandidates() {
+  const rows = listPanes()
+    .filter((p) => p.cmd === 'claude')
+    .map((p) => `${p.paneId}\t${daemonInfo(p.paneId) ? '1' : '0'}\t${p.cwd}\t${p.target}`);
+  if (rows.length) say(rows.join('\n'));
 }
 
 async function cmdOff() {
@@ -807,6 +819,7 @@ const nameArg = process.argv.slice(3).join(' ');
 const run = mode === 'on' ? () => cmdOn(nameArg)
   : mode === 'off' ? cmdOff
   : mode === 'off-all' ? cmdOffAll
+  : mode === 'candidates' ? cmdCandidates
   // `pair xac-nhan <số>` must be checked BEFORE the bare `pair` branch below
   // — both share mode === 'pair', and only argv[3] tells them apart.
   : mode === 'pair' && process.argv[3] === 'xac-nhan'

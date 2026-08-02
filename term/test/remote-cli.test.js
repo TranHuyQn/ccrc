@@ -152,6 +152,31 @@ function newTmuxPane(name) {
   };
 }
 
+// A tmux pane whose #{pane_current_command} is genuinely "claude" — needed
+// because `candidates` filters on exactly that. A shebang script named
+// "claude" reports as its INTERPRETER (sh), not as "claude" (verified by
+// hand); copying a real node binary to a file named `claude` and running
+// THAT is what actually works, because pane_current_command reflects the
+// real executable that got exec'd, not argv[0] or the invoking path.
+function newClaudePane(name) {
+  const T = tmuxBin();
+  const sess = `${name}-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccrc-fakeclaude-'));
+  const fakeClaude = path.join(dir, 'claude');
+  fs.copyFileSync(process.execPath, fakeClaude);
+  fs.chmodSync(fakeClaude, 0o755);
+  execFileSync(T, ['new-session', '-d', '-s', sess, '-x', '80', '-y', '24',
+    `${fakeClaude} -e "setTimeout(()=>{},30000)"`]);
+  const pane = execFileSync(T, ['display-message', '-p', '-t', sess, '#{pane_id}'], { encoding: 'utf8' }).trim();
+  return {
+    sess, pane,
+    kill() {
+      try { execFileSync(T, ['kill-session', '-t', sess]); } catch { /* already gone */ }
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }
+    },
+  };
+}
+
 test('chạy ngoài tmux: báo lỗi rõ, KHÔNG bật gì', async () => {
   const home = tmpHome('CCRC_HUB_URL=http://127.0.0.1:9\nCCRC_TOKEN=t\nCCRC_MACHINE_NAME=m\n');
   const r = await run(['on'], { HOME: home, TMUX_PANE: '', TMUX: '' });
@@ -904,4 +929,96 @@ test('off-all khi không có ~/.ccrc: không lỗi', async () => {
   const r = await run(['off-all'], { HOME: home });
   assert.equal(r.code, 0);
   assert.match(r.stdout, /Không có phiên remote nào/);
+});
+
+// --- `candidates`: machine-readable pane list for `ccrc remote` -----------
+
+function parseCandidates(stdout) {
+  return stdout.split('\n').filter(Boolean).map((line) => {
+    const [pane, on, cwd, target] = line.split('\t');
+    return { pane, on, cwd, target };
+  });
+}
+
+test('candidates: không có pane nào chạy claude → không in dòng nào, exit 0', async () => {
+  const home = tmpHome('CCRC_HUB_URL=http://127.0.0.1:9\nCCRC_TOKEN=t\nCCRC_MACHINE_NAME=m\n');
+  const tp = newTmuxPane('ccrc-cli-cand-none'); // ordinary shell pane, NOT claude
+  try {
+    const r = await run(['candidates'], { HOME: home });
+    assert.equal(r.code, 0);
+    assert.equal(r.stdout.trim(), '');
+  } finally {
+    tp.kill();
+  }
+});
+
+test('candidates: chỉ liệt kê pane chạy claude, bỏ qua shell thường', async () => {
+  const home = tmpHome('CCRC_HUB_URL=http://127.0.0.1:9\nCCRC_TOKEN=t\nCCRC_MACHINE_NAME=m\n');
+  const shellPane = newTmuxPane('ccrc-cli-cand-shell');
+  const claudePane = newClaudePane('ccrc-cli-cand-claude');
+  try {
+    await sleep(300); // để tiến trình fake claude thực sự lên #{pane_current_command}
+    const r = await run(['candidates'], { HOME: home });
+    assert.equal(r.code, 0);
+    const rows = parseCandidates(r.stdout);
+    assert.ok(rows.find((row) => row.pane === claudePane.pane), 'pane chạy claude phải xuất hiện');
+    assert.ok(!rows.find((row) => row.pane === shellPane.pane), 'pane shell thường không được xuất hiện');
+  } finally {
+    shellPane.kill();
+    claudePane.kill();
+  }
+});
+
+test('candidates: đúng cwd và target', async () => {
+  const home = tmpHome('CCRC_HUB_URL=http://127.0.0.1:9\nCCRC_TOKEN=t\nCCRC_MACHINE_NAME=m\n');
+  const claudePane = newClaudePane('ccrc-cli-cand-fields');
+  try {
+    await sleep(300);
+    const r = await run(['candidates'], { HOME: home });
+    const row = parseCandidates(r.stdout).find((x) => x.pane === claudePane.pane);
+    assert.ok(row);
+    // Window index is NOT assumed to be 0 — it depends on this tmux server's
+    // own `base-index` (a global, user-set option outside this project's
+    // control; e.g. `set-option -g base-index 1` in ~/.tmux.conf shifts a
+    // fresh session's first window to 1). tmux.test.js's own listPanes test
+    // sidesteps the same pitfall by reading the value back from tmux rather
+    // than hardcoding it. Pane index is asserted as literally '0' because
+    // pane-base-index is not something this project's own convention treats
+    // as variable (see the "phiên mới luôn là pane 0" comment there).
+    const winIndex = execFileSync(tmuxBin(), ['display-message', '-p', '-t', claudePane.pane, '#{window_index}'], { encoding: 'utf8' }).trim();
+    assert.equal(row.target, `${claudePane.sess}:${winIndex}.0`);
+    assert.equal(row.cwd, process.cwd());
+  } finally {
+    claudePane.kill();
+  }
+});
+
+test('candidates: cờ on phản ánh đúng có/không có daemon (pidfile) cho pane đó', async () => {
+  const home = tmpHome('CCRC_HUB_URL=http://127.0.0.1:9\nCCRC_TOKEN=t\nCCRC_MACHINE_NAME=m\n');
+  const claudePane = newClaudePane('ccrc-cli-cand-on');
+  try {
+    await sleep(300);
+    const before = parseCandidates((await run(['candidates'], { HOME: home })).stdout)
+      .find((x) => x.pane === claudePane.pane);
+    assert.equal(before.on, '0', 'chưa bật remote thì cờ on phải là 0');
+
+    // Bật remote thật cho pane này, rồi kiểm tra candidates thấy cờ on = 1.
+    const pidfile = pidFilePath(home, claudePane.pane);
+    try {
+      await run(['on'], {
+        HOME: home, TMUX_PANE: claudePane.pane, CCRC_TERM_PORT: '0',
+        CCRC_TERM_BIND: '127.0.0.1', CCRC_TERM_NO_HUB: '1',
+      });
+      const after = parseCandidates((await run(['candidates'], { HOME: home })).stdout)
+        .find((x) => x.pane === claudePane.pane);
+      assert.equal(after.on, '1', 'đã bật remote thì cờ on phải là 1');
+    } finally {
+      try {
+        const started = JSON.parse(fs.readFileSync(pidfile, 'utf8')).pid;
+        if (started) process.kill(started, 'SIGKILL');
+      } catch { /* nothing left to clean up */ }
+    }
+  } finally {
+    claudePane.kill();
+  }
 });
