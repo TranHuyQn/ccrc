@@ -15,6 +15,75 @@ say() { printf '%s\n' "$*" >&2; }
 CLAUDE_BIN=$(command -v claude 2>/dev/null || true)
 [ -n "$CLAUDE_BIN" ] || { say "✗ Không tìm thấy lệnh 'claude'. Cài Claude Code rồi thử lại."; exit 127; }
 
+# Đường dẫn tới CLI của /remote, do lệnh cài điền vào — dùng ở cả subcommand
+# `ccrc remote` ngay dưới đây VÀ ở nhánh dọn dẹp "đã ở trong tmux" bên dưới.
+REMOTE_CLI="{{CCRC_REPO}}/term/bin/ccrc-term-cli.js"
+
+# --- `ccrc remote`: bật /remote cho MỘT PANE KHÁC ---------------------------
+#
+# `/remote on` gõ bên trong Claude Code phải đợi Claude rảnh mới được xử lý —
+# giới hạn cứng của bản thân Claude Code, không sửa được (xem spec:
+# docs/superpowers/specs/2026-08-02-kich-hoat-remote-tu-pane-khac-design.md).
+# Đường này không đi qua Claude Code chút nào: liệt kê mọi pane đang chạy
+# claude, người dùng chọn một pane bằng số, rồi bật thẳng remote cho pane đó.
+cmd_remote() {
+  [ -f "$REMOTE_CLI" ] || { say "✗ Không tìm thấy $REMOTE_CLI."; exit 1; }
+  command -v node >/dev/null 2>&1 || { say "✗ Cần Node.js."; exit 1; }
+
+  list=$(node "$REMOTE_CLI" candidates) || { say "✗ Không lấy được danh sách phiên."; exit 1; }
+  if [ -z "$list" ]; then
+    say "Không có phiên Claude Code nào đang chạy trong tmux."
+    exit 1
+  fi
+
+  count=$(printf '%s\n' "$list" | wc -l | tr -d ' ')
+  say "Các phiên Claude Code đang chạy:"
+  printf '%s\n' "$list" | while IFS="$(printf '\t')" read -r p on cwd target; do
+    i=$((${i:-0} + 1))
+    state="TẮT"
+    [ "$on" = "1" ] && state="BẬT"
+    say "  [$i] $target  ($state)  $cwd"
+  done
+
+  { [ -r /dev/tty ] && : < /dev/tty; } 2>/dev/null || { say "✗ Cần một terminal thật để chọn."; exit 1; }
+  printf 'Nhập số: ' > /dev/tty
+  IFS= read -r choice < /dev/tty || choice=""
+  case "$choice" in
+    ''|*[!0-9]*) say "✗ Số không hợp lệ."; exit 1 ;;
+  esac
+  if [ "$choice" -lt 1 ] || [ "$choice" -gt "$count" ]; then
+    say "✗ Số ngoài khoảng 1-$count."
+    exit 1
+  fi
+
+  chosen=$(printf '%s\n' "$list" | sed -n "${choice}p")
+  pane=$(printf '%s' "$chosen" | cut -f1)
+  target=$(printf '%s' "$chosen" | cut -f4)
+
+  # Xác nhận lại NGAY trước khi bật — phòng pane đổi trạng thái giữa lúc liệt
+  # kê và lúc người dùng gõ xong số (Claude ở pane đó vừa thoát, chẳng hạn).
+  still=""
+  still=$(node "$REMOTE_CLI" candidates | cut -f1 | grep -Fx "$pane") || true
+  if [ -z "$still" ]; then
+    say "✗ Phiên $target không còn nữa. Chạy lại 'ccrc remote'."
+    exit 1
+  fi
+
+  printf 'Tên hiện trên điện thoại (bỏ trống = ngẫu nhiên): ' > /dev/tty
+  IFS= read -r name < /dev/tty || name=""
+
+  if [ -n "$name" ]; then
+    node "$REMOTE_CLI" on --pane "$pane" "$name"
+  else
+    node "$REMOTE_CLI" on --pane "$pane"
+  fi
+}
+
+if [ "${1:-}" = "remote" ]; then
+  cmd_remote
+  exit $?
+fi
+
 # --- những trường hợp KHÔNG được bọc trong tmux -----------------------------
 #
 # Mục tiêu là "giống hệt claude". Ba trường hợp dưới đây mà bọc vào tmux thì
@@ -22,10 +91,6 @@ CLAUDE_BIN=$(command -v claude 2>/dev/null || true)
 # người gọi.
 
 run_plain() { exec "$CLAUDE_BIN" "$@"; }
-
-# Đường dẫn tới CLI của /remote, do lệnh cài điền vào. Chỉ dùng cho nhánh
-# "đã ở trong tmux" ngay dưới đây.
-REMOTE_CLI="{{CCRC_REPO}}/term/bin/ccrc-term-cli.js"
 
 # Đã ở trong tmux rồi: chạy thẳng trong pane này, không lồng thêm phiên —
 # `/remote` vốn đã dùng được.
