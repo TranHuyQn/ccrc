@@ -336,11 +336,15 @@ function waitForDaemonStart(child) {
   });
 }
 
-async function cmdOn(rawName) {
-  const pane = currentPane();
+async function cmdOn(rawName, explicitPane = null) {
+  const pane = explicitPane || currentPane();
   if (!pane || !paneAlive(pane)) {
-    say('✗ Không chạy trong tmux — /remote cần một phiên tmux để nối vào.');
-    say('  Khởi động lại Claude Code bên trong tmux rồi thử lại.');
+    if (explicitPane) {
+      say(`✗ Pane ${explicitPane} không tồn tại hoặc đã đóng.`);
+    } else {
+      say('✗ Không chạy trong tmux — /remote cần một phiên tmux để nối vào.');
+      say('  Khởi động lại Claude Code bên trong tmux rồi thử lại.');
+    }
     process.exit(1);
   }
   const pidfile = pidFilePath(pane);
@@ -813,10 +817,24 @@ function cmdUnpair(arg) {
   return 0;
 }
 
-// Everything after `on` is the session name, joined back together so
-// `/remote on du an moi` works without quoting.
-const nameArg = process.argv.slice(3).join(' ');
-const run = mode === 'on' ? () => cmdOn(nameArg)
+// `on --pane <id> [name...]` targets an explicit pane instead of the one
+// this process is running in — used by `ccrc remote` (deploy/ccrc) to start
+// a daemon for a pane that is NOT the one invoking this CLI. See
+// docs/superpowers/specs/2026-08-02-kich-hoat-remote-tu-pane-khac-design.md.
+// Everything else after `on` is the session name, joined back together so
+// `/remote on du an moi` still works without quoting.
+let onPane = null;
+let onNameTokens = process.argv.slice(3);
+if (mode === 'on' && onNameTokens[0] === '--pane') {
+  onPane = onNameTokens[1] || null;
+  if (!onPane) {
+    say('✗ --pane cần kèm một pane id.');
+    process.exit(1);
+  }
+  onNameTokens = onNameTokens.slice(2);
+}
+const nameArg = onNameTokens.join(' ');
+const run = mode === 'on' ? () => cmdOn(nameArg, onPane)
   : mode === 'off' ? cmdOff
   : mode === 'off-all' ? cmdOffAll
   : mode === 'candidates' ? cmdCandidates

@@ -810,6 +810,77 @@ test('on trong pane đã có daemon: báo đã bật sẵn, KHÔNG mở thêm', 
   }
 });
 
+// --- `on --pane <id>`: target an explicit pane, not the inherited env ------
+
+test('on --pane: bật đúng pane được chỉ định, KHÔNG dùng TMUX_PANE kế thừa', async () => {
+  const target = newTmuxPane('ccrc-cli-explicit-target');
+  const caller = newTmuxPane('ccrc-cli-explicit-caller'); // pane "gọi lệnh" — khác pane đích
+  const home = tmpHome('CCRC_HUB_URL=http://127.0.0.1:9\nCCRC_TOKEN=t\nCCRC_MACHINE_NAME=m\n');
+  const pidfileTarget = pidFilePath(home, target.pane);
+  const pidfileCaller = pidFilePath(home, caller.pane);
+  try {
+    const r = await run(['on', '--pane', target.pane], {
+      HOME: home, TMUX_PANE: caller.pane, CCRC_TERM_PORT: '0',
+      CCRC_TERM_BIND: '127.0.0.1', CCRC_TERM_NO_HUB: '1',
+    });
+    assert.match(r.stdout, /ĐÃ BẬT/);
+    assert.equal(fs.existsSync(pidfileTarget), true, 'phải bật daemon cho PANE ĐÍCH (--pane)');
+    assert.equal(fs.existsSync(pidfileCaller), false, 'KHÔNG được bật cho pane đang gọi lệnh (TMUX_PANE kế thừa)');
+  } finally {
+    try {
+      const started = JSON.parse(fs.readFileSync(pidfileTarget, 'utf8')).pid;
+      if (started) process.kill(started, 'SIGKILL');
+    } catch { /* nothing left to clean up */ }
+    target.kill();
+    caller.kill();
+  }
+});
+
+test('on --pane: có thể kèm tên phiên, giống hệt on thường', async () => {
+  const target = newTmuxPane('ccrc-cli-explicit-name');
+  const home = tmpHome('CCRC_HUB_URL=http://127.0.0.1:9\nCCRC_TOKEN=t\nCCRC_MACHINE_NAME=m\n');
+  const pidfile = pidFilePath(home, target.pane);
+  try {
+    const r = await run(['on', '--pane', target.pane, 'du', 'an', 'moi'], {
+      HOME: home, TMUX_PANE: '', TMUX: '', CCRC_TERM_PORT: '0',
+      CCRC_TERM_BIND: '127.0.0.1', CCRC_TERM_NO_HUB: '1',
+    });
+    assert.match(r.stdout, /Tên hiện trên web: du an moi/);
+  } finally {
+    try {
+      const started = JSON.parse(fs.readFileSync(pidfile, 'utf8')).pid;
+      if (started) process.kill(started, 'SIGKILL');
+    } catch { /* nothing left to clean up */ }
+    target.kill();
+  }
+});
+
+test('on --pane trỏ vào pane đã chết: báo lỗi rõ, không bật gì', async () => {
+  const home = tmpHome('CCRC_HUB_URL=http://127.0.0.1:9\nCCRC_TOKEN=t\nCCRC_MACHINE_NAME=m\n');
+  const r = await run(['on', '--pane', '%does-not-exist'], { HOME: home });
+  assert.notEqual(r.code, 0);
+  assert.match(r.stdout + r.stderr, /%does-not-exist/);
+});
+
+test('on thường (không --pane) vẫn dùng TMUX_PANE như cũ — không bị đổi hành vi', async () => {
+  const tp = newTmuxPane('ccrc-cli-still-normal');
+  const home = tmpHome('CCRC_HUB_URL=http://127.0.0.1:9\nCCRC_TOKEN=t\nCCRC_MACHINE_NAME=m\n');
+  const pidfile = pidFilePath(home, tp.pane);
+  try {
+    const r = await run(['on'], {
+      HOME: home, TMUX_PANE: tp.pane, CCRC_TERM_PORT: '0',
+      CCRC_TERM_BIND: '127.0.0.1', CCRC_TERM_NO_HUB: '1',
+    });
+    assert.match(r.stdout, /ĐÃ BẬT/);
+  } finally {
+    try {
+      const started = JSON.parse(fs.readFileSync(pidfile, 'utf8')).pid;
+      if (started) process.kill(started, 'SIGKILL');
+    } catch { /* nothing left to clean up */ }
+    tp.kill();
+  }
+});
+
 test('/remote không tham số: liệt kê MỌI phiên từ hub, đánh dấu đúng phiên hiện tại', async () => {
   const tp = newTmuxPane('ccrc-cli-list');
   // hubUrl is a placeholder here — `on` itself never calls the hub
