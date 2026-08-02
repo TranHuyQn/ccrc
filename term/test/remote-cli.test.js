@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFile, execFileSync, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { tmuxBin } from '../src/tmux.js';
+import { tmuxBin, GROUP_SESSION_SUFFIX } from '../src/tmux.js';
 
 const CLI = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'ccrc-term-cli.js');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -1088,6 +1088,38 @@ test('candidates: cờ on phản ánh đúng có/không có daemon (pidfile) cho
         const started = JSON.parse(fs.readFileSync(pidfile, 'utf8')).pid;
         if (started) process.kill(started, 'SIGKILL');
       } catch { /* nothing left to clean up */ }
+    }
+  } finally {
+    claudePane.kill();
+  }
+});
+
+// `tmux list-panes -a` lists a pane once per SESSION that references it. The
+// daemon creates a GROUPED session onto a real claude pane while a browser
+// is attached (createGroupSession/claimGroupName, tmux.js), and a SIGKILLed
+// daemon can leave one behind — so the same pane can show up under both its
+// real session name and the daemon's internal `-ccrc-web` name. Without
+// dedup that pane would print twice, looking like a second Claude session.
+test('candidates: pane trong session được nhóm (grouped) chỉ hiện MỘT dòng, mang tên session thật', async () => {
+  const home = tmpHome('CCRC_HUB_URL=http://127.0.0.1:9\nCCRC_TOKEN=t\nCCRC_MACHINE_NAME=m\n');
+  const claudePane = newClaudePane('ccrc-cli-cand-grouped');
+  const T = tmuxBin();
+  const groupName = `${claudePane.sess}${GROUP_SESSION_SUFFIX}`;
+  try {
+    await sleep(300);
+    // A plain grouped session is enough to reproduce the duplicate row — the
+    // full marker-stamping createGroupSession() does is not needed here,
+    // only the shape `tmux list-panes -a` produces.
+    execFileSync(T, ['new-session', '-d', '-t', `=${claudePane.sess}`, '-s', groupName]);
+    try {
+      const r = await run(['candidates'], { HOME: home });
+      assert.equal(r.code, 0);
+      const rows = parseCandidates(r.stdout).filter((row) => row.pane === claudePane.pane);
+      assert.equal(rows.length, 1, 'một pane thật chỉ được xuất hiện đúng một dòng dù bị nhiều session tham chiếu');
+      assert.ok(rows[0].target.startsWith(`${claudePane.sess}:`),
+        `target phải mang tên session THẬT (${claudePane.sess}), không phải tên nhóm nội bộ: ${rows[0].target}`);
+    } finally {
+      try { execFileSync(T, ['kill-session', '-t', `=${groupName}`]); } catch { /* already gone */ }
     }
   } finally {
     claudePane.kill();

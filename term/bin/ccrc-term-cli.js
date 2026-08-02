@@ -13,7 +13,7 @@ import { spawn, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { readConfig } from '../src/config.js';
 import { requestedPortLabel } from '../src/env.js';
-import { currentPane, paneAlive, listPanes } from '../src/tmux.js';
+import { currentPane, paneAlive, listPanes, GROUP_SESSION_SUFFIX } from '../src/tmux.js';
 import { cleanSessionName } from '../src/session-name.js';
 import { randomNonce, commitMatches, shortAuthString } from '../src/pairing.js';
 import { addDevice, listDevices, removeDevice } from '../src/devices.js';
@@ -394,13 +394,38 @@ async function cmdOn(rawName, explicitPane = null) {
 
 // Machine-readable listing for `ccrc remote` (deploy/ccrc): every pane on
 // this tmux server currently running claude, one per line, tab-separated
-// `pane\ton\tcwd\ttarget` — target LAST because it embeds the session name,
-// the one field (per term/src/tmux.js's own convention) that could in
-// principle contain a tab.
+// `pane\ton\tcwd\ttarget` — target LAST because it embeds the session name;
+// only one field in a tmux -F format string can be free-form, and this is
+// the one term/src/tmux.js chose for that slot (see listPanes' own comment).
+//
+// Deduped by paneId. `tmux list-panes -a` lists a pane once per SESSION that
+// references it, and the daemon itself creates a grouped session
+// (`<base>` + GROUP_SESSION_SUFFIX, see createGroupSession/claimGroupName in
+// tmux.js) while a browser client is attached — a SIGKILLed daemon can also
+// leave one behind. Both rows then pass the `cmd === 'claude'` filter and
+// share the SAME paneId, so without this a live Claude session printed
+// twice: once under its real session name, once under the daemon's internal
+// `-ccrc-web` plumbing name, looking like a second session. Not a safety
+// break either way — same paneId, so any row targets the same real pane —
+// but the real session name is what a human should see, so the row whose
+// session does NOT end in GROUP_SESSION_SUFFIX wins when both exist.
+function sessionPartOfTarget(target) {
+  const m = /^(.*):\d+\.\d+$/.exec(target);
+  return m ? m[1] : target;
+}
+
 async function cmdCandidates() {
-  const rows = listPanes()
-    .filter((p) => p.cmd === 'claude')
-    .map((p) => `${p.paneId}\t${daemonInfo(p.paneId) ? '1' : '0'}\t${p.cwd}\t${p.target}`);
+  const byPane = new Map();
+  for (const p of listPanes()) {
+    if (p.cmd !== 'claude') continue;
+    const isOurGroupName = sessionPartOfTarget(p.target).endsWith(GROUP_SESSION_SUFFIX);
+    const existing = byPane.get(p.paneId);
+    if (!existing || (existing.isOurGroupName && !isOurGroupName)) {
+      byPane.set(p.paneId, { p, isOurGroupName });
+    }
+  }
+  const rows = [...byPane.values()]
+    .map(({ p }) => `${p.paneId}\t${daemonInfo(p.paneId) ? '1' : '0'}\t${p.cwd}\t${p.target}`);
   if (rows.length) say(rows.join('\n'));
 }
 
