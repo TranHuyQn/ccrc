@@ -86,6 +86,34 @@ export function paneCwd(paneId) {
   }
 }
 
+// Every pane on this tmux server, for `candidates` (ccrc-term-cli.js) to
+// filter down to the ones running claude and offer as a pick list.
+//
+// One tmux call, same shape as listSessions() below for the same reason:
+// #{session_name} is the one field here that could in principle contain a
+// tab (see listSessions' own comment), so it is read as its own trailing
+// field and only combined into `target` AFTER the split — never joined into
+// the format string before we control where the split happens.
+export function listPanes() {
+  let out;
+  try {
+    out = tmux(['list-panes', '-a', '-F',
+      '#{pane_id}\t#{pane_current_command}\t#{pane_current_path}\t#{window_index}\t#{pane_index}\t#{session_name}']);
+  } catch {
+    return []; // no server running, or no panes
+  }
+  const rows = [];
+  for (const line of out.split('\n')) {
+    if (!line) continue;
+    const parts = line.split('\t');
+    if (parts.length < 6) continue;
+    const [paneId, cmd, cwd, windowIndex, paneIndex, ...nameParts] = parts;
+    const sessionName = nameParts.join('\t');
+    rows.push({ paneId, cmd, cwd, target: `${sessionName}:${windowIndex}.${paneIndex}` });
+  }
+  return rows;
+}
+
 // Does the application in this pane want mouse events?
 //
 // This is the fork in how a scroll gesture must be handled, and getting it

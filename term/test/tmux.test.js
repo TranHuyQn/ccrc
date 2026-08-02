@@ -8,7 +8,7 @@ import {
   tmuxBin, currentPane, paneAlive, paneSession, capturePane, snapshotPane,
   createGroupSession, killGroupSession, hasSession,
   isOurGroupSession, claimGroupName, reclaimPaneSession, GROUP_MARKER_OPTION,
-  paneCwd,
+  paneCwd, listPanes,
   makeRunId, isReclaimableMarker,
 } from '../src/tmux.js';
 
@@ -696,4 +696,37 @@ test('paneCwd trả về chuỗi rỗng, KHÔNG ném lỗi, khi pane đã chết
 test('paneCwd trả về chuỗi rỗng với id bịa, không ném lỗi', () => {
   assert.doesNotThrow(() => paneCwd('%999999'));
   assert.equal(paneCwd('%999999'), '');
+});
+
+// --- listPanes: mọi pane trên server ----------------------------------------
+
+test('listPanes liệt kê pane vừa tạo, đúng target và cwd', () => {
+  withSession((s) => {
+    const pane = tmux('display-message', '-p', '-t', s, '#{pane_id}');
+    const rows = listPanes();
+    const row = rows.find((r) => r.paneId === pane);
+    assert.ok(row, 'phải thấy pane vừa tạo trong danh sách toàn bộ pane trên server');
+    // Verify target format matches session name, and pane index is 0 (default for new session)
+    assert.ok(row.target.startsWith(`${s}:`), `target phải bắt đầu bằng tên phiên`);
+    const [, indexPart] = row.target.split(':');
+    const [, paneIndex] = indexPart.split('.');
+    assert.equal(paneIndex, '0', 'phiên mới luôn là pane 0');
+    assert.equal(typeof row.cmd, 'string');
+    assert.ok(row.cmd.length > 0, 'pane vừa tạo luôn đang chạy MỘT shell nào đó');
+    assert.equal(typeof row.cwd, 'string');
+  });
+});
+
+test('listPanes: mỗi entry đúng field, không lẫn pane của session khác', () => {
+  withSession((s1) => {
+    withSession((s2) => {
+      const p1 = tmux('display-message', '-p', '-t', s1, '#{pane_id}');
+      const p2 = tmux('display-message', '-p', '-t', s2, '#{pane_id}');
+      const rows = listPanes();
+      const r1 = rows.find((r) => r.paneId === p1);
+      const r2 = rows.find((r) => r.paneId === p2);
+      assert.ok(r1 && r2, 'cả hai pane phải xuất hiện');
+      assert.notEqual(r1.target, r2.target, 'hai session khác nhau phải cho target khác nhau');
+    });
+  });
 });
