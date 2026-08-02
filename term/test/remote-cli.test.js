@@ -152,16 +152,76 @@ function newTmuxPane(name) {
   };
 }
 
-// A tmux pane whose #{pane_current_command} is genuinely "claude" — needed
-// because `candidates` filters on exactly that. A shebang script named
-// "claude" reports as its INTERPRETER (sh), not as "claude" (verified by
-// hand); copying a real node binary to a file named `claude` and running
-// THAT is what actually works, because pane_current_command reflects the
-// real executable that got exec'd, not argv[0] or the invoking path.
+// A tmux pane running Claude the way it ACTUALLY runs in production —
+// deploy/ccrc, not a bare `exec`.
+//
+// This fixture used to build a pane whose #{pane_current_command} was
+// literally "claude" (copy a real node binary to a file named `claude`, give
+// tmux that path as the WHOLE new-session command, nothing after it). That
+// shape is real — `tmux new-session <binary>` with nothing trailing DOES let
+// the pane's shell tail-call `exec` straight into the binary — but it is not
+// the shape any real launch produces. deploy/ccrc's actual pane command is
+// `'<claude path>' args...; printf %s $? > <rcfile>` (see deploy/ccrc's own
+// RC_FILE comment): the trailing `; printf` captures Claude's exit code as
+// ccrc's own and is deliberately never removed. BECAUSE something has to run
+// after Claude exits, the shell cannot exec-optimize into it — it must fork
+// Claude as a CHILD and stay alive itself to run the printf. Measured live on
+// the user's own machine: both of their real /remote panes report
+// #{pane_current_command} = "zsh", with Claude one level down as zsh's child
+// (pane_pid 16953 = `zsh -c '.../claude'; printf ...`, 16954 = the real
+// claude). `candidates` filtering on `p.cmd === 'claude'` matched the OLD
+// fixture's shape and matched NEITHER of those real panes — `ccrc remote`
+// printed "Không có phiên Claude Code nào đang chạy trong tmux" against a
+// machine that had two. The old fixture was answering an easier question
+// (is the pane's foreground process named claude?) than production actually
+// asks (is claude running ANYWHERE under this pane?), and every `candidates`
+// test passed anyway because the fixture and the assumption matched each
+// other, not reality.
+//
+// The fix here is the same trick deploy/ccrc uses, for the same reason: give
+// the shell something to do AFTER the claude process so it cannot tail-call
+// into it. `; true` is the minimal version of `; printf ...`. Verified live
+// (see fix-claude-detection-report.md) to reproduce pane_current_command=zsh
+// with the fake claude binary as the pane_pid's child, matching production.
+//
+// A shebang script named "claude" reports as its INTERPRETER (sh), not as
+// "claude" (verified by hand); copying a real node binary to a file named
+// `claude` and running THAT is what actually makes ps see a command whose
+// first token's basename is "claude" — see isClaudeCommand in
+// ccrc-term-cli.js for why that basename match is what candidates now looks
+// for.
 function newClaudePane(name) {
   const T = tmuxBin();
   const sess = `${name}-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccrc-fakeclaude-'));
+  const fakeClaude = path.join(dir, 'claude');
+  fs.copyFileSync(process.execPath, fakeClaude);
+  fs.chmodSync(fakeClaude, 0o755);
+  execFileSync(T, ['new-session', '-d', '-s', sess, '-x', '80', '-y', '24',
+    `${fakeClaude} -e "setTimeout(()=>{},30000)"; true`]);
+  const pane = execFileSync(T, ['display-message', '-p', '-t', sess, '#{pane_id}'], { encoding: 'utf8' }).trim();
+  return {
+    sess, pane,
+    kill() {
+      try { execFileSync(T, ['kill-session', '-t', sess]); } catch { /* already gone */ }
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }
+    },
+  };
+}
+
+// The OTHER real shape (A): claude as the pane's OWN foreground process,
+// with nothing trailing to stop the shell's tail-call `exec` — rare in
+// practice (needs something like `tmux new-session claude` with no wrapper
+// at all), but it does happen, and the subtree walk must keep recognising it
+// — a pid is trivially a one-node subtree of itself. Kept SEPARATE from
+// newClaudePane rather than folded into it, so a regression that breaks
+// shape-A detection while shape-B stays fine shows up as its own failing
+// test instead of being silently absorbed into a fixture that only ever
+// exercises shape B.
+function newClaudePaneForeground(name) {
+  const T = tmuxBin();
+  const sess = `${name}-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccrc-fakeclaude-fg-'));
   const fakeClaude = path.join(dir, 'claude');
   fs.copyFileSync(process.execPath, fakeClaude);
   fs.chmodSync(fakeClaude, 0o755);
@@ -1011,13 +1071,26 @@ function parseCandidates(stdout) {
   });
 }
 
-test('candidates: không có pane nào chạy claude → không in dòng nào, exit 0', async () => {
+// `candidates` lists panes across the WHOLE tmux server (tmux has no notion
+// of "this test's panes" — see listPanes' own comment), not just the ones
+// this test creates. Asserting the entire output is empty used to work by
+// accident: the OLD (broken) `p.cmd === 'claude'` filter matched none of a
+// real Claude Code session's panes either (that was the bug this whole fix
+// is for), so an otherwise-idle dev machine always produced empty output
+// regardless of what was really running. Now that detection actually works,
+// running this suite on a machine that has real Claude Code sessions open in
+// tmux — the exact situation `/remote` exists for — correctly lists them,
+// and asserting global emptiness would fail for a reason that has nothing to
+// do with this test's own ordinary shell pane. Assert on that pane
+// specifically instead, same pattern as the "chỉ liệt kê" test below.
+test('candidates: pane chạy shell thường không được liệt kê', async () => {
   const home = tmpHome('CCRC_HUB_URL=http://127.0.0.1:9\nCCRC_TOKEN=t\nCCRC_MACHINE_NAME=m\n');
   const tp = newTmuxPane('ccrc-cli-cand-none'); // ordinary shell pane, NOT claude
   try {
     const r = await run(['candidates'], { HOME: home });
     assert.equal(r.code, 0);
-    assert.equal(r.stdout.trim(), '');
+    const rows = parseCandidates(r.stdout);
+    assert.ok(!rows.find((row) => row.pane === tp.pane), 'pane shell thường không được xuất hiện trong candidates');
   } finally {
     tp.kill();
   }
@@ -1026,9 +1099,9 @@ test('candidates: không có pane nào chạy claude → không in dòng nào, e
 test('candidates: chỉ liệt kê pane chạy claude, bỏ qua shell thường', async () => {
   const home = tmpHome('CCRC_HUB_URL=http://127.0.0.1:9\nCCRC_TOKEN=t\nCCRC_MACHINE_NAME=m\n');
   const shellPane = newTmuxPane('ccrc-cli-cand-shell');
-  const claudePane = newClaudePane('ccrc-cli-cand-claude');
+  const claudePane = newClaudePane('ccrc-cli-cand-claude'); // shape B — claude as a CHILD of the pane's shell, see fixture comment
   try {
-    await sleep(300); // để tiến trình fake claude thực sự lên #{pane_current_command}
+    await sleep(300); // để tiến trình fake claude thực sự lên bảng ps
     const r = await run(['candidates'], { HOME: home });
     assert.equal(r.code, 0);
     const rows = parseCandidates(r.stdout);
@@ -1036,6 +1109,25 @@ test('candidates: chỉ liệt kê pane chạy claude, bỏ qua shell thường'
     assert.ok(!rows.find((row) => row.pane === shellPane.pane), 'pane shell thường không được xuất hiện');
   } finally {
     shellPane.kill();
+    claudePane.kill();
+  }
+});
+
+// Regression for shape A (claude as the pane's OWN foreground process, no
+// wrapping shell in the way — see newClaudePaneForeground's comment). The
+// subtree walk starts AT #{pane_pid} itself before ever looking at children,
+// which is what must keep this shape working alongside shape B above.
+test('candidates: pane có claude làm tiến trình chính (không qua shell bọc) vẫn được nhận diện', async () => {
+  const home = tmpHome('CCRC_HUB_URL=http://127.0.0.1:9\nCCRC_TOKEN=t\nCCRC_MACHINE_NAME=m\n');
+  const claudePane = newClaudePaneForeground('ccrc-cli-cand-fg');
+  try {
+    await sleep(300);
+    const r = await run(['candidates'], { HOME: home });
+    assert.equal(r.code, 0);
+    const rows = parseCandidates(r.stdout);
+    assert.ok(rows.find((row) => row.pane === claudePane.pane),
+      'pane có claude làm tiến trình chính của chính pane đó vẫn phải được liệt kê');
+  } finally {
     claudePane.kill();
   }
 });
