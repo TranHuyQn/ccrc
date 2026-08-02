@@ -219,6 +219,19 @@ test('sessionId dài bất thường bị cắt như title/body — không nhậ
   } finally { h.stop(); }
 });
 
+test('gửi hơn 50 thông báo → "Gần đây" chỉ giữ đúng 50 mục mới nhất', async () => {
+  const h = await startHub();
+  try {
+    for (let i = 1; i <= HISTORY_MAX + 5; i++) {
+      await notify(h, { title: `t-${i}` });
+    }
+    const items = await historyOf(h);
+    assert.equal(items.length, HISTORY_MAX, 'phải cắt đúng ở HISTORY_MAX, không phình vô hạn');
+    assert.equal(items[0].title, `t-${HISTORY_MAX + 5}`, 'mới nhất phải đứng đầu');
+    assert.equal(items[HISTORY_MAX - 1].title, 't-6', 'năm mục cũ nhất (t-1..t-5) phải bị đẩy ra');
+  } finally { h.stop(); }
+});
+
 test('token sai bị từ chối 401', async () => {
   const h = await startHub();
   const r = await fetch(h.base + '/notify', {

@@ -9,6 +9,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import webpush from 'web-push';
 import { createTerminalSessions } from './terminal-sessions.js';
+import { createNotificationHistory } from './notification-history.js';
 import { deviceId, labelFromUserAgent, listDevices } from './push-devices.js';
 import { isSessionUrlAllowed } from './session-url.js';
 import { HUB_USER_NAME, parseUsers } from './users.js';
@@ -115,18 +116,9 @@ async function notifyUser(userName, payload) {
 }
 
 // ---------------------------------------------------------------------------
-// Notification history. Kept in memory only: it exists so the phone can glance
-// back at what it missed, not as a record. A hub restart losing it is fine.
-const HISTORY_MAX = 50;
-/** @type {Map<string, Array<any>>} userName -> notifications, newest first */
-const history = new Map();
-
-function remember(userName, note) {
-  const list = history.get(userName) || [];
-  list.unshift({ ...note, at: Date.now() });
-  if (list.length > HISTORY_MAX) list.length = HISTORY_MAX;
-  history.set(userName, list);
-}
+// Notification history — logic đầy đủ (TTL 24h + cap 50) nằm trong
+// notification-history.js, cùng khuôn mẫu với createTerminalSessions().
+const notificationHistory = createNotificationHistory();
 
 // Bearer token -> user, or null. Every authenticated route goes through here.
 function userFromRequest(req) {
@@ -208,7 +200,7 @@ app.post('/notify', express.json({ limit: '16kb' }), (req, res) => {
   // record of what happened, and dropping entries from it would mean the one
   // notification the user missed while looking away is also the one they can
   // never go back and find.
-  remember(user.name, note);
+  notificationHistory.remember(user.name, note);
   // The user is already looking at this session's terminal on their phone —
   // buzzing them about it is noise. `sessionId` only arrives when a terminal
   // daemon is registered for the directory Claude is running in (the hook
@@ -227,7 +219,7 @@ app.get('/api/me', (req, res) => {
 app.get('/api/notifications', (req, res) => {
   const user = requireUser(req, res);
   if (!user) return;
-  res.json({ items: history.get(user.name) || [] });
+  res.json({ items: notificationHistory.list(user.name) });
 });
 
 app.get('/api/vapid-key', (_req, res) => res.json({ publicKey: vapidKeys.publicKey }));
