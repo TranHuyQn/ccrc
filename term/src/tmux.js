@@ -98,11 +98,18 @@ export function paneCwd(paneId) {
 // path shifts windowIndex/paneIndex/sessionName by one and corrupts `target`
 // — display only, since #{pane_id} is field 1 and is unaffected, so the
 // daemon still targets the right pane regardless.
+//
+// `cmd` (#{pane_current_command}) is kept here for callers that want it, but
+// `candidates` no longer filters on it — measured on a real machine that it
+// reports the pane's FOREGROUND process, not "is claude running in this
+// pane" (see ccrc-term-cli.js's isClaudeCommand/subtreeHasClaude for the
+// full incident). `panePid` (#{pane_pid}) is what candidates actually needs:
+// the root of the pane's process tree, to walk downward from.
 export function listPanes() {
   let out;
   try {
     out = tmux(['list-panes', '-a', '-F',
-      '#{pane_id}\t#{pane_current_command}\t#{pane_current_path}\t#{window_index}\t#{pane_index}\t#{session_name}']);
+      '#{pane_id}\t#{pane_pid}\t#{pane_current_command}\t#{pane_current_path}\t#{window_index}\t#{pane_index}\t#{session_name}']);
   } catch {
     return []; // no server running, or no panes
   }
@@ -110,10 +117,10 @@ export function listPanes() {
   for (const line of out.split('\n')) {
     if (!line) continue;
     const parts = line.split('\t');
-    if (parts.length < 6) continue;
-    const [paneId, cmd, cwd, windowIndex, paneIndex, ...nameParts] = parts;
+    if (parts.length < 7) continue;
+    const [paneId, panePid, cmd, cwd, windowIndex, paneIndex, ...nameParts] = parts;
     const sessionName = nameParts.join('\t');
-    rows.push({ paneId, cmd, cwd, target: `${sessionName}:${windowIndex}.${paneIndex}` });
+    rows.push({ paneId, panePid, cmd, cwd, target: `${sessionName}:${windowIndex}.${paneIndex}` });
   }
   return rows;
 }

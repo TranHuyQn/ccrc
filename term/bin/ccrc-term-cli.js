@@ -392,6 +392,121 @@ async function cmdOn(rawName, explicitPane = null) {
   say('⚠ Máy ngủ là mất kết nối. Hãy đặt máy không ngủ trước khi rời đi.');
 }
 
+// --- "is claude running in this pane?" ------------------------------------
+//
+// `candidates` used to filter `listPanes()` on `p.cmd === 'claude'`, i.e.
+// #{pane_current_command}. That is the pane's FOREGROUND process, and it is
+// NOT `claude` for either real way a pane ends up running Claude:
+//
+//   - deploy/ccrc (the actual production path, `ccrc` typed at a shell): the
+//     pane's command is `'<claude path>' args...; printf %s $? > <rcfile>`
+//     (see deploy/ccrc's RC_FILE comment — the trailing printf captures
+//     Claude's exit code as ccrc's own and is deliberately never removed).
+//     Because something has to run AFTER Claude exits, the pane's shell
+//     cannot tail-call `exec` into Claude — it has to fork Claude as a CHILD
+//     and stay alive to run the printf. So #{pane_current_command} reports
+//     the shell (zsh, on the machine this was measured on), not claude.
+//   - `claude` typed directly at an interactive prompt: same result, for the
+//     same reason — the interactive shell is not exec-replaced by anything
+//     it runs, or every command would end the shell.
+//
+// Verified live: both of the user's real `/remote` panes reported
+// #{pane_current_command} = "zsh", so the old filter matched zero of them —
+// `candidates` printed nothing and `ccrc remote` told the user, incorrectly,
+// that no Claude Code session was running anywhere. The project's own test
+// fixture (newClaudePane, remote-cli.test.js) had been building the ONE
+// shape where the old filter does work — `tmux new-session <binary>` with
+// nothing trailing, letting the shell exec-optimize straight into the
+// binary — which is real but is not how anything is actually launched. See
+// that fixture's comment for the fix and the reproduction.
+//
+// The fix: stop asking "is the pane's foreground process claude?" and ask
+// "is a claude process running ANYWHERE under this pane?" — walk the process
+// tree rooted at #{pane_pid} looking for one.
+
+// How long a single system-wide `ps -eo pid=,ppid=,command=` is given before
+// candidates gives up on it. This is not per-pid like PROBE_TIMEOUT_MS above
+// (isOurDaemon's `ps -p <pid>`) — it dumps the WHOLE process table once, for
+// every pane in one pass, so it is allowed more headroom. `candidates` is
+// also read TWICE by `ccrc remote` (the initial listing, then the
+// TOCTOU recheck immediately before `on --pane`), so a real hang here is a
+// real hang for the user's terminal picker — fail closed (see listProcesses
+// below) rather than block indefinitely.
+const PS_ALL_TIMEOUT_MS = 4000;
+
+// One `ps -eo pid=,ppid=,command=` call for the whole system, turned into
+// pid→children and pid→command maps. Deliberately ONE call rather than one
+// `ps -p <pid>` per pane (the shape isOurDaemon above uses) — `candidates`
+// can be asked about many panes at once, each pane's subtree can be several
+// processes deep, and per-pid calls would multiply with both.
+//
+// Returns null on failure (ps missing, or the timeout above), which callers
+// must treat as "found nothing" — the safe direction here is the same one
+// isOurDaemon documents: a false "not claude" costs the user an extra look
+// through `ccrc remote`'s output (or none, if every pane fails this way),
+// a false "yes" would offer to attach `/remote` to a pane that has nothing
+// to do with Claude Code.
+function listProcesses() {
+  let out;
+  try {
+    out = execFileSync('ps', ['-eo', 'pid=,ppid=,command='],
+      { encoding: 'utf8', timeout: PS_ALL_TIMEOUT_MS, maxBuffer: 8 << 20 });
+  } catch {
+    return null;
+  }
+  const kids = new Map();
+  const cmdOf = new Map();
+  for (const line of out.split('\n')) {
+    const m = /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(line);
+    if (!m) continue;
+    const [, pid, ppid, cmd] = m;
+    if (!kids.has(ppid)) kids.set(ppid, []);
+    kids.get(ppid).push(pid);
+    cmdOf.set(pid, cmd);
+  }
+  return { kids, cmdOf };
+}
+
+// Does this `ps` command line look like Claude Code itself, as opposed to
+// something that merely mentions it? Matched on the FIRST token's basename
+// only, same reasoning as isNodeBinary/isOurDaemon's argv walk above: the
+// first token is the thing that actually got run, everything after it is
+// that thing's own argv and proves nothing. This is what keeps
+// `zsh -c '/…/claude'; printf ...` (first token `zsh`) from matching while
+// its real child `/Users/…/claude` does — and it is also why a wrapper
+// script whose shebang line makes `ps` report its INTERPRETER (`sh`, `bash`)
+// rather than the script's own name is correctly NOT read as claude: this
+// function is not trying to be clever about wrapper scripts, only to find
+// the literal claude binary somewhere in the tree.
+function isClaudeCommand(cmd) {
+  const first = cmd.trim().split(/\s+/)[0];
+  return first ? path.basename(first) === 'claude' : false;
+}
+
+// Walks DOWN the process tree from `rootPid` (a pane's #{pane_pid}) looking
+// for a process whose command passes isClaudeCommand. `rootPid` itself is
+// checked first — a pid is trivially a one-node subtree of itself, which is
+// what keeps this recognising the OTHER real shape (claude exec'd directly
+// as the pane's own foreground process, no wrapping shell in the way) and
+// not just the shell-parent shape described above. `seen` guards against a
+// pid appearing as its own descendant, which should never happen on a real
+// process tree but would infinite-loop this walk if it somehow did — cheap
+// insurance, not a scenario this project has hit.
+function subtreeHasClaude(rootPid, kids, cmdOf) {
+  if (typeof rootPid !== 'string' || !rootPid) return false;
+  const stack = [rootPid];
+  const seen = new Set();
+  while (stack.length) {
+    const pid = stack.pop();
+    if (seen.has(pid)) continue;
+    seen.add(pid);
+    const cmd = cmdOf.get(pid);
+    if (cmd && isClaudeCommand(cmd)) return true;
+    for (const child of kids.get(pid) || []) stack.push(child);
+  }
+  return false;
+}
+
 // Machine-readable listing for `ccrc remote` (deploy/ccrc): every pane on
 // this tmux server currently running claude, one per line, tab-separated
 // `pane\ton\tcwd\ttarget` — target LAST because it embeds the session name;
@@ -402,22 +517,25 @@ async function cmdOn(rawName, explicitPane = null) {
 // references it, and the daemon itself creates a grouped session
 // (`<base>` + GROUP_SESSION_SUFFIX, see createGroupSession/claimGroupName in
 // tmux.js) while a browser client is attached — a SIGKILLed daemon can also
-// leave one behind. Both rows then pass the `cmd === 'claude'` filter and
-// share the SAME paneId, so without this a live Claude session printed
-// twice: once under its real session name, once under the daemon's internal
-// `-ccrc-web` plumbing name, looking like a second session. Not a safety
-// break either way — same paneId, so any row targets the same real pane —
-// but the real session name is what a human should see, so the row whose
-// session does NOT end in GROUP_SESSION_SUFFIX wins when both exist.
+// leave one behind. Both rows then pass the claude-subtree filter and share
+// the SAME paneId, so without this a live Claude session printed twice: once
+// under its real session name, once under the daemon's internal `-ccrc-web`
+// plumbing name, looking like a second session. Not a safety break either
+// way — same paneId, so any row targets the same real pane — but the real
+// session name is what a human should see, so the row whose session does
+// NOT end in GROUP_SESSION_SUFFIX wins when both exist.
 function sessionPartOfTarget(target) {
   const m = /^(.*):\d+\.\d+$/.exec(target);
   return m ? m[1] : target;
 }
 
 async function cmdCandidates() {
+  const panes = listPanes();
+  if (!panes.length) return; // nothing to check — skip the system-wide ps call entirely
+  const procs = listProcesses();
   const byPane = new Map();
-  for (const p of listPanes()) {
-    if (p.cmd !== 'claude') continue;
+  for (const p of panes) {
+    if (!procs || !subtreeHasClaude(p.panePid, procs.kids, procs.cmdOf)) continue;
     const isOurGroupName = sessionPartOfTarget(p.target).endsWith(GROUP_SESSION_SUFFIX);
     const existing = byPane.get(p.paneId);
     if (!existing || (existing.isOurGroupName && !isOurGroupName)) {
