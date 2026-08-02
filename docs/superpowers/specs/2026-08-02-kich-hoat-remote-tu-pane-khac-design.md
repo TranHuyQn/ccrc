@@ -1,7 +1,8 @@
 # Thiết kế: bật /remote từ một pane khác, không cần Claude rảnh
 
 - **Ngày:** 2026-08-02
-- **Trạng thái:** đã chốt với Huy, chưa triển khai
+- **Trạng thái:** đã triển khai (`ccrc remote`) — xem
+  `docs/superpowers/plans/2026-08-02-kich-hoat-remote-tu-pane-khac.md`
 - **Nhánh dự kiến:** `claude/remote-tu-pane-khac`
 - **Không thay thế gì** — thêm một đường kích hoạt mới, song song với `/remote` hiện có
 
@@ -56,6 +57,8 @@ ccrc-term-cli.js (Node — logic thuần, có test, không tương tác)
      - cwd:    thư mục làm việc hiện tại của pane
      - on:     true/false — tái dùng daemonInfo() đã có, để Huy biết pane nào
                đã bật remote sẵn, tránh chọn nhầm
+     (Triển khai thực tế: tab-separated `pane\ton\tcwd\ttarget`, không phải
+     JSON — lý do ở phần Global Constraints của plan triển khai.)
 
 deploy/ccrc (shell — nơi duy nhất trong repo đọc /dev/tty tương tác, đã có
   tiền lệ ở setup-notify.sh)
