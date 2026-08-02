@@ -3,7 +3,6 @@
 - **Ngày:** 2026-08-02
 - **Trạng thái:** đã triển khai (`ccrc remote`) — xem
   `docs/superpowers/plans/2026-08-02-kich-hoat-remote-tu-pane-khac.md`
-- **Nhánh dự kiến:** `claude/remote-tu-pane-khac`
 - **Không thay thế gì** — thêm một đường kích hoạt mới, song song với `/remote` hiện có
 
 ## 1. Vấn đề

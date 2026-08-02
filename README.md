@@ -17,7 +17,12 @@ Two things, both starting from that moment:
    (`/remote pair`); the dev machine verifies it with the public key it learned then. The
    hub holds metadata only — no key that opens anyone's session — and not one byte of
    shell traffic passes through it. **Multiple concurrent sessions** work: the PWA shows
-   one card per pane.
+   one card per pane. While Claude is busy running a tool, a `/remote on` you type sits in
+   its input queue until that tool finishes — so run **`ccrc remote`** from any *other*
+   pane or terminal instead: it lists every tmux pane running claude, you pick one by
+   number, and it starts the daemon for that pane without going through Claude's input
+   queue at all. A machine that installed `~/.local/bin/ccrc` earlier needs
+   `./setup-notify.sh` re-run once to pick up the subcommand.
 
 **Directory names never leave the dev machine.** Each session shows up under a random id
 (`k7m2`); name it yourself if you want to recognise it: `/remote on my-label`. Push

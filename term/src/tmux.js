@@ -90,10 +90,14 @@ export function paneCwd(paneId) {
 // filter down to the ones running claude and offer as a pick list.
 //
 // One tmux call, same shape as listSessions() below for the same reason:
-// #{session_name} is the one field here that could in principle contain a
-// tab (see listSessions' own comment), so it is read as its own trailing
-// field and only combined into `target` AFTER the split — never joined into
-// the format string before we control where the split happens.
+// only ONE field in this format string can be free-form (contain a tab),
+// because the split below has nowhere else to look for the separator once
+// one is consumed. #{session_name} is the field chosen for that slot — but
+// #{pane_current_path} (cwd), read here too, is exactly as free-form and
+// sits at a FIXED position ahead of the index fields. A tab in a directory
+// path shifts windowIndex/paneIndex/sessionName by one and corrupts `target`
+// — display only, since #{pane_id} is field 1 and is unaffected, so the
+// daemon still targets the right pane regardless.
 export function listPanes() {
   let out;
   try {
