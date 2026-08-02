@@ -285,6 +285,77 @@ function newClaudePaneForeground(name) {
   };
 }
 
+// Review finding: the discrimination rule (isClaudeCommand's first-token-
+// basename match) had zero coverage — every existing candidates test still
+// passes if it is replaced with `cmd => cmd.includes('claude')`. This
+// fixture builds the pane that rule exists to reject: a command that merely
+// MENTIONS a file named `claude` (as `tail -f`'s argument) without ever
+// running it. First token is `tail`, not `claude` — a substring match would
+// wrongly include it; the basename-of-first-token match must not.
+function newPaneTailingClaudeFile(name) {
+  const T = tmuxBin();
+  const sess = `${name}-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccrc-tailclaude-'));
+  const fileNamedClaude = path.join(dir, 'claude');
+  fs.writeFileSync(fileNamedClaude, 'chỉ là một file tên "claude", không phải chương trình có thể chạy\n');
+  execFileSync(T, ['new-session', '-d', '-s', sess, '-x', '80', '-y', '24',
+    `tail -f ${fileNamedClaude}`]);
+  const pane = execFileSync(T, ['display-message', '-p', '-t', sess, '#{pane_id}'], { encoding: 'utf8' }).trim();
+  return {
+    sess, pane,
+    kill() {
+      try { execFileSync(T, ['kill-session', '-t', sess]); } catch { /* already gone */ }
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }
+    },
+  };
+}
+
+// Review finding, second half: the ROUND-2 tightening (see
+// ccrc-term-cli.js's design comment on subtreeHasClaude) added a new safety
+// property — a claude process in the subtree must be attached to the pane's
+// OWN tty — and it must not be assertable-by-accident either. This builds
+// the exact shape measured live on the user's machine: a claude-named
+// process that exists in the subtree but is NOT the pane's own interactive
+// session — a HEADLESS claude with no controlling terminal at all.
+//
+// `spawn(..., { detached: true })` is what actually produces this
+// honestly: on POSIX, Node calls setsid() in the child before exec, making
+// it the leader of a brand-new session — which starts with NO controlling
+// terminal (`ps` reports `tty ??`), exactly the `stat=Ss, tty=??` shape
+// measured for the real headless claude (see the design comment). The
+// "supervisor" script that spawns it is kept alive (a live event loop, not
+// exiting) so the headless claude's ppid stays a live descendant of the
+// pane's own pid — otherwise it would simply be reparented to init and
+// vanish from the pane's subtree entirely, which would prove nothing about
+// the tty check. Written as `.mjs` so it runs as ESM regardless of what
+// `"type"` the nearest package.json declares — this project's is "module",
+// but a temp directory has none at all.
+function newPaneWithHeadlessClaudeChild(name) {
+  const T = tmuxBin();
+  const sess = `${name}-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccrc-headless-'));
+  const fakeClaude = path.join(dir, 'claude');
+  fs.copyFileSync(process.execPath, fakeClaude);
+  fs.chmodSync(fakeClaude, 0o755);
+  const supervisor = path.join(dir, 'supervisor.mjs');
+  fs.writeFileSync(supervisor, [
+    "import { spawn } from 'node:child_process';",
+    'const headless = spawn(process.argv[2], ["-e", "setTimeout(()=>{},30000)"], { detached: true, stdio: "ignore" });',
+    'headless.unref();',
+    'setInterval(() => {}, 1e9); // stay alive so the headless child keeps a live parent inside the pane subtree',
+  ].join('\n'));
+  execFileSync(T, ['new-session', '-d', '-s', sess, '-x', '80', '-y', '24',
+    `${process.execPath} ${supervisor} ${fakeClaude}; true`]);
+  const pane = execFileSync(T, ['display-message', '-p', '-t', sess, '#{pane_id}'], { encoding: 'utf8' }).trim();
+  return {
+    sess, pane,
+    kill() {
+      try { execFileSync(T, ['kill-session', '-t', sess]); } catch { /* already gone */ }
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }
+    },
+  };
+}
+
 test('chạy ngoài tmux: báo lỗi rõ, KHÔNG bật gì', async () => {
   const home = tmpHome('CCRC_HUB_URL=http://127.0.0.1:9\nCCRC_TOKEN=t\nCCRC_MACHINE_NAME=m\n');
   const r = await run(['on'], { HOME: home, TMUX_PANE: '', TMUX: '' });
@@ -1263,5 +1334,45 @@ test('candidates: pane trong session được nhóm (grouped) chỉ hiện MỘT
     }
   } finally {
     claudePane.kill();
+  }
+});
+
+// --- Review finding: the discrimination rule itself had zero coverage -----
+// --- (isClaudeCommand's first-token-basename match, and the round-2 ---------
+// --- tty-attachment requirement layered on top of it in subtreeHasClaude). --
+
+test('candidates: pane chỉ NHẮC TỚI file tên "claude" (tail -f), không chạy nó — không được liệt kê', async () => {
+  const home = tmpHome('CCRC_HUB_URL=http://127.0.0.1:9\nCCRC_TOKEN=t\nCCRC_MACHINE_NAME=m\n');
+  const pane = newPaneTailingClaudeFile('ccrc-cli-cand-tail');
+  try {
+    await sleep(300); // để `tail -f` thực sự lên bảng ps
+    const r = await run(['candidates'], { HOME: home });
+    assert.equal(r.code, 0);
+    const rows = parseCandidates(r.stdout);
+    assert.ok(!rows.find((row) => row.pane === pane.pane),
+      '`tail -f` một file tên "claude" chỉ ĐỌC file đó, không CHẠY nó — first token là "tail", không phải "claude", nên không được coi là pane có claude');
+  } finally {
+    pane.kill();
+  }
+});
+
+// The new safety property round 2 added: a claude process elsewhere in the
+// subtree, attached to a DIFFERENT tty (or none), must not make the pane a
+// candidate. Reproduces the exact live incident this tightening closed — a
+// headless claude, detached, with no controlling terminal — see
+// newPaneWithHeadlessClaudeChild's own comment for how that shape is built
+// honestly rather than assumed.
+test('candidates: có claude trong subtree nhưng KHÁC tty của pane (headless, không có terminal điều khiển) — không được liệt kê', async () => {
+  const home = tmpHome('CCRC_HUB_URL=http://127.0.0.1:9\nCCRC_TOKEN=t\nCCRC_MACHINE_NAME=m\n');
+  const pane = newPaneWithHeadlessClaudeChild('ccrc-cli-cand-headless');
+  try {
+    await sleep(300); // để tiến trình claude ẩn danh thực sự lên bảng ps
+    const r = await run(['candidates'], { HOME: home });
+    assert.equal(r.code, 0);
+    const rows = parseCandidates(r.stdout);
+    assert.ok(!rows.find((row) => row.pane === pane.pane),
+      'claude không gắn với tty CỦA CHÍNH PANE này (headless, tty ??) không được coi là claude của pane — đây là kẽ hở round-2 vừa đóng lại');
+  } finally {
+    pane.kill();
   }
 });
