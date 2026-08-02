@@ -6,6 +6,7 @@ import path from 'node:path';
 import net from 'node:net';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { createNotificationHistory, HISTORY_MAX, HISTORY_TTL_MS } from '../src/notification-history.js';
 
 const SRV = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'src', 'index.js');
 
@@ -676,4 +677,76 @@ test('/api/me của user tên "admin" bị từ chối, không trả về danh t
     const r = await fetch(h.base + '/api/me', { headers: { authorization: 'Bearer tok-gia-mao' } });
     assert.equal(r.status, 401);
   } finally { h.stop(); }
+});
+
+// --- Unit-level tests against createNotificationHistory() directly --------
+//
+// TTL 24 giờ không thể kiểm ở tầng HTTP mà không đợi thật hoặc thêm một cổng
+// cấu hình chỉ để phục vụ test — spec cố tình không làm vậy (spec §2). Import
+// thẳng module, tiêm đồng hồ giả, là cách duy nhất kiểm được biên của nó.
+
+test('[unit] thông báo mới ghi thì list() trả về ngay, có trường "at"', () => {
+  let t = 1_000;
+  const history = createNotificationHistory({ now: () => t });
+  history.remember('huy', { title: 't-1' });
+  const items = history.list('huy');
+  assert.equal(items.length, 1);
+  assert.equal(items[0].title, 't-1');
+  assert.equal(items[0].at, 1_000);
+});
+
+test('[unit] đúng ngưỡng HISTORY_TTL_MS (chưa vượt) → vẫn còn', () => {
+  let t = 0;
+  const history = createNotificationHistory({ now: () => t });
+  history.remember('huy', { title: 't-1' });
+  t = HISTORY_TTL_MS;
+  assert.equal(history.list('huy').length, 1, 'đúng bằng ngưỡng thì chưa bị prune');
+});
+
+test('[unit] vượt HISTORY_TTL_MS → bị prune, list() trả rỗng', () => {
+  let t = 0;
+  const history = createNotificationHistory({ now: () => t });
+  history.remember('huy', { title: 't-1' });
+  t = HISTORY_TTL_MS + 1;
+  assert.deepEqual(history.list('huy'), []);
+});
+
+test('[unit] mục còn hạn không bị kéo theo khi mục cũ hơn cùng user đã hết hạn', () => {
+  let t = 0;
+  const history = createNotificationHistory({ now: () => t });
+  history.remember('huy', { title: 't-cu' }); // at = 0
+  t = HISTORY_TTL_MS - 1;
+  history.remember('huy', { title: 't-moi' }); // at = HISTORY_TTL_MS - 1, còn hạn ở bước sau
+  t = HISTORY_TTL_MS + 1; // t-cu tuổi HISTORY_TTL_MS+1 (hết hạn); t-moi tuổi 2 (còn hạn)
+  const items = history.list('huy');
+  assert.equal(items.length, 1, 'chỉ mục hết hạn bị dọn');
+  assert.equal(items[0].title, 't-moi');
+});
+
+test('[unit] hết hạn ở user này không đụng lịch sử của user khác', () => {
+  let t = 0;
+  const history = createNotificationHistory({ now: () => t });
+  history.remember('huy', { title: 't-huy' }); // at = 0
+  t = 100;
+  history.remember('kien', { title: 't-kien' }); // at = 100
+  t = HISTORY_TTL_MS + 50; // huy tuổi TTL+50 (hết hạn); kien tuổi TTL-50 (còn hạn)
+  assert.deepEqual(history.list('huy'), []);
+  assert.equal(history.list('kien').length, 1);
+});
+
+test('[unit] vẫn cắt đúng HISTORY_MAX dù chưa hết hạn', () => {
+  let t = 0;
+  const history = createNotificationHistory({ now: () => t });
+  for (let i = 1; i <= HISTORY_MAX + 5; i++) {
+    t = i; // mỗi mục cách nhau 1ms — tất cả còn rất mới so với HISTORY_TTL_MS
+    history.remember('huy', { title: `t-${i}` });
+  }
+  const items = history.list('huy');
+  assert.equal(items.length, HISTORY_MAX);
+  assert.equal(items[0].title, `t-${HISTORY_MAX + 5}`, 'mới nhất phải đứng đầu');
+});
+
+test('[unit] list() trả mảy rỗng cho user chưa từng có thông báo', () => {
+  const history = createNotificationHistory();
+  assert.deepEqual(history.list('ai-do-chua-tung'), []);
 });
