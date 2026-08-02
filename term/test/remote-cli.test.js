@@ -190,6 +190,37 @@ function newTmuxPane(name) {
 // first token's basename is "claude" — see isClaudeCommand in
 // ccrc-term-cli.js for why that basename match is what candidates now looks
 // for.
+// Both fixtures below have to prove the shape they claim to build by
+// reading tmux's OWN #{pane_current_command} right after creating the
+// session — this is the review finding this pair of comments is about: a
+// fixture whose name and comment assert a shape, with nothing checking it,
+// is exactly the defect that shipped the ORIGINAL detection bug (see this
+// file's header). Polled rather than read once: the pane's shell has to
+// actually run for a moment before #{pane_current_command} settles — proven
+// live while building this check, a single immediate read after
+// `new-session -d` intermittently caught the pre-exec transient state and
+// let a broken shape-B fixture (no trailing `; true`) read as correctly
+// "not claude" for the wrong reason (a race, not a real non-exec). Bounded
+// so a genuinely stuck fixture still fails instead of hanging.
+function pollForegroundCommand(T, pane, isDone, attempts = 40) {
+  let cmd = '';
+  for (let i = 0; i < attempts; i++) {
+    cmd = execFileSync(T, ['display-message', '-p', '-t', pane, '#{pane_current_command}'], { encoding: 'utf8' }).trim();
+    if (isDone(cmd)) return cmd;
+  }
+  return cmd; // exhausted — caller's own assertion reports the failure with this last-seen value
+}
+
+// Review finding: this fixture's whole job is to build shape B, and until
+// now nothing checked that it actually had. This is precisely the defect
+// that shipped the ORIGINAL bug this file is about — a fixture whose name
+// and comment claim a shape, with nothing verifying it, so a shell that
+// exec-optimizes despite the trailing `; true` (or a future edit to the
+// command string) would silently degrade every shape-B test to exercising a
+// foreground-only implementation and they would all stay green. Verified
+// here, in the fixture itself, right after the shape is built — a shape
+// regression must fail loudly at its source, not surface later as an
+// unrelated-looking candidates failure.
 function newClaudePane(name) {
   const T = tmuxBin();
   const sess = `${name}-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
@@ -200,6 +231,16 @@ function newClaudePane(name) {
   execFileSync(T, ['new-session', '-d', '-s', sess, '-x', '80', '-y', '24',
     `${fakeClaude} -e "setTimeout(()=>{},30000)"; true`]);
   const pane = execFileSync(T, ['display-message', '-p', '-t', sess, '#{pane_id}'], { encoding: 'utf8' }).trim();
+  // Shape B succeeds by NEVER exec-ing into fakeClaude, so "poll until it
+  // becomes claude" is the right predicate here too: if the trailing
+  // `; true` is doing its job, the loop simply exhausts its budget without
+  // ever seeing "claude" and returns the last (shell) reading — exactly the
+  // same total wait as newClaudePaneForeground gets to actually complete
+  // its exec, so a fixture that regressed to shape A is given a fair chance
+  // to prove it before this assertion is trusted.
+  const fgCmd = pollForegroundCommand(T, pane, (c) => c === 'claude');
+  assert.notEqual(fgCmd, 'claude',
+    `newClaudePane phải dựng shape B (claude chạy như CON của shell, shell vẫn là tiến trình chính của pane) — nhưng #{pane_current_command} lại là "claude": fixture đã suy biến thành shape A, mọi test dựa vào fixture này đang kiểm nhầm cài đặt`);
   return {
     sess, pane,
     kill() {
@@ -218,6 +259,10 @@ function newClaudePane(name) {
 // shape-A detection while shape-B stays fine shows up as its own failing
 // test instead of being silently absorbed into a fixture that only ever
 // exercises shape B.
+//
+// Same review finding as newClaudePane above: nothing used to verify the
+// pane's shell actually exec-optimized into fakeClaude instead of, say,
+// forking it, which would silently turn this into a second copy of shape B.
 function newClaudePaneForeground(name) {
   const T = tmuxBin();
   const sess = `${name}-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
@@ -228,6 +273,9 @@ function newClaudePaneForeground(name) {
   execFileSync(T, ['new-session', '-d', '-s', sess, '-x', '80', '-y', '24',
     `${fakeClaude} -e "setTimeout(()=>{},30000)"`]);
   const pane = execFileSync(T, ['display-message', '-p', '-t', sess, '#{pane_id}'], { encoding: 'utf8' }).trim();
+  const fgCmd = pollForegroundCommand(T, pane, (c) => c === 'claude');
+  assert.equal(fgCmd, 'claude',
+    `newClaudePaneForeground phải dựng shape A (claude LÀ tiến trình chính của pane, không qua shell bọc) — nhưng #{pane_current_command} lại là "${fgCmd}", không bao giờ trở thành "claude": fixture không dựng đúng shape A, mọi test dựa vào fixture này đang kiểm nhầm cài đặt`);
   return {
     sess, pane,
     kill() {
