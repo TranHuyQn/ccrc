@@ -672,7 +672,7 @@ Expected: PASS, all files (this repo's full 283+ tests, now +9 for this feature:
 
 Also run the OTHER two workspaces' suites, since `npm test` at the repo root chains all three and this is the last checkpoint before calling the feature done:
 
-Run: `cd /Volumes/Data/workspace/projects/personal/cc-remote-control && npm test`
+Run: `cd /Users/dev/projects/personal/cc-remote-control && npm test`
 Expected: PASS for `server`, `hook`, and `term` workspaces.
 
 - [ ] **Step 2: Update the spec doc's status line**
