@@ -72,8 +72,21 @@ nó dùng, còn Compose mặc định lấy tên thư mục. Lệch nhau thì `.
 trống trơn trong khi hub vẫn chạy ngon lành — đơn giản vì hai bên đang nhìn hai project
 khác nhau.
 
+**Tuỳ chọn — đăng nhập bằng Slack.** Chạy token-slayer (một dịch vụ định danh
+Slack-OAuth) cạnh hub thì đặt `CCRC_TS_PUBLIC_URL` và `CCRC_TS_INTERNAL_URL` trong
+`.env` (kèm `CCRC_CALLBACK_URL` bên token-slayer) là cả team tự đăng nhập — không cần
+`adduser` cho từng người. Máy dev khi đó chạy lệnh cài không kèm token: nó in một mã
+ngắn, ai đó đã đăng nhập bấm duyệt, máy tự nhận token của mình.
+
+Thu hồi vẫn là việc tay và sẽ mãi là việc tay: `./deploy.sh deluser <tên>`. **Hub không
+bao giờ hỏi lại Slack**, nên người đã rời team vẫn dùng được cho tới khi có người chạy
+lệnh đó. Cho nó vào checklist off-boarding — vô hiệu hoá tài khoản Slack của họ chỉ
+chặn đăng nhập mới, không đụng gì tới token đã nằm trên máy.
+
 `deploy.sh` (dùng cùng Docker Compose ở trên) tự sinh `CCRC_TOKEN`, hỏi Cloudflare
-Tunnel token, build và kiểm tra hub. Tiện ích kèm theo: `./deploy.sh status` · `down`.
+Tunnel token, build và kiểm tra hub. Có tunnel token thì nó ghi thêm
+`CCRC_TRUST_PROXY=1` và `CCRC_BIND=127.0.0.1` — hai cái đi liền nhau, xem bảng biến
+bên dưới. Tiện ích kèm theo: `./deploy.sh status` · `down`.
 Không dùng Cloudflare Tunnel thì dùng `--profile tls` (Caddy, cần domain) hoặc chạy
 Node trực tiếp: `npm install && CCRC_TOKEN=<token> npm run server`.
 
@@ -128,11 +141,14 @@ Chỉ hai loại, đúng theo hook `Notification` của Claude Code:
 |---|---|---|
 | `CCRC_TOKEN` | (bắt buộc) | Token admin của hub |
 | `CCRC_PORT` | `8720` | Cổng HTTP |
-| `CCRC_BIND` | `0.0.0.0` | Địa chỉ bind cổng trên host (Docker); đặt `127.0.0.1` khi đã có tunnel/reverse proxy đứng trước |
+| `CCRC_BIND` | `0.0.0.0` | Địa chỉ bind cổng trên host (chỉ Compose — chạy `node server/src/index.js` trực tiếp thì nó bị bỏ qua và hub nghe trên mọi interface); đặt `127.0.0.1` khi đã có tunnel/reverse proxy đứng trước |
+| `CCRC_TRUST_PROXY` | (trống = tắt) | Đặt `1` khi có tunnel/reverse proxy đứng trước, để rate-limit đếm đúng IP client. **Phải đi kèm `CCRC_BIND=127.0.0.1`** — cổng còn vào thẳng được thì cờ này vô nghĩa, vì client tự viết được `X-Forwarded-For`. Quên bật khi CÓ proxy thì hỏng chiều ngược lại: mọi request trông như đến từ proxy, một người gọi nhiều là cả team ăn 429 |
 | `CCRC_DATA_DIR` | `server/data` (Docker: volume `ccrc-data`) | Nơi lưu `users.json`, khoá VAPID, push subscriptions |
 | `CCRC_VAPID_SUBJECT` | `mailto:admin@localhost` | Contact cho Web Push |
 | `CCRC_TUNNEL_TOKEN` | (trống) | Token Cloudflare Tunnel (profile `cloudflare`) |
 | `CCRC_DOMAIN` | (trống) | Domain cho Caddy TLS (profile `tls`) |
+| `CCRC_TS_PUBLIC_URL` | (trống) | URL dịch vụ định danh cho trình duyệt redirect tới — đi cùng cặp với biến dưới, thiếu một trong hai thì đăng nhập Slack tắt hẳn |
+| `CCRC_TS_INTERNAL_URL` | (trống) | URL dịch vụ định danh hub tự gọi trong mạng nội bộ — đảo hai cái thì đăng nhập trông ổn trên trình duyệt nhưng hỏng ở phía hub |
 
 **Máy dev** — `./setup-notify.sh` hỏi và ghi vào `~/.ccrc/config` (không cần đặt tay):
 `CCRC_HUB_URL`, `CCRC_TOKEN` (token cá nhân), `CCRC_MACHINE_NAME`. `/remote pair` ghi thêm
@@ -141,8 +157,9 @@ riêng không bao giờ rời điện thoại và không nằm trong file này.
 
 ### Tài khoản riêng cho từng thành viên
 
-Dùng `./deploy.sh adduser <tên>` (Docker), hoặc tự sửa `CCRC_DATA_DIR/users.json` (hub
-tự nạp lại trong ~5s):
+Có đăng nhập Slack rồi thì họ tự tạo, bạn không phải làm gì. Còn lại, dùng
+`./deploy.sh adduser <tên>` (Docker), hoặc tự sửa `CCRC_DATA_DIR/users.json` (hub tự
+nạp lại trong ~5s):
 
 ```json
 [

@@ -299,6 +299,71 @@ test('hướng dẫn KHÔNG còn nói hub giữ khoá ký vé', () => {
     '§8 còn mô tả kiến trúc cũ — người đọc sẽ tin vào một mô hình đe doạ không còn đúng');
 });
 
+// --- Biến môi trường: code là nguồn sự thật, tài liệu phải theo kịp --------
+//
+// Ba biến (`CCRC_TRUST_PROXY`, `CCRC_TS_PUBLIC_URL`, `CCRC_TS_INTERNAL_URL`)
+// từng được thêm vào hub mà `docs/self-hosting.md` — tài liệu DUY NHẤT để dựng
+// hub ở bản public — không hề nhắc tới, suốt cho tới khi có người đọc lại bằng
+// tay. Không bài test nào bắt được, vì file đó chỉ tồn tại ở bản public còn bộ
+// test thì chạy ở repo private.
+//
+// `CCRC_TRUST_PROXY` là lý do bài này đáng có: nó hỏng theo CẢ HAI chiều và
+// chiều nào cũng im lặng — bật mà quên `CCRC_BIND=127.0.0.1` thì vô nghĩa, còn
+// có proxy mà không bật thì cả internet chung một rổ rate-limit. Một biến như
+// vậy mà không có trong tài liệu thì coi như không tồn tại.
+function bienNguoiVanHanhDatDuoc() {
+  const found = new Set();
+  // Thứ tiến trình hub thật sự đọc.
+  const srcDir = path.join(root, 'server', 'src');
+  for (const f of fs.readdirSync(srcDir).filter((n) => n.endsWith('.js'))) {
+    const m = fs.readFileSync(path.join(srcDir, f), 'utf8').match(/process\.env\.(CCRC_[A-Z_]+)/g) || [];
+    for (const hit of m) found.add(hit.replace('process.env.', ''));
+  }
+  // Thứ chỉ compose đọc (`CCRC_BIND`, `CCRC_DOMAIN`, `CCRC_TUNNEL_TOKEN`) —
+  // người vận hành vẫn đặt chúng trong cùng một file `.env`, nên tài liệu vẫn
+  // nợ họ một dòng giải thích.
+  const compose = read('docker-compose.yml').match(/\$\{(CCRC_[A-Z_]+)/g) || [];
+  for (const hit of compose) found.add(hit.replace('${', ''));
+  return [...found].sort();
+}
+
+// Kiểm mọi tài liệu CÓ MẶT. `docs/self-hosting.md` chỉ tồn tại ở bản public,
+// nên bài này phải bỏ qua khi vắng thay vì đỏ — có vậy nó mới chạy được y hệt
+// ở cả hai repo, và bản public mới thật sự được canh.
+const TAI_LIEU_BIEN_MOI_TRUONG = ['README.md', 'README.vi.md', 'docs/self-hosting.md'];
+
+test('mọi biến người vận hành đặt được đều có trong bảng biến của tài liệu', () => {
+  const bien = bienNguoiVanHanhDatDuoc();
+  assert.ok(bien.length >= 7, `chỉ tìm thấy ${bien.length} biến — hàm dò hỏng rồi`);
+
+  for (const rel of TAI_LIEU_BIEN_MOI_TRUONG) {
+    if (!fs.existsSync(path.join(root, rel))) continue;
+    const src = read(rel);
+    // Phải là một HÀNG BẢNG có mô tả, không chỉ "tên biến xuất hiện đâu đó
+    // trong file". Bản đầu của bài này dùng `includes()` và xanh trơn khi xoá
+    // hẳn một hàng khỏi bảng — vì cái tên vẫn còn nằm trong một đoạn văn xuôi
+    // vài chục dòng phía trên. Một biến được nhắc giữa câu thì người đi tra
+    // bảng vẫn không tìm ra.
+    const thieu = bien.filter((b) => !new RegExp(`^\\|\\s*\`${b}\``, 'm').test(src));
+    assert.deepEqual(thieu, [],
+      `${rel} thiếu hàng bảng cho ${thieu.join(', ')} — thêm biến vào code mà quên ghi `
+      + 'tài liệu thì người vận hành không có cách nào biết nó tồn tại');
+  }
+});
+
+// Cặp đôi này phải đi cùng nhau, và tài liệu là chỗ duy nhất nói ra điều đó:
+// code không ép được, còn hậu quả khi đặt lệch thì không ai thấy ngay.
+test('tài liệu nói rõ CCRC_TRUST_PROXY phải đi kèm CCRC_BIND', () => {
+  for (const rel of TAI_LIEU_BIEN_MOI_TRUONG) {
+    if (!fs.existsSync(path.join(root, rel))) continue;
+    const src = read(rel);
+    if (!src.includes('CCRC_TRUST_PROXY')) continue;
+    const doan = src.split(/\n(?=[|#])/).filter((d) => d.includes('CCRC_TRUST_PROXY')).join('\n');
+    assert.match(doan, /CCRC_BIND/,
+      `${rel}: nhắc CCRC_TRUST_PROXY mà không nhắc CCRC_BIND ngay cạnh — bật một mình là vô nghĩa`);
+  }
+});
+
 // --- Task 13: điện thoại thôi quyết định, tài liệu phải nói đúng nghi thức
 // mới -------------------------------------------------------------------
 //
