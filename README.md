@@ -89,7 +89,7 @@ then asks for a Cloudflare Tunnel token and tells you exactly where to get one
 (Zero Trust → Networks → Tunnels → Create a tunnel), which is the step that is easy to
 miss. Also available: `./deploy.sh status` · `down`.
 
-**Optional — sign-in with Slack.** If you run [token-slayer](https://github.com/ownego/token-slayer)
+**Optional — sign-in with Slack.** If you run token-slayer (a Slack-OAuth identity service)
 alongside the hub, set `CCRC_TS_PUBLIC_URL` and `CCRC_TS_INTERNAL_URL` in `.env` (plus
 `CCRC_CALLBACK_URL` on the token-slayer side) and your team signs itself in — no `adduser`
 per person. A dev machine then runs the installer with no token: it prints a short code,

@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- **Hai repo khác nhau.** Task 1–2 nằm ở `ownego/token-slayer` (PHP), Task 3–12 ở repo này (Node). Đừng commit chéo.
+- **Hai repo khác nhau.** Task 1–2 nằm ở repo `token-slayer` (PHP), Task 3–12 ở repo này (Node). Đừng commit chéo.
 - **Hub là ESM** (`"type": "module"` trong `server/package.json`). Dùng `import`, không `require`.
 - **Không thêm dependency npm nào.** `fetch`, `AbortSignal.timeout`, `crypto` đều có sẵn trong Node 22.
 - **Mọi chuỗi hiện cho người dùng viết bằng tiếng Việt.** Comment giải thích *tại sao* cũng viết tiếng Việt hoặc tiếng Anh theo đúng file đang sửa (xem file xung quanh).
@@ -27,7 +27,7 @@
 
 ## File Structure
 
-**Repo `ownego/token-slayer`:**
+**Repo `token-slayer`:**
 
 | File | Trách nhiệm |
 |---|---|
@@ -57,7 +57,7 @@
 
 ## Task 1: Endpoint `/api/ccrc/auth/exchange` (token-slayer)
 
-**Repo:** `ownego/token-slayer` — làm trước vì cần thời gian review của team.
+**Repo:** `token-slayer` — làm trước vì cần thời gian review của team.
 
 **Files:**
 - Create: `app/Http/Controllers/Api/Ccrc/ExchangeController.php`

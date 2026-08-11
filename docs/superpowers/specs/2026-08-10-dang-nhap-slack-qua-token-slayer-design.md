@@ -8,9 +8,8 @@ Liên quan: `deploy.sh adduser`, `server/src/users.js`, `setup-notify.sh`
 
 ## 1. Vấn đề
 
-Hub sắp deploy song song với **token-slayer** (`github.com/ownego/token-slayer` — Laravel,
-đăng nhập bằng Slack OAuth) trên cùng một server, cùng docker network. Cả team ownego đã
-có tài khoản ở đó.
+Hub sắp deploy song song với **token-slayer** (Laravel, đăng nhập bằng Slack OAuth) trên
+cùng một server, cùng docker network. Cả team đã có tài khoản ở đó.
 
 Hôm nay hub cấp token bằng tay: `./deploy.sh adduser ten-nguoi` sinh một chuỗi ngẫu nhiên,
 ghi vào `data/users.json`, chủ hub gửi riêng cho từng người, người đó dán vào PWA và vào
