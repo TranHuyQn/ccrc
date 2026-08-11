@@ -1,7 +1,6 @@
 # CC Remote Control — hướng dẫn sử dụng
 
-Dành cho người **đã được cấp token** từ người quản trị hub. Đọc hết mất khoảng 10 phút;
-cài đặt mất khoảng 15 phút.
+Dành cho người dùng mới. Đọc hết mất khoảng 10 phút; cài đặt mất khoảng 15 phút.
 
 Bạn tự dựng hub? Đọc [`self-hosting.md`](self-hosting.md) (tiếng Anh) thay vì file này.
 
@@ -41,7 +40,7 @@ Phần 2 cài sau cũng được.
 
 - **Node.js** (bất kỳ bản nào còn được hỗ trợ)
 - **Claude Code** đang chạy được trên máy
-- **Token cá nhân** — người quản trị hub gửi riêng cho bạn. Đây là mật khẩu, đừng dán vào chat nhóm.
+- **Tài khoản Slack công ty** — bạn tự đăng nhập, không phải xin ai cấp token
 - **Điện thoại** iPhone hoặc Android
 - *(chỉ cho phần 2)* **tmux**, và **Tailscale** — **tài khoản riêng của bạn**, không dùng
   chung với ai. Xem mục 6 để hiểu vì sao.
@@ -53,31 +52,51 @@ Phần 2 cài sau cũng được.
 ### Cách nhanh — một lệnh
 
 ```bash
-curl -fsSL https://<hub-cua-ban>/install.sh | sh -s -- <token-cua-ban> https://<hub-cua-ban>
+curl -fsSL https://<hub-cua-ban>/install.sh | CCRC_HUB_URL=https://<hub-cua-ban> sh
 ```
 
-Thay hai chỗ:
+Không cần token, không cần git, không cần quyền truy cập repo — lệnh tự tải code về.
 
-- `<hub-cua-ban>` — địa chỉ hub mà người quản trị dựng. Phải gõ **hai lần**: lần đầu để tải
-  script, lần sau để script biết gửi thông báo đi đâu (chạy qua `curl | sh` thì script không
-  tự biết nó vừa được tải từ đâu). Không có giá trị mặc định — dự án này ai cũng tự dựng hub
-  riêng, nên một mặc định sẵn đồng nghĩa với việc gửi token của bạn tới máy người lạ.
-- `<token-cua-ban>` — token người quản trị gửi riêng cho bạn.
+Nó sẽ in ra một **mã 8 ký tự** rồi đứng chờ:
 
-Không cần git, không cần tài khoản ở đâu cả — lệnh tự tải code từ chính hub đó về.
+```
+  Mở https://ccrc.example.com/link trên thiết bị đã đăng nhập, rồi nhập mã:
 
-Nó hỏi thêm **tên máy** (hiện trong thông báo); Enter là lấy tên máy hiện tại. Xong là dùng
-được ngay.
+      K7M2-QX9F
+
+  Đang chờ duyệt (tối đa 600 giây)…
+```
+
+Mở đúng địa chỉ đó trên **điện thoại hoặc một tab trình duyệt đã đăng nhập Slack**, nhập mã,
+bấm **Duyệt**. Terminal tự nhận token trong vài giây và in tên người vừa duyệt:
+
+```
+  ✓ Đã nhận token của nguyen-van-a.
+```
+
+**Đọc dòng tên đó.** Nếu nó không phải bạn thì có người khác vừa duyệt nhầm mã của bạn — máy
+này vừa ghi token của họ. Chạy `curl -fsSL https://<hub-cua-ban>/uninstall.sh | sh` rồi cài
+lại.
+
+Sau đó nó hỏi **tên máy** (hiện trong thông báo); Enter là lấy tên máy hiện tại.
 
 Muốn đọc script trước khi chạy — hoàn toàn hợp lý, vì nó chạy trên máy bạn:
 
 ```bash
 curl -fsSL https://<hub-cua-ban>/install.sh -o install.sh
 less install.sh
-CCRC_HUB_URL=https://<hub-cua-ban> sh install.sh <token-cua-ban>
+CCRC_HUB_URL=https://<hub-cua-ban> sh install.sh
 ```
 
-**Lệnh này đụng vào đúng bốn chỗ, không gì khác:**
+**Chưa đăng nhập được Slack?** Người quản trị hub cấp cho bạn một token tay, rồi:
+
+```bash
+curl -fsSL https://<hub-cua-ban>/install.sh | sh -s -- <token-cua-ban> https://<hub-cua-ban>
+```
+
+Có token thì script bỏ qua hẳn bước mã ngắn.
+
+**Lệnh này đụng vào đúng năm chỗ, không gì khác:**
 
 | Chỗ | Nội dung |
 |---|---|
@@ -101,13 +120,15 @@ Nếu bạn có repo trên máy, vào thư mục đó rồi chạy:
 ./setup-notify.sh
 ```
 
-Nó hỏi ba thứ:
+Nó hỏi:
 
 | Hỏi | Trả lời |
 |---|---|
 | URL hub | `https://ccrc.example.com` |
-| Token cá nhân | token người quản trị gửi bạn |
 | Tên máy hiện trong thông báo | tên bạn nhận ra được, ví dụ `MacBook của Kiên` |
+
+Phần token nó **không hỏi** — cũng in mã 8 ký tự và chờ bạn duyệt ở `/link` như cách nhanh
+bên trên. Máy nào đã cài trước đó thì nó dùng lại token cũ, không bắt duyệt lại.
 
 Xong nó sẽ:
 
@@ -128,7 +149,7 @@ thì đây là cách phân biệt.
 1. Mở **Safari** (phải là Safari, không dùng Chrome), vào `https://ccrc.example.com`
 2. Nút Chia sẻ → **Thêm vào màn hình chính**
 3. **Mở app từ icon vừa thêm** — không mở lại bằng Safari
-4. Dán token → Đăng nhập
+4. Bấm **Đăng nhập bằng Slack**
 5. Bấm **Bật thông báo trên thiết bị này**, cho phép khi iOS hỏi
 
 ⚠️ **Bước 2 và 3 là bắt buộc, không phải gợi ý.** iOS chỉ cho phép thông báo đẩy với web app
@@ -137,8 +158,18 @@ thì đây là cách phân biệt.
 
 ### Android
 
-Chrome → vào `https://ccrc.example.com` → Chrome tự mời cài app → đăng nhập → bật thông báo.
-Không bắt buộc cài, nhưng cài thì tiện hơn.
+Chrome → vào `https://ccrc.example.com` → Chrome tự mời cài app → **Đăng nhập bằng Slack** →
+bật thông báo. Không bắt buộc cài, nhưng cài thì tiện hơn.
+
+### Đăng nhập bằng Slack làm gì
+
+Hub hỏi Slack xem bạn là ai, rồi tự cấp cho bạn một token riêng của nó. **Hub không bao giờ
+giữ mật khẩu Slack hay bất cứ thứ gì mở được tài khoản Slack của bạn** — nó chỉ nhận về một
+cái tên.
+
+Đăng nhập lại trên máy khác vẫn ra **đúng token cũ**, nên điện thoại và các máy dev của bạn
+không đá nhau. Đổi tên hiển thị trên Slack cũng không mất gì: hub khoá theo id Slack, không
+khoá theo tên.
 
 ### Kiểm tra
 
@@ -201,11 +232,11 @@ thêm phiên nào. Đóng Claude thì nó **tự tắt `/remote` của pane đó
 
 **Bạn tạo tài khoản Tailscale của riêng bạn** (gói cá nhân miễn phí là đủ), rồi cài lên
 **máy tính của bạn** và **điện thoại của bạn**. Chỉ hai thiết bị đó. Không tham gia tailnet
-của người khác, không mời ai vào tailnet của bạn.
+của người quản trị, không mời ai vào tailnet của bạn.
 
 Nghe có vẻ ngược — cùng một hệ thống mà mỗi người một mạng riêng thì nối vào nhau kiểu gì?
 Câu trả lời: **không cần nối vào nhau**. Nội dung terminal chỉ đi từ máy bạn tới điện thoại
-bạn. Không có luồng nào cần chạy giữa máy bạn và máy của người khác. Thứ duy nhất dùng chung là hub
+bạn. Không có luồng nào cần chạy giữa máy bạn và máy người quản trị. Thứ duy nhất dùng chung là hub
 (`ccrc.example.com`) — nó nằm trên Internet công cộng và **không cần Tailscale**.
 
 **Vì sao tách riêng lại quan trọng, chứ không chỉ là gọn:**
@@ -422,6 +453,12 @@ ghép lại từng máy**. Vài phút, nhưng biết trước thì đỡ hoảng
 
 | Hiện tượng | Nguyên nhân thường gặp |
 |---|---|
+| Lệnh cài in mã rồi báo **"Mã đã hết hạn"** | Mã sống 10 phút. Cũng xảy ra nếu bạn bấm Ctrl-C giữa chừng rồi duyệt sau — lượt duyệt đó bị tiêu mất. Chạy lại lệnh cài để lấy mã mới |
+| Lệnh cài in **"Hết thời gian chờ duyệt"** | Không ai bấm Duyệt trong 10 phút. Chạy lại, và mở sẵn `/link` trước khi chạy |
+| Duyệt xong nhưng tên in ra **không phải bạn** | Có người khác vừa nhập trúng mã của bạn. Gỡ cài đặt rồi cài lại — máy này đang giữ token của họ |
+| Mở `/link` mà thấy màn hình đăng nhập | Trình duyệt đó chưa đăng nhập. Đăng nhập bằng Slack ngay tại đó, nó quay lại đúng ô nhập mã |
+| Không thấy nút **Đăng nhập bằng Slack** | Hub chưa cấu hình đăng nhập Slack — dùng ô dán token, và báo người quản trị hub (mục 12) |
+| Bấm nút Slack rồi báo **"Phiên đăng nhập hết hạn"** | Link callback bị mở lại, hoặc quá 5 phút giữa lúc bấm và lúc Slack trả về. Bấm đăng nhập lại từ đầu |
 | `/notify` báo "chưa có thiết bị nào đăng ký" | Chưa bật thông báo trên điện thoại, hoặc iPhone mở bằng Safari thay vì từ icon màn hình chính |
 | Điện thoại không nhận thông báo | `/notify` đang **off**. Bật bằng `/notify on` |
 | `/remote on` báo không tìm thấy tmux | Claude Code đang chạy ngoài tmux. Thoát, chạy `tmux`, rồi chạy `claude` bên trong |
@@ -491,19 +528,51 @@ xong là mất danh sách đó; cài lại thì phải `/remote pair` lại từ
 
 ## 12. Thêm người dùng mới (dành cho người quản trị hub)
 
-Mỗi người cần đúng hai thứ, và **không cần gì khác**:
+**Bạn không phải phát token nữa.** Ai đăng nhập được Slack công ty thì tự cài được: mở
+`https://ccrc.example.com`, bấm Đăng nhập bằng Slack, rồi chạy lệnh cài một dòng ở mục 3. Hub
+tự tạo tài khoản cho họ ở lần đăng nhập đầu.
 
-**1. Một token riêng.** Trên máy chủ hub:
+Việc còn lại của người mới, và bạn không làm hộ được: **tài khoản Tailscale của riêng họ.**
+Không mời vào tailnet của bạn, không xin họ mời bạn vào tailnet của họ. Gói cá nhân miễn phí
+là đủ.
+
+### Khi có người rời team
+
+⚠️ **Hub không tự biết ai đã nghỉ.** Nó không hỏi lại Slack sau lần đăng nhập đầu, nên token
+của người đã rời **vẫn dùng được cho tới khi bạn thu hồi tay**:
+
+```bash
+./deploy.sh deluser ten-hien-thi        # hoặc id Slack
+```
+
+Khớp nhiều người thì lệnh **không xoá gì cả** và liệt kê ra để bạn gõ lại bằng id Slack — xoá
+nhầm là người đó mất push, mất lịch sử và mất các phiên đang mở.
+
+Việc này nên nằm trong checklist off-boarding. Bảo Slack vô hiệu hoá tài khoản là chặn được
+**đăng nhập mới**, nhưng không đụng gì tới token đã nằm trên máy họ.
+
+### Người không dùng Slack
+
+Vẫn cấp tay được — script tự động, người ngoài, tài khoản dùng chung:
 
 ```bash
 ./deploy.sh adduser ten-nguoi-do
 ```
 
 In ra một token — gửi **riêng** cho người đó, đừng dán vào chat nhóm. Hub tự nạp trong khoảng
-5 giây, không cần khởi động lại.
+5 giây, không cần khởi động lại. Họ cài bằng dạng có token ở mục 3.
 
-**2. Tài khoản Tailscale của riêng họ.** Không mời vào tailnet của bạn, không xin họ mời bạn
-vào tailnet của họ. Gói cá nhân miễn phí là đủ.
+### Bật đăng nhập Slack trên hub
+
+Cần **cả hai** biến trong `.env`; thiếu một là tính năng tắt hẳn và PWA quay về ô dán token:
+
+| Biến | Giá trị |
+|---|---|
+| `CCRC_TS_PUBLIC_URL` | URL công khai của token-slayer — trình duyệt đi theo |
+| `CCRC_TS_INTERNAL_URL` | URL nội bộ trong docker network — hub tự gọi, không ra internet |
+
+Bên token-slayer đặt `CCRC_CALLBACK_URL` trỏ ngược về hub, ví dụ
+`https://ccrc.example.com/auth/callback`.
 
 ### Vì sao không dùng tailnet chung — dù nghe tiện hơn
 

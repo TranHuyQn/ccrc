@@ -41,7 +41,7 @@ pane and never opens another pane or window.
 > | You want to | Read |
 > |---|---|
 > | Run a hub for yourself or a team | [`docs/self-hosting.md`](docs/self-hosting.md) |
-> | Set up a machine and phone, having been given a token | [`docs/user-guide.md`](docs/user-guide.md) · [🇻🇳 tiếng Việt](docs/huong-dan.md) |
+> | Set up a machine and phone | [`docs/user-guide.md`](docs/user-guide.md) · [🇻🇳 tiếng Việt](docs/huong-dan.md) |
 > | Know what this defends against, and what it does not | [`SECURITY.md`](SECURITY.md) |
 >
 > This README covers architecture and operations. A Vietnamese version of it lives at
@@ -88,6 +88,17 @@ Use `deploy.sh` rather than driving Docker Compose yourself: it generates `CCRC_
 then asks for a Cloudflare Tunnel token and tells you exactly where to get one
 (Zero Trust → Networks → Tunnels → Create a tunnel), which is the step that is easy to
 miss. Also available: `./deploy.sh status` · `down`.
+
+**Optional — sign-in with Slack.** If you run [token-slayer](https://github.com/ownego/token-slayer)
+alongside the hub, set `CCRC_TS_PUBLIC_URL` and `CCRC_TS_INTERNAL_URL` in `.env` (plus
+`CCRC_CALLBACK_URL` on the token-slayer side) and your team signs itself in — no `adduser`
+per person. A dev machine then runs the installer with no token: it prints a short code,
+somebody approves it on a signed-in device, and the machine collects its own token.
+
+Revoking is manual and stays manual: `./deploy.sh deluser <name>`. **The hub never
+re-checks with Slack**, so someone who has left keeps working access until that command is
+run. Put it in your off-boarding checklist — disabling their Slack account blocks new
+logins and nothing else.
 
 Running Compose by hand works too, but **both** variables have to be set in `.env` —
 `CCRC_TOKEN` and, for the `cloudflare` profile, `CCRC_TUNNEL_TOKEN`. Without the second
@@ -169,10 +180,13 @@ Exactly two, matching Claude Code's `Notification` hook:
 | `CCRC_TOKEN` | (required) | The hub's admin token |
 | `CCRC_PORT` | `8720` | HTTP port |
 | `CCRC_BIND` | `0.0.0.0` | Host bind address (Docker); set `127.0.0.1` when a tunnel or reverse proxy sits in front |
+| `CCRC_TRUST_PROXY` | (empty = off) | Set to `1` when a tunnel or reverse proxy sits in front, so the rate limiter counts the real client IP. **Pair it with `CCRC_BIND=127.0.0.1`** — Compose publishes 8720 on `0.0.0.0` in every profile, and a direct route to that port makes the flag meaningless because the client can write its own `X-Forwarded-For`. Leaving it off *behind* a proxy fails the other way: the whole internet shares one bucket, so one noisy caller rate-limits everybody |
 | `CCRC_DATA_DIR` | `server/data` (Docker: volume `ccrc-data`) | Where `users.json`, VAPID keys and push subscriptions live |
 | `CCRC_VAPID_SUBJECT` | `mailto:admin@localhost` | Web Push contact |
 | `CCRC_TUNNEL_TOKEN` | (empty) | Cloudflare Tunnel token (profile `cloudflare`) |
 | `CCRC_DOMAIN` | (empty) | Domain for Caddy TLS (profile `tls`) |
+| `CCRC_TS_PUBLIC_URL` | (empty) | token-slayer URL the browser is redirected to — comes as a pair with `CCRC_TS_INTERNAL_URL`; with only one set, Slack sign-in stays off |
+| `CCRC_TS_INTERNAL_URL` | (empty) | token-slayer URL the hub calls itself over the internal network. Swap the two and sign-in looks fine in the browser but fails on the hub side |
 
 **Dev machine** — `setup-notify.sh` asks for these and writes `~/.ccrc/config`, so you do
 not set them by hand: `CCRC_HUB_URL`, `CCRC_TOKEN` (your personal token),
