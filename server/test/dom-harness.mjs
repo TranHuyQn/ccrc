@@ -120,6 +120,8 @@ const REQUIRED_IDS = [
   'login', 'main', 'who', 'list',
   'push-state', 'enable-push',
   'token', 'login-btn', 'login-err', 'logout',
+  'slack-login', 'login-or',
+  'link-card', 'link-code', 'link-btn', 'link-msg', 'link-err',
   'terminal-list', 'terminal-err', 'terminal-empty',
   'devices-wrap', 'devices', 'devices-toggle', 'devices-err',
   'pair-panel', 'pair-title', 'pair-step', 'pair-sas', 'pair-help',
@@ -201,12 +203,12 @@ export function makeFetch(impl) {
 
 export function loadAppPage({
   token = '', fetchImpl = null, navigatorImpl = null, indexedDBImpl = null, cryptoImpl = null,
-  search = '',
+  search = '', pathname = '/',
 } = {}) {
   const byId = {};
   const BUTTON_IDS = new Set([
     'login-btn', 'logout', 'enable-push', 'devices-toggle',
-    'pair-cancel',
+    'pair-cancel', 'slack-login', 'link-btn',
   ]);
   for (const id of REQUIRED_IDS) byId[id] = new FakeElement(BUTTON_IDS.has(id) ? 'button' : 'div');
   byId.token.value = '';
@@ -244,10 +246,13 @@ export function loadAppPage({
   // terminal biết đường quay về, cơ chế đó đã bị gỡ hẳn (xem term.js). Giữ
   // lại vì `location` thật luôn có nó: một trang chạy thiếu thuộc tính chuẩn
   // là bộ khung nói dối, không phải bộ khung tối giản.
+  // `pathname` mặc định '/' — chỉ trang /link mới cần override, và bootstrap
+  // của app.js rẽ nhánh đúng ngay trên giá trị này (showLink() thay vì
+  // showMain()/màn hình đăng nhập bình thường).
   const location = {
     href: '',
     origin: 'https://hub.example.com',
-    pathname: '/',
+    pathname,
     search,
     reloads: 0,
     reload() { this.reloads += 1; },

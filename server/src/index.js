@@ -4,6 +4,7 @@
 // mirrored: no sessions, no transcripts, no WebSocket relay.
 
 import express from 'express';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -12,14 +13,30 @@ import { createTerminalSessions } from './terminal-sessions.js';
 import { createNotificationHistory } from './notification-history.js';
 import { deviceId, labelFromUserAgent, listDevices } from './push-devices.js';
 import { isSessionUrlAllowed } from './session-url.js';
-import { HUB_USER_NAME, parseUsers } from './users.js';
+import { HUB_USER_NAME, isValidSlackUserId, parseUsers, upsertBySlackId } from './users.js';
 import { createPairings } from './pairing.js';
+import { createIdentity } from './identity.js';
+import { createOneShotStore } from './oauth-state.js';
+import { createDeviceCodes, DEVICE_TTL_MS, MAX_PENDING } from './device-code.js';
+import { createRateLimit } from './rate-limit.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const PORT = Number(process.env.CCRC_PORT || 8720);
 const TOKEN = process.env.CCRC_TOKEN; // hub token; also logs in as the "admin" user
 const DATA_DIR = process.env.CCRC_DATA_DIR || path.join(__dirname, '..', 'data');
+// Có reverse proxy / tunnel đáng tin đứng trước hub hay không. MẶC ĐỊNH TẮT —
+// lý do đầy đủ nằm ở khối chú thích chỗ `app.set('trust proxy', 1)` bên dưới.
+//
+// ALLOWLIST, không phải denylist. docker-compose truyền biến này xuống dưới
+// dạng chuỗi, nên `CCRC_TRUST_PROXY=0` tới đây là chuỗi "0" — truthy trong JS,
+// tức một phép `!!` sẽ hiểu ngược ý người viết. Nhưng liệt kê "những chữ nghĩa
+// là không" thì vẫn hỏng ÂM THẦM theo hướng nguy hiểm: `none`, `disabled`,
+// `n`, `null` đều rơi ra ngoài danh sách và thành BẬT. Với một cờ mà bật nhầm
+// = thủng chốt không ai thấy, chỉ có bốn chữ dưới đây là "có"; mọi thứ khác,
+// kể cả chữ đánh máy sai, là KHÔNG.
+const TRUST_PROXY = ['1', 'true', 'yes', 'on']
+  .includes(String(process.env.CCRC_TRUST_PROXY ?? '').trim().toLowerCase());
 
 // Tạo TRƯỚC mọi thứ đọc/ghi bên dưới. Mặc định là `server/data/`, thư mục nằm
 // trong .gitignore vì nó giữ khoá VAPID và token của mọi người — và vì git
@@ -67,8 +84,84 @@ function loadUsers() {
 loadUsers();
 fs.watchFile(USERS_FILE, { interval: 5000 }, loadUsers);
 
+// --- Đăng nhập bằng Slack, danh tính lấy qua token-slayer -------------------
+//
+// Hai URL tách bạch và KHÔNG dùng lẫn: PUBLIC là thứ dán vào redirect cho
+// trình duyệt đi, INTERNAL là thứ hub gọi trong docker network. Thiếu một
+// trong hai thì tính năng không tồn tại — fail-closed, chứ không phải gọi
+// vào một địa chỉ đoán được.
+const TS_PUBLIC_URL = process.env.CCRC_TS_PUBLIC_URL || '';
+const TS_INTERNAL_URL = process.env.CCRC_TS_INTERNAL_URL || '';
+const slackLoginEnabled = !!(TS_PUBLIC_URL && TS_INTERNAL_URL);
+
+const identity = createIdentity({ internalUrl: TS_INTERNAL_URL });
+const oauthStates = createOneShotStore({ ttlMs: 5 * 60_000 });
+const loginClaims = createOneShotStore({ ttlMs: 60_000 });
+const deviceCodes = createDeviceCodes();
+
+function genToken() {
+  return crypto.randomBytes(24).toString('hex');
+}
+
+/**
+ * Ghi entry cho một danh tính Slack rồi nạp lại ngay. Trả token của người đó,
+ * hoặc null nếu không ghi được.
+ *
+ * Ghi qua temp + rename như devices.js: một users.json cụt vì mất điện giữa
+ * chừng là cả team mất quyền cùng lúc. Gọi loadUsers() luôn thay vì chờ
+ * watchFile 5 giây — người dùng đang đứng nhìn màn hình.
+ *
+ * BẤT BIẾN, đọc trước khi sửa hàm này: đoạn đọc–sửa–ghi dưới đây an toàn
+ * trước hai lần đăng nhập song song CHỈ VÌ trong nó KHÔNG CÓ MỘT `await` NÀO.
+ * Node chạy một luồng, nên cả đoạn là một lượt không ai chen vào được: không
+ * có khe nào để một request khác đọc bản cũ rồi ghi đè lên bản mình vừa ghi.
+ * Đổi sang `fs.promises` (hoặc chèn bất cứ `await` nào vào giữa) làm mất
+ * đúng tính chất đó, âm thầm: hai người đăng nhập cùng lúc thì một người mất
+ * entry, và triệu chứng là "token vừa cấp xong đã không dùng được" — không
+ * có gì trong log chỉ về đây. `rename` nguyên tử chỉ cứu được file khỏi cụt,
+ * nó KHÔNG cứu được lost update.
+ *
+ * (Đây cũng là lý do tên file tạm mang pid: `deploy.sh` là một tiến trình
+ * KHÁC, và giữa hai tiến trình thì lập luận một-luồng ở trên không còn đúng.
+ * Tên tạm riêng không xoá được cuộc đua đọc–sửa–ghi giữa hai tiến trình —
+ * không có gì ở tầng này xoá được — nhưng nó bỏ đi mối nguy thứ hai: hai bên
+ * ghi đè lên nhau NGAY TRONG file tạm, đẻ ra một lần rename ra nội dung lai
+ * của cả hai.)
+ */
+function saveSlackUser(slackUserId, displayName) {
+  let list = [];
+  try {
+    list = JSON.parse(fs.readFileSync(USERS_FILE, 'utf8'));
+  } catch { list = []; }
+  if (!Array.isArray(list)) list = [];
+
+  const { list: next, token } = upsertBySlackId(list, slackUserId, displayName, genToken());
+  const tmp = `${USERS_FILE}.tmp.${process.pid}`;
+  try {
+    fs.writeFileSync(tmp, JSON.stringify(next, null, 2), { mode: 0o600 });
+    fs.renameSync(tmp, USERS_FILE);
+  } catch (e) {
+    // To và đủ để chẩn đoán. Người dùng chỉ thấy một trang lỗi 500, nên cái
+    // thật sự xảy ra — đĩa đầy, quyền sai, mount read-only — chỉ còn tồn tại
+    // ở dòng này. Một `e.message` trần ("EACCES: permission denied") không
+    // nói file nào.
+    console.error(`[hub] KHÔNG ghi được ${USERS_FILE} (qua tạm ${tmp}): `
+      + `${e.code || 'lỗi'} — ${e.message}. Đăng nhập của "${displayName}" (${slackUserId}) BỊ HUỶ, `
+      + 'users.json giữ nguyên bản cũ.', e);
+    // Dọn file tạm nếu nó đã kịp ra đời: rename mới là bước hỏng thì cái tạm
+    // còn nằm đó, và mỗi lần đăng nhập hỏng lại để lại một xác nữa.
+    try { fs.unlinkSync(tmp); } catch { /* chưa kịp tạo — không có gì để dọn */ }
+    return null;
+  }
+  loadUsers();
+  return token;
+}
+
 function resolveUser(token) {
-  if (token === TOKEN) return { name: HUB_USER_NAME, admin: true };
+  // Cả hai nhánh phải cùng hình dạng: callers (vd. /api/device/poll) đọc
+  // displayName off either — thiếu nó ở nhánh admin thì grant đi ra ngoài
+  // thiếu tên hiển thị, dù token vẫn đúng.
+  if (token === TOKEN) return { name: HUB_USER_NAME, displayName: HUB_USER_NAME, admin: true };
   return usersByToken.get(token) || null;
 }
 
@@ -140,6 +233,61 @@ const terminals = createTerminalSessions();
 const pairings = createPairings();
 
 const app = express();
+
+// `trust proxy` — MẶC ĐỊNH TẮT, chỉ bật khi người vận hành đặt
+// CCRC_TRUST_PROXY=1. Thứ duy nhất đọc nó là `req.ip`, và `req.ip` là khoá
+// rate-limit của /api/device/start — endpoint KHÔNG có auth.
+//
+// Cổng 8720 của hub tới được bằng NHIỀU đường CÙNG LÚC, không phải một:
+//
+//   (1) Qua proxy — Cloudflare Tunnel hoặc Caddy. Chặng cuối trước hub là
+//       cloudflared/Caddy, và chính nó ghi thêm địa chỉ thật của client vào
+//       cuối `X-Forwarded-For`. Client bịa header chỉ nhét thêm được vào bên
+//       TRÁI phần đó.
+//   (2) Thẳng vào cổng. `docker-compose.yml` publish cổng ở
+//       `${CCRC_BIND:-0.0.0.0}:8720` trong MỌI profile, kể cả profile
+//       cloudflare — nên trừ khi người vận hành đặt CCRC_BIND=127.0.0.1, một
+//       `docker compose up` bình thường vẫn mở cổng ra LAN/tailnet (và ra
+//       internet nếu router có forward). Đường này không có proxy nào.
+//
+// `app.set('trust proxy', 1)` nghĩa là "tin đúng một chặng gần app nhất", nên
+// Express lấy PHẦN TỬ CUỐI của `X-Forwarded-For`. Trên đường (1) phần tử cuối
+// do proxy ghi → đúng client, không bịa được. Trên đường (2) chặng "được tin"
+// LẠI CHÍNH LÀ CLIENT → nó tự viết khoá rate-limit của mình, đổi header mỗi
+// lượt là không bao giờ chạm trần:
+//
+//   cùng client, không XFF:      200,200,200,200,200,429,429
+//   cùng client, XFF xoay vòng:  200,200,200,200,200,200,200   ← thủng
+//
+// Vì thế mặc định là TẮT: `req.ip` khi đó là địa chỉ socket, thứ không header
+// nào sửa được, nên đường (2) an toàn kể cả khi hub bị phơi ra internet.
+//
+// Cái giá của việc TẮT khi thật sự CÓ proxy: mọi request đều mang địa chỉ của
+// proxy, cả internet dùng chung một rổ đếm, và một người gọi nhiều làm cả team
+// bị 429. Đó là lý do biến môi trường tồn tại thay vì hard-code: có proxy thì
+// đặt CCRC_TRUST_PROXY=1, lúc ấy header đi qua proxy nên không bịa được.
+//
+// NHƯNG bật cờ mà KHÔNG đóng đường (2) thì cờ vô nghĩa: hai đường vẫn tồn tại
+// song song, và kẻ tấn công cứ chọn đường thẳng để bịa header. Đóng đường (2)
+// bằng cách nào thì tuỳ kiểu triển khai, và KHÔNG có cách nào hub tự làm được:
+//
+//   - Chạy bằng docker-compose: đặt CCRC_BIND=127.0.0.1. Đây là biến của
+//     compose (nó nằm ở vế publish `ports:`), KHÔNG phải biến của hub —
+//     `app.listen(PORT)` ở cuối file này không đọc nó và luôn nghe trên mọi
+//     interface. Nhớ thêm: rule iptables của Docker nằm TRƯỚC ufw, nên một VPS
+//     đã `ufw deny 8720` vẫn hở nếu compose còn publish ra 0.0.0.0.
+//   - Chạy Node trực tiếp (deploy/ccrc-hub.service, bare-metal sau Caddy):
+//     CCRC_BIND không tồn tại ở đây. Phải chặn cổng 8720 ở tường lửa của máy,
+//     hoặc cho hub nghe trên loopback bằng cách khác. Không làm gì cả nghĩa là
+//     cổng mở trên toàn LAN.
+//
+// Vì sao mặc định là TẮT chứ không phải BẬT: đặt sai theo hướng nào cũng có
+// giá, nhưng chỉ MỘT hướng hỏng âm thầm. Bật nhầm (không có proxy) = chốt
+// thủng, không ai thấy gì. Tắt nhầm (có proxy) = chặn quá tay, người dùng kêu
+// ngay lượt thứ sáu. An toàn theo mặc định là tính chất phải có cho một thứ
+// với tới được từ internet.
+if (TRUST_PROXY) app.set('trust proxy', 1);
+
 app.use(express.static(path.join(__dirname, '..', 'public'), {
   setHeaders: (res, filePath) => {
     // Express's default here is "public, max-age=0", which is weak/ambiguous
@@ -213,7 +361,13 @@ app.post('/notify', express.json({ limit: '16kb' }), (req, res) => {
 app.get('/api/me', (req, res) => {
   const user = requireUser(req, res);
   if (!user) return;
-  res.json({ user: user.name, pushDevices: (pushSubs[user.name] || []).length });
+  // displayName, KHÔNG phải name. Khoá của mọi state trên hub là
+  // `slack_user_id` (`U08K3QZ1X4M`) — đưa nó lên header PWA thì mọi người
+  // đăng nhập bằng Slack đều thấy một chuỗi máy đọc thay cho tên mình, và
+  // không ai đối chiếu được "mình đang đăng nhập bằng tài khoản nào".
+  // parseUsers() đảm bảo displayName luôn có (mặc định bằng name cho entry cũ
+  // do `deploy.sh adduser` tạo), nên đây không bao giờ là undefined.
+  res.json({ user: user.displayName, pushDevices: (pushSubs[user.name] || []).length });
 });
 
 app.get('/api/notifications', (req, res) => {
@@ -223,6 +377,282 @@ app.get('/api/notifications', (req, res) => {
 });
 
 app.get('/api/vapid-key', (_req, res) => res.json({ publicKey: vapidKeys.publicKey }));
+
+// --- Đăng nhập bằng Slack ---------------------------------------------------
+
+// Trang lỗi TĨNH, có nút bấm, KHÔNG tự redirect.
+//
+// token-slayer đã phải thêm một cờ RETRY_FLAG vì callback hỏng của nó tự
+// redirect lại /auth/slack, và một session hỏng vĩnh viễn thì ping-pong vô
+// hạn. Không lặp lại: mọi lỗi trong luồng này dừng ở đây.
+function authError(res, code, msg) {
+  res.status(code).type('html').send(
+    '<!doctype html><meta charset="utf-8">'
+    + '<meta name="viewport" content="width=device-width,initial-scale=1">'
+    + '<style>body{font:16px/1.5 system-ui;background:#0f1115;color:#e6e6e6;'
+    + 'margin:0;display:grid;place-items:center;height:100vh;padding:24px;text-align:center}'
+    + 'a{color:#7aa2f7}</style>'
+    + `<div><p>${msg}</p><p><a href="/">Quay lại đăng nhập</a></p></div>`,
+  );
+}
+
+app.get('/api/auth/config', (_req, res) => res.json({ slackLogin: slackLoginEnabled }));
+
+// --- `state` phải chứng minh callback thuộc về ĐÚNG TRÌNH DUYỆT đã bấm -----
+//
+// Chỉ "state còn sống và chưa dùng" thôi thì mới chỉ chứng minh CÓ MỘT lần
+// đăng nhập nào đó vừa bắt đầu trên hub này — không chứng minh nó là của
+// người đang mở link. Kịch bản: Mallory bấm đăng nhập, đi hết vòng Slack, rồi
+// CHẶN redirect cuối trước khi trình duyệt của mình đi tới, và gửi URL
+// `/auth/callback?token=…&state=…` đó cho Bob. Trình duyệt Bob đi theo, hub
+// đổi token và nhận về danh tính của MALLORY, rồi app.js ghi token của Mallory
+// đè lên localStorage của Bob. Điện thoại Bob từ đó đăng ký push dưới tên
+// Mallory — không có màn hình nào báo gì cả.
+//
+// Chốt: `/auth/start` đặt một nonce ngẫu nhiên vào cookie HttpOnly VÀ vào
+// payload của state (payload để trống từ đầu chính là để dành chỗ này).
+// Callback đòi hai cái khớp nhau. Bob không có cookie của Mallory, nên link
+// kia dừng ở trang lỗi tĩnh thay vì đăng nhập hộ người khác.
+const OAUTH_COOKIE = 'ccrc_oauth';
+const OAUTH_COOKIE_MAX_AGE_MS = 5 * 60_000;   // đúng bằng TTL của state
+
+// Đọc cookie bằng regex nhỏ, cùng cách header `Bearer` được đọc ở
+// userFromRequest() — không thêm phụ thuộc npm cho một dòng phân tách bằng
+// "; ". Nonce là base64url nên không có ký tự nào cần giải mã.
+function oauthNonceFromCookie(req) {
+  const raw = req.headers.cookie || '';
+  const m = raw.match(/(?:^|;\s*)ccrc_oauth=([A-Za-z0-9_-]+)/);
+  return m ? m[1] : '';
+}
+
+// Cờ `Secure` bật theo request, KHÔNG bật cứng.
+//
+// Hub được với tới bằng hai đường: HTTPS qua Cloudflare Tunnel, và HTTP thuần
+// trên IP Tailscale trong tailnet (cố ý — xem README/docs, không dùng TLS vì
+// Certificate Transparency log). `Secure` cứng nghĩa là trình duyệt trên
+// đường tailnet KHÔNG LƯU cookie này, và mọi lần đăng nhập Slack qua tailnet
+// chết ở trang "phiên đăng nhập không thuộc về trình duyệt này" — hỏng im
+// lặng, đúng loại lỗi khó truy nhất. Đường tailnet đã được WireGuard mã hoá ở
+// tầng dưới, nên thứ `Secure` bảo vệ (cookie đi qua đường trong veo) không
+// phải mối lo ở đó.
+//
+// Vì sao KHÔNG dùng thẳng `req.secure`: `req.secure` phụ thuộc `trust proxy`,
+// mà `trust proxy` giờ mặc định TẮT (xem khối chú thích ở đó). Nếu để nguyên
+// `req.secure` thì một hub đang chạy sau Cloudflare Tunnel, sau khi nâng cấp
+// mà chưa kịp đặt CCRC_TRUST_PROXY=1, sẽ ÂM THẦM cấp cookie mất cờ Secure
+// dù trình duyệt đang ở HTTPS — một chốt bảo mật không được phép làm yếu đi
+// một chốt khác như thế.
+//
+// Nên cờ này hỏi một câu KHÁC câu mà rate-limit hỏi: "trình duyệt đang ở
+// HTTPS phải không?", và tự đọc X-Forwarded-Proto bất kể có tin proxy hay
+// không. Đọc một header không tin được ở đây là an toàn vì nó chỉ THÊM được
+// cờ Secure, và chỉ cho cookie của chính người gửi header: kẻ bịa
+// `X-Forwarded-Proto: https` rồi nói chuyện HTTP thuần chỉ làm trình duyệt
+// CỦA CHÍNH NÓ vứt cookie đi, tức tự phá đăng nhập của mình. Không có đường
+// nào để nó gỡ cờ Secure khỏi cookie của người khác — trang web bên ngoài
+// không đặt được header cho request của trình duyệt nạn nhân.
+//
+// RÀNG BUỘC NGẦM, ghi ra để nó không mất khi có người sửa chỗ khác: lập luận
+// trên đứng được CHỈ VÌ hub không trả bất kỳ header CORS nào cho phép custom
+// request header. Thêm một `Access-Control-Allow-Headers` rộng tay (hoặc một
+// middleware cors() đặt bừa) là mở đường cho một trang lạ ép trình duyệt nạn
+// nhân gửi `X-Forwarded-Proto` do nó chọn, và đoạn này hết an toàn. Ai thêm
+// CORS vào hub phải quay lại đọc chỗ này trước.
+//
+// Lấy phần tử CUỐI khi header có nhiều chặng, cùng quy ước "chặng gần hub
+// nhất" mà X-Forwarded-For dùng.
+function browserIsHttps(req) {
+  if (req.secure) return true;
+  const xfp = req.headers['x-forwarded-proto'];
+  if (typeof xfp !== 'string') return false;
+  return xfp.split(',').pop().trim().toLowerCase() === 'https';
+}
+
+function setOauthCookie(req, res, nonce) {
+  res.cookie(OAUTH_COOKIE, nonce, {
+    httpOnly: true,
+    secure: browserIsHttps(req),
+    sameSite: 'lax',   // callback là điều hướng top-level từ token-slayer sang
+    path: '/',
+    maxAge: OAUTH_COOKIE_MAX_AGE_MS,
+  });
+}
+
+app.get('/auth/start', (req, res) => {
+  if (!slackLoginEnabled) {
+    return authError(res, 503, 'Đăng nhập bằng Slack chưa được cấu hình trên hub này.');
+  }
+  const nonce = crypto.randomBytes(32).toString('base64url');
+  const state = oauthStates.issue({ nonce });
+  setOauthCookie(req, res, nonce);
+  const u = new URL('/auth/slack', TS_PUBLIC_URL);
+  u.searchParams.set('return', 'ccrc');
+  u.searchParams.set('state', state);
+  res.redirect(302, u.toString());
+});
+
+app.get('/auth/callback', async (req, res) => {
+  if (!slackLoginEnabled) {
+    return authError(res, 503, 'Đăng nhập bằng Slack chưa được cấu hình trên hub này.');
+  }
+
+  const state = typeof req.query.state === 'string' ? req.query.state : '';
+  // Tiêu huỷ state TRƯỚC khi hỏi token-slayer: một callback replay không được
+  // phép tiêu tốn thêm một lượt nào nữa, kể cả một lượt thất bại.
+  const statePayload = oauthStates.consume(state);
+  if (statePayload === null) {
+    return authError(res, 400, 'Phiên đăng nhập hết hạn hoặc đã dùng rồi.');
+  }
+
+  // Cookie phải khớp nonce nằm trong state. Xem khối chú thích ở /auth/start
+  // cho kịch bản tấn công mà chốt này chặn.
+  const cookieNonce = oauthNonceFromCookie(req);
+  if (!cookieNonce || cookieNonce !== statePayload?.nonce) {
+    // KHÔNG xoá cookie ở nhánh này. Đây đúng là nhánh mà nạn nhân đi vào khi
+    // ai đó gửi cho họ một link callback của người khác, và họ rất có thể
+    // đang có một lần đăng nhập của CHÍNH MÌNH dở dang — xoá cookie ở đây là
+    // biến một cú tấn công bị chặn thành một cú phá luồng đăng nhập của nạn
+    // nhân.
+    console.error('[hub] /auth/callback: state hợp lệ nhưng cookie không khớp — '
+      + 'callback không thuộc về trình duyệt đã bắt đầu đăng nhập');
+    return authError(res, 400,
+      'Phiên đăng nhập này không thuộc về trình duyệt đang mở. Hãy tự bấm đăng nhập lại từ đầu.');
+  }
+  // Khớp rồi thì cookie đã làm xong việc: dùng một lần, hệt như state.
+  res.clearCookie(OAUTH_COOKIE, { path: '/' });
+
+  const token = typeof req.query.token === 'string' ? req.query.token : '';
+  const r = await identity.exchange(token, state);
+
+  if (!r.ok) {
+    if (r.reason === 'unreachable') {
+      return authError(res, 503,
+        'Không liên lạc được token-slayer. Token đã cài trên máy vẫn dùng bình thường — chỉ đăng nhập mới hỏng.');
+    }
+    if (r.status === 410) {
+      return authError(res, 400, 'Link đăng nhập đã dùng rồi hoặc quá 2 phút — thử lại.');
+    }
+    return authError(res, 400, 'Không lấy được danh tính Slack.');
+  }
+
+  // Mọi state trên hub khoá theo TÊN, nên `name` phải có đúng hình dạng của
+  // một slack_user_id chứ không phải "một chuỗi bất kỳ khác 'admin'". Xem
+  // isValidSlackUserId() trong users.js: luật allowlist ở đó loại một lượt cả
+  // 'admin' (chữ thường) lẫn họ khoá ma thuật của JS — `__proto__` làm
+  // `pushSubs[user.name] || []` trả về Object.prototype và mọi lần đăng ký
+  // push của người đó thành 500.
+  if (!isValidSlackUserId(r.slackUserId)) {
+    console.error(`[hub] từ chối danh tính Slack có hình dạng không hợp lệ: ${JSON.stringify(r.slackUserId)}`);
+    return authError(res, 400, 'Không lấy được danh tính Slack.');
+  }
+
+  const hubToken = saveSlackUser(r.slackUserId, r.handle);
+  if (!hubToken) return authError(res, 500, 'Hub không ghi được cấu hình người dùng.');
+
+  // Token đi qua claimCode chứ không qua URL: token của hub sống mãi, mà URL
+  // đi vào history trình duyệt, vào Referer và vào access log của reverse
+  // proxy. claimCode sống 60 giây và dùng một lần.
+  const code = loginClaims.issue({ token: hubToken, displayName: r.handle });
+  res.redirect(302, `/?login=${encodeURIComponent(code)}`);
+});
+
+app.post('/api/auth/claim', express.json({ limit: '4kb' }), (req, res) => {
+  const p = loginClaims.consume(req.body?.code);
+  if (!p) return res.status(410).json({ ok: false, error: 'Đăng nhập hết hạn, thử lại' });
+  res.json({ ok: true, token: p.token, displayName: p.displayName });
+});
+
+// --- Device-code cho máy dev ------------------------------------------------
+
+// Không có auth, đúng bản chất: máy dev chưa có gì để xác thực. Spec §5.2 đòi
+// HAI chốt cho endpoint này: trần phiên pending toàn hub (MAX_PENDING trong
+// device-code.js) và rate-limit theo IP (rate-limit.js).
+//
+// Vì sao cần cả hai: trần pending một mình không phân biệt được 50 máy dev
+// thật với một kẻ gọi 50 lần. 50 POST ẩn danh mỗi 10 phút giữ kín mọi chỗ, và
+// từ đó mọi `./setup-notify.sh` rơi về hỏi token tay — mà nó rơi ÊM, vì hàm
+// device_code_login() coi mọi thất bại là "hub cũ chưa có endpoint này".
+//
+// 5 lượt / 10 phút / IP: một người cài máy mới gọi đúng một lượt, và có gõ
+// sai vài lần cũng không chạm. Cửa sổ đặt bằng DEVICE_TTL_MS để hai cái trần
+// nói về cùng một quãng thời gian.
+const DEVICE_START_LIMIT = 5;
+const DEVICE_START_WINDOW_MS = DEVICE_TTL_MS;
+const deviceStartLimit = createRateLimit({
+  limit: DEVICE_START_LIMIT, windowMs: DEVICE_START_WINDOW_MS,
+});
+
+// Trần pending bị chạm cũng phải NÓI RA. Trước đây nó chỉ hiện ra dưới dạng
+// mọi installer im lặng rơi về dán token tay — không có dòng nào ở đâu cho
+// người vận hành lần ra. Chặn nhịp bằng mốc thời gian để một kẻ tấn công
+// không viết được nhật ký hộ hub.
+const PENDING_LOG_EVERY_MS = 60_000;
+let lastPendingCapLogAt = -Infinity;
+
+app.post('/api/device/start', express.json({ limit: '4kb' }), (req, res) => {
+  // `req.ip` mặc định là địa chỉ socket — không header nào sửa được, nên khoá
+  // này không bẻ được kể cả khi ai đó gọi thẳng vào cổng 8720. Chỉ khi người
+  // vận hành đặt CCRC_TRUST_PROXY=1 (có proxy thật đứng trước) thì nó mới là
+  // phần tử cuối của X-Forwarded-For, phần do proxy tự ghi. Xem khối chú thích
+  // ở chỗ `if (TRUST_PROXY)` cho đầy đủ hai đường đi và cái giá của mỗi lựa chọn.
+  const ip = req.ip || '';
+  const gate = deviceStartLimit.hit(ip);
+  if (!gate.ok) {
+    if (gate.firstTrip) {
+      console.error(`[hub] /api/device/start: IP ${ip} vượt ${DEVICE_START_LIMIT} lượt/`
+        + `${Math.round(DEVICE_START_WINDOW_MS / 60_000)} phút — chặn tới hết cửa sổ`);
+    }
+    res.setHeader('retry-after', String(gate.retryIn));
+    return res.status(429).json({
+      ok: false, error: 'Quá nhiều yêu cầu từ địa chỉ này — thử lại sau vài phút',
+    });
+  }
+
+  const r = deviceCodes.start();
+  if (!r.ok) {
+    const t = Date.now();
+    if (t - lastPendingCapLogAt >= PENDING_LOG_EVERY_MS) {
+      lastPendingCapLogAt = t;
+      console.error(`[hub] /api/device/start: chạm trần ${MAX_PENDING} phiên chờ duyệt trên toàn hub `
+        + '— mọi máy dev đang phải dán token tay');
+    }
+    return res.status(429).json({ ok: false, error: r.reason });
+  }
+  res.json({ ok: true, deviceCode: r.deviceCode, userCode: r.userCode, ttl: r.ttl, interval: r.interval });
+});
+
+app.post('/api/device/poll', express.json({ limit: '4kb' }), (req, res) => {
+  const r = deviceCodes.poll(req.body?.deviceCode);
+  if (r.status === 'gone') return res.status(410).json({ ok: false, error: 'Mã đã hết hạn' });
+  if (r.status === 'throttled') return res.status(429).json({ ok: false, retryIn: r.retryIn });
+  if (r.status === 'pending') return res.status(428).json({ ok: false, error: 'Chưa được duyệt' });
+  res.json({ ok: true, token: r.grant.token, displayName: r.grant.displayName });
+});
+
+app.post('/api/device/approve', express.json({ limit: '4kb' }), (req, res) => {
+  const user = requireUser(req, res);
+  if (!user) return;
+  // Token của chính người duyệt là thứ được trao đi — đó là ý nghĩa của việc
+  // duyệt: "cấp quyền của TÔI cho cái máy đang cầm mã này". Đọc lại header ở
+  // đây vì resolveUser() cố ý không trả token ra ngoài; parse này phải khớp
+  // đúng cách userFromRequest() parse, không được lệch nhau.
+  const bearer = (req.headers.authorization || '').replace(/^Bearer\s+/, '').trim();
+  const r = deviceCodes.approve(user.name, req.body?.userCode, {
+    name: user.name, displayName: user.displayName, token: bearer,
+  });
+  if (!r.ok) return res.status(400).json({ ok: false, error: r.reason, remaining: r.remaining });
+  res.json({ ok: true });
+});
+
+// Trang duyệt máy dev. Cùng index.html với PWA — app.js nhìn location.pathname
+// để quyết định hiện thẻ nào, nên không có bundle thứ hai phải bảo trì.
+app.get('/link', (_req, res) => {
+  // sendFile() không đi qua express.static nên không tự nhận setHeaders() ở
+  // trên — phải set tay cùng "no-cache" đó, kẻo /link rơi vào đúng cái bẫy
+  // Cloudflare 4h mà setHeaders() sinh ra để tránh.
+  res.setHeader('Cache-Control', 'no-cache');
+  res.sendFile(path.join(__dirname, '..', 'public', 'index.html'));
+});
 
 // The dev-machine half of the repo, for the one-command installer.
 //

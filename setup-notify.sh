@@ -38,13 +38,109 @@ ask() { # ask VAR "câu hỏi" "mặc định"
   printf -v "$__var" '%s' "$__ans"
 }
 
+# Đọc một trường của JSON bằng node (script này đã đòi node ở trên).
+json_field() {
+  node -e '
+    let s = "";
+    process.stdin.on("data", (d) => { s += d; }).on("end", () => {
+      try {
+        const v = JSON.parse(s)[process.argv[1]];
+        process.stdout.write(v == null ? "" : String(v));
+      } catch { /* JSON hỏng = trường rỗng, người gọi tự xử */ }
+    });
+  ' "$1"
+}
+
+# Lấy token bằng device-code: in một mã ngắn, chờ người duyệt trên thiết bị đã
+# đăng nhập, rồi đổi lấy token. Đặt DEVICE_TOKEN khi thành công.
+#
+# Mã ngắn CHỈ để người gõ; thứ đổi ra token là deviceCode 32 byte mà script
+# này giữ. Không in deviceCode ra màn hình.
+DEVICE_TOKEN=""
+device_code_login() {
+  local start dcode ucode ttl interval body code deadline dname
+  start=$(curl -fsS -X POST "$HUB_URL/api/device/start" \
+            -H 'content-type: application/json' -d '{}' 2>/dev/null) || return 1
+  dcode=$(printf '%s' "$start" | json_field deviceCode)
+  ucode=$(printf '%s' "$start" | json_field userCode)
+  ttl=$(printf '%s' "$start" | json_field ttl)
+  interval=$(printf '%s' "$start" | json_field interval)
+  [ -n "$dcode" ] && [ -n "$ucode" ] || return 1
+  # ttl/interval đi thẳng vào $(( )) và vào `sleep`, không phải vào một lệnh có
+  # exit status để `&&`/if bắt lỗi. Một giá trị không phải số ở đây không phải
+  # lệnh thất bại — dưới `set -u` bash đọc nó như TÊN BIẾN trong $(( )) và báo
+  # "unbound variable", một lỗi thoát thẳng cả script, xuyên qua cả
+  # `device_code_login && TOKEN=...` đang gọi hàm này. Ép về số trước khi dùng,
+  # y như DEF_NAME ở dưới, để một hub trả sai kiểu không đánh sập cả installer.
+  case "$ttl" in ''|*[!0-9]*) ttl=600 ;; esac
+  case "$interval" in ''|*[!0-9]*) interval=5 ;; esac
+  # ...và phải LỚN HƠN 0. "0" lọt qua bộ lọc chữ số ở trên, và `sleep 0` biến
+  # vòng lặp dưới thành một vòng quay không nghỉ suốt cả ttl (600 giây), đập
+  # vào /api/device/poll hết sức máy — nhánh 428|429 không hề giãn nhịp, nó
+  # chỉ "chờ tiếp". Dùng `test` chứ không thêm `0` vào case: `00`, `000` cũng
+  # là sleep 0 mà không khớp mẫu nào ở trên.
+  [ "$interval" -gt 0 ] 2>/dev/null || interval=5
+
+  say ""
+  say "  Mở ${HUB_URL}/link trên thiết bị đã đăng nhập, rồi nhập mã:"
+  say ""
+  say "      ${ucode}"
+  say ""
+  say "  Đang chờ duyệt (tối đa ${ttl} giây)…"
+
+  body=$(mktemp)
+  deadline=$(( $(date +%s) + ttl ))
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    sleep "$interval"
+    code=$(curl -s -o "$body" -w '%{http_code}' -X POST "$HUB_URL/api/device/poll" \
+             -H 'content-type: application/json' \
+             -d "{\"deviceCode\":\"${dcode}\"}" 2>/dev/null) || code=000
+    case "$code" in
+      200)
+        DEVICE_TOKEN=$(json_field token < "$body")
+        dname=$(json_field displayName < "$body")
+        rm -f "$body"
+        [ -n "$DEVICE_TOKEN" ] || return 1
+        # In TÊN người vừa duyệt, không chỉ "đã xong". Mã ngắn được đọc to
+        # trong phòng hoặc dán vào chat, nên người duyệt nhầm là chuyện xảy
+        # ra được — và nếu nhầm thì máy này vừa ghi token VĨNH VIỄN của người
+        # khác, rồi mọi thông báo từ đây chảy sang tài khoản họ mà không ai
+        # thấy gì. Một dòng tên là chỗ duy nhất bắt được việc đó ngay lúc nó
+        # xảy ra. Hub cũ (hoặc user chưa có displayName) thì rơi về câu cũ,
+        # không in "undefined".
+        if [ -n "$dname" ]; then
+          say "  ✓ Đã nhận token của ${dname}."
+        else
+          say "  ✓ Đã nhận token."
+        fi
+        return 0
+        ;;
+      410)
+        rm -f "$body"
+        say "  ✗ Mã đã hết hạn."
+        return 1
+        ;;
+      428|429) ;;   # chưa duyệt, hoặc poll nhanh quá — chờ tiếp
+      *) ;;         # lỗi mạng tạm thời — chờ tiếp, deadline sẽ dừng vòng lặp
+    esac
+  done
+  rm -f "$body"
+  say "  ✗ Hết thời gian chờ duyệt."
+  return 1
+}
+
 HUB_URL="${CCRC_HUB_URL:-}"
 [ -n "$HUB_URL" ] || ask HUB_URL "URL hub${OLD_URL:+ [$OLD_URL]}: " "$OLD_URL"
 while [ -z "$HUB_URL" ]; do ask HUB_URL "URL hub (vd https://ccrc.example.com): " ""; done
 case "$HUB_URL" in http://*|https://*) ;; *) HUB_URL="https://$HUB_URL" ;; esac
 
-TOKEN="${CCRC_TOKEN:-}"
-[ -n "$TOKEN" ] || ask TOKEN "Token cá nhân${OLD_TOK:+ [giữ nguyên]}: " "$OLD_TOK"
+# Thứ tự: biến môi trường (installer truyền vào) → token đã cài lần trước →
+# device-code → dán tay. Đường lui cuối cùng phải còn, vì một hub cũ chưa có
+# /api/device/start vẫn phải cài được.
+TOKEN="${CCRC_TOKEN:-$OLD_TOK}"
+if [ -z "$TOKEN" ]; then
+  device_code_login && TOKEN="$DEVICE_TOKEN"
+fi
 while [ -z "$TOKEN" ]; do ask TOKEN "Token cá nhân: " ""; done
 
 # On macOS the DHCP-assigned hostname is often the IP address, so `hostname -s`

@@ -23,6 +23,11 @@ services:
     environment:
       CCRC_TOKEN: ${CCRC_TOKEN:?Đặt CCRC_TOKEN trong file .env (openssl rand -hex 24)}
       CCRC_VAPID_SUBJECT: ${CCRC_VAPID_SUBJECT:-mailto:admin@localhost}
+      # Để TRỐNG khi không có proxy đứng trước. Đặt 1 khi dùng profile
+      # cloudflare/tls — xem .env.example.
+      CCRC_TRUST_PROXY: ${CCRC_TRUST_PROXY:-}
+      CCRC_TS_PUBLIC_URL: ${CCRC_TS_PUBLIC_URL:-}
+      CCRC_TS_INTERNAL_URL: ${CCRC_TS_INTERNAL_URL:-}
     volumes:
       # users.json / khoá VAPID / push subs
       - ccrc-data:/data

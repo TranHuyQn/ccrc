@@ -15,16 +15,27 @@
 <meta name="theme-color" content="#0f1115">
 <!-- Bump ?v= whenever app.js or style.css changes. An installed PWA also caches
      index.html itself, so a markup change needs the app reinstalled. -->
-<link rel="stylesheet" href="style.css?v=10">
+<link rel="stylesheet" href="style.css?v=12">
 </head>
 <body>
 
 <div id="login" class="card">
   <h1>CC Notify</h1>
-  <p class="dim">Dán token cá nhân để nhận thông báo khi Claude Code dừng lại chờ bạn.</p>
+  <button id="slack-login" class="hidden">Đăng nhập bằng Slack</button>
+  <p class="dim small" id="login-or">hoặc dán token cá nhân:</p>
   <input id="token" type="password" placeholder="Token cá nhân" autocomplete="off">
   <button id="login-btn">Đăng nhập</button>
   <p id="login-err" class="err hidden"></p>
+</div>
+
+<div id="link-card" class="card hidden">
+  <h1>Duyệt máy dev</h1>
+  <p class="dim">Nhập mã đang hiện trên terminal của máy dev.</p>
+  <input id="link-code" type="text" placeholder="XXXX-XXXX" autocomplete="off"
+         autocapitalize="characters" spellcheck="false">
+  <button id="link-btn">Duyệt</button>
+  <p id="link-msg" class="dim hidden"></p>
+  <p id="link-err" class="err hidden"></p>
 </div>
 
 <div id="main" class="hidden">
@@ -68,6 +79,6 @@
   <div id="list"></div>
 </div>
 
-<script src="app.js?v=10"></script>
+<script src="app.js?v=12"></script>
 </body>
 </html>

@@ -1,13 +1,21 @@
 #!/bin/sh
 # CC Remote Control — cài phần máy dev bằng một lệnh.
 #
+# Có token (người quản trị hub gửi riêng cho bạn):
 #   curl -fsSL https://<hub-cua-ban>/install.sh | sh -s -- <token> https://<hub-cua-ban>
+#
+# Không có token: script tự xin bằng device-code — in một mã ngắn, chờ bạn mở
+# <hub>/link trên thiết bị đã đăng nhập để duyệt, rồi tự đổi ra token. Không
+# cần người quản trị phát tay.
+#
+#   curl -fsSL https://<hub-cua-ban>/install.sh | CCRC_HUB_URL=https://<hub-cua-ban> sh
 #
 # This file is served publicly and contains no secrets. The SOURCE it fetches
 # sits behind the same token everything else uses — the bundle is served by the
 # hub, not fetched from a code host, so a dev machine needs neither git nor an
-# account anywhere. That is also why the token is an argument: it is needed
-# twice, once to download and once to write the config.
+# account anywhere. A token is needed twice, once to download the bundle and
+# once to write the config, whether it arrives as an argument or is obtained
+# via device-code first.
 #
 # The hub URL has NO DEFAULT, on purpose. This project is open source and every
 # operator runs their own hub; baking one deployment's hostname in here would
@@ -38,25 +46,138 @@ command -v curl >/dev/null 2>&1 || die "Cần curl."
 command -v tar  >/dev/null 2>&1 || die "Cần tar."
 command -v node >/dev/null 2>&1 || die "Cần Node.js. Cài rồi chạy lại."
 
-# Checked BEFORE the token: with no hub there is nowhere to send one, and the
-# error that names the missing piece first is the one that gets fixed in a
-# single try. `$HUB` cannot appear in this message — it is the empty string.
+# Checked BEFORE anything reaches for the hub — device-code included: with no
+# hub there is nowhere to ask, and the error that names the missing piece first
+# is the one that gets fixed in a single try. `$HUB` cannot appear in this
+# message — it is the empty string.
 [ -n "$HUB" ] || die "Thiếu URL hub.
   Dùng: curl -fsSL https://<hub-cua-ban>/install.sh | sh -s -- <token-cua-ban> https://<hub-cua-ban>
-  Hoặc: CCRC_HUB_URL=https://<hub-cua-ban> sh install.sh <token-cua-ban>
+  Hoặc: CCRC_HUB_URL=https://<hub-cua-ban> sh install.sh
   Chưa có hub? Xem README — mỗi người tự dựng hub riêng của mình."
 
-[ -n "$TOKEN" ] || die "Thiếu token.
-  Dùng: curl -fsSL $HUB/install.sh | sh -s -- <token-cua-ban> $HUB
+TMP=$(mktemp -d)
+# EXIT lo dọn dẹp trên MỌI đường ra — kể cả khi INT/TERM bên dưới tự exit.
+#
+# INT/TERM phải TỰ GỌI exit: mặc định, sau khi lệnh trong trap chạy xong,
+# /bin/sh quay lại đúng chỗ vừa bị ngắt (giữa `sleep` trong vòng poll ttl 10
+# phút) như chưa có gì xảy ra — không phải vì set -e/&&-list nào tha, mà vì
+# bản thân shell coi trap đã "xử lý" tín hiệu xong nhiệm vụ. Không có `exit`
+# ở đây, Ctrl-C bị NUỐT: đo được bằng pty thật, script sống sót qua nhiều lần
+# Ctrl-C liên tiếp và chạy hết ttl. Tách EXIT khỏi INT/TERM và cho hai cái sau
+# tự thoát bằng đúng mã quy ước (128+tín hiệu) là cách duy nhất chặn nó lại.
+cleanup() { rm -rf "$TMP"; }
+trap cleanup EXIT
+trap 'cleanup; exit 130' INT   # 128+2
+trap 'cleanup; exit 143' TERM  # 128+15
+
+# Đọc một trường của JSON bằng node (script này đã đòi node ở trên).
+json_field() {
+  node -e '
+    let s = "";
+    process.stdin.on("data", (d) => { s += d; }).on("end", () => {
+      try {
+        const v = JSON.parse(s)[process.argv[1]];
+        process.stdout.write(v == null ? "" : String(v));
+      } catch { /* JSON hỏng = trường rỗng, người gọi tự xử */ }
+    });
+  ' "$1"
+}
+
+# Lấy token bằng device-code: in một mã ngắn, chờ người duyệt trên thiết bị đã
+# đăng nhập, rồi đổi lấy token. Đặt DEVICE_TOKEN khi thành công.
+#
+# Mã ngắn CHỈ để người gõ; thứ đổi ra token là deviceCode 32 byte mà script
+# này giữ. Không in deviceCode ra màn hình.
+#
+# /bin/sh POSIX, không phải bash: không "local" (hàm chỉ được gọi một lần
+# trong toàn script nên biến ở mức script không đè lên gì), không mảng, không
+# "printf -v". Logic vay nguyên từ setup-notify.sh, chỉ cú pháp là viết lại
+# cho POSIX.
+DEVICE_TOKEN=""
+device_code_login() {
+  start=$(curl -fsS -X POST "$HUB/api/device/start" \
+    -H 'content-type: application/json' -d '{}' 2>/dev/null) || return 1
+  dcode=$(printf '%s' "$start" | json_field deviceCode)
+  ucode=$(printf '%s' "$start" | json_field userCode)
+  ttl=$(printf '%s' "$start" | json_field ttl)
+  interval=$(printf '%s' "$start" | json_field interval)
+  [ -n "$dcode" ] && [ -n "$ucode" ] || return 1
+  # ttl/interval đi thẳng vào $(( )) và vào `sleep`, không phải vào một lệnh có
+  # exit status để `&&`/if bắt lỗi. Dưới `set -u`, một giá trị không phải số ở
+  # đây không phải lệnh thất bại — /bin/sh đọc nó như TÊN BIẾN trong $(( )) và
+  # báo "unbound variable", một lỗi thoát thẳng cả script, xuyên qua cả
+  # `device_code_login && TOKEN=...` đang gọi hàm này. Ép về số trước khi
+  # dùng, y như setup-notify.sh.
+  case "$ttl" in ''|*[!0-9]*) ttl=600 ;; esac
+  case "$interval" in ''|*[!0-9]*) interval=5 ;; esac
+  # ...và cả hai phải LỚN HƠN 0.
+  # - interval=0 lọt qua bộ lọc chữ số ở trên, và `sleep 0` biến vòng lặp dưới
+  #   thành một vòng quay không nghỉ suốt cả ttl, đập vào /api/device/poll hết
+  #   sức máy — nhánh 428|429 không hề giãn nhịp, nó chỉ "chờ tiếp".
+  # - ttl=0 cũng lọt qua bộ lọc chữ số, in "tối đa 0 giây" rồi vòng `while`
+  #   thoát ngay ở lần kiểm đầu — không poll lấy một lần.
+  # `[ -gt 0 ]` còn bắt luôn số hợp lệ về CHỮ SỐ nhưng vượt phạm vi số nguyên
+  # (vd. hub lỗi trả một chuỗi số rất dài): chính `[` báo "Illegal number" và
+  # thoát 2, y hệt lớp lỗi ở trên, xuyên qua `die` nếu không có guard này.
+  [ "$ttl" -gt 0 ] 2>/dev/null || ttl=600
+  [ "$interval" -gt 0 ] 2>/dev/null || interval=5
+
+  say ""
+  say "  Mở ${HUB}/link trên thiết bị đã đăng nhập, rồi nhập mã:"
+  say ""
+  say "      ${ucode}"
+  say ""
+  say "  Đang chờ duyệt (tối đa ${ttl} giây)…"
+
+  # Trong $TMP: đã có trap dọn khi script thoát, không cần rm -f tay ở từng
+  # nhánh như setup-notify.sh (nơi body là một mktemp riêng, không có $TMP để
+  # gửi gắm).
+  body="$TMP/device-poll.json"
+  deadline=$(( $(date +%s) + ttl ))
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    sleep "$interval"
+    code=$(curl -s -o "$body" -w '%{http_code}' -X POST "$HUB/api/device/poll" \
+      -H 'content-type: application/json' \
+      -d "{\"deviceCode\":\"${dcode}\"}" 2>/dev/null) || code=000
+    case "$code" in
+      200)
+        DEVICE_TOKEN=$(json_field token < "$body")
+        dname=$(json_field displayName < "$body")
+        [ -n "$DEVICE_TOKEN" ] || return 1
+        # In TÊN người vừa duyệt, không chỉ "đã xong". Mã ngắn được đọc to
+        # trong phòng hoặc dán vào chat, nên người duyệt nhầm là chuyện xảy
+        # ra được — và nếu nhầm thì máy này vừa ghi token VĨNH VIỄN của người
+        # khác. Một dòng tên là chỗ duy nhất bắt được việc đó ngay lúc nó
+        # xảy ra.
+        if [ -n "$dname" ]; then
+          say "  ✓ Đã nhận token của ${dname}."
+        else
+          say "  ✓ Đã nhận token."
+        fi
+        return 0
+        ;;
+      410)
+        say "  ✗ Mã đã hết hạn."
+        return 1
+        ;;
+      428|429) ;;   # chưa duyệt, hoặc poll nhanh quá — chờ tiếp
+      *) ;;         # lỗi mạng tạm thời — chờ tiếp, deadline sẽ dừng vòng lặp
+    esac
+  done
+  say "  ✗ Hết thời gian chờ duyệt."
+  return 1
+}
+
+if [ -z "$TOKEN" ]; then
+  device_code_login && TOKEN="$DEVICE_TOKEN"
+fi
+[ -n "$TOKEN" ] || die "Không lấy được token.
+  Cách khác: curl -fsSL $HUB/install.sh | sh -s -- <token-cua-ban> $HUB
   Token do người quản trị hub gửi riêng cho bạn."
 
 say "== CC Remote Control — cài trên máy dev =="
 say "  hub:  $HUB"
 say "  code: $DEST"
-
-TMP=$(mktemp -d)
-# Runs on every exit path, so a failed download leaves nothing behind.
-trap 'rm -rf "$TMP"' EXIT INT TERM
 
 say "• Tải gói cài…"
 # Fails loudly on 401 rather than saving the error page as a tarball: without
@@ -94,7 +215,9 @@ say "• Cấu hình…"
 # The bundled setup script does the rest, and does it the same way it does for
 # someone working from a git checkout — one code path, not two. It reads the
 # answers it needs from the environment and asks on /dev/tty for the rest,
-# which is what lets it work through a pipe.
+# which is what lets it work through a pipe. Passing CCRC_TOKEN here (now
+# always set, whether it came from the argument or from device-code above) is
+# what makes it skip its own device-code prompt — this script already ran it.
 CCRC_HUB_URL="$HUB" CCRC_TOKEN="$TOKEN" sh "$DEST/setup-notify.sh"
 
 say ""

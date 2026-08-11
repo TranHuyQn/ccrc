@@ -906,7 +906,11 @@ test('?open= nhưng máy chưa ghép → chỉ đúng việc cần làm, không 
 
 test('GET /api/terminal hỏng → giữ nguyên yêu cầu mở, không kết luận phiên đã đóng', async () => {
   let lan = 0;
-  const fetchImpl = makeFetch(async () => {
+  const fetchImpl = makeFetch(async (url) => {
+    // Đếm riêng lượt gọi /api/terminal — script còn tự bắn /api/auth/config
+    // ngay lúc nạp trang (kiểm tra có Slack login hay không), không liên
+    // quan gì tới bài kiểm này, nhưng vẫn đi qua cùng một fetch giả lập.
+    if (url !== '/api/terminal') return { status: 404, body: {} };
     lan += 1;
     if (lan === 1) throw new Error('network down');
     return { status: 200, body: { sessions: [SESSION_ALIVE] } };

@@ -12,7 +12,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { execFileSync, spawnSync } from 'node:child_process';
+import http from 'node:http';
+import { execFileSync, spawnSync, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -22,6 +23,19 @@ const BASH_SCRIPTS = ['setup-notify.sh', 'remove-notify.sh', 'deploy.sh'];
 const ALL = [...SH_SCRIPTS, ...BASH_SCRIPTS];
 
 const read = (rel) => fs.readFileSync(path.join(root, rel), 'utf8');
+
+// macOS /bin/sh is bash 3.2 in POSIX mode — it still understands `printf -v`,
+// arrays, and `${v:0:3}`, so it does NOT die on the bashisms a real POSIX
+// shell would reject. Only dash catches that class of bug. Used to decide,
+// per-test, whether to run install.sh's POSIX-strict runtime checks under a
+// real dash or skip them outright — silently falling back to `sh` would make
+// the test pass for the wrong reason on exactly the machines that need it.
+const hasBinary = (name) => {
+  const r = spawnSync(name, ['--version']);
+  return !r.error; // exit status doesn't matter (dash has no --version) — only whether it spawned at all
+};
+const HAS_DASH = hasBinary('dash');
+const HAS_PYTHON3 = hasBinary('python3');
 
 test('mọi script đều đúng cú pháp', () => {
   for (const rel of SH_SCRIPTS) {
@@ -349,4 +363,733 @@ test('hướng dẫn KHÔNG còn nói "hai màn hình khác số là thấy ngay
     assert.ok(!(vi ? NGHI_THUC_CU.vi : NGHI_THUC_CU.en).test(src),
       `${rel}: không được còn mô tả việc so mã N-chữ-số TRÊN HAI MÀN HÌNH — nghi thức hiện tại là MỘT CHIỀU, chỉ điện thoại hiện số`);
   }
+});
+
+// --- Task 10: setup-notify.sh lấy token bằng device-code -------------------
+//
+// Device-code chạy trên máy người khác, nên cái sai ở đây không phải test đỏ
+// mà là một người ngồi nhìn terminal treo.
+test('setup-notify.sh có luồng device-code và DỪNG khi hub trả 410', () => {
+  const src = read('setup-notify.sh');
+  assert.match(src, /\/api\/device\/start/, 'phải xin được mã');
+  assert.match(src, /\/api\/device\/poll/, 'phải poll được');
+  // Không chỉ tìm chuỗi "410)" — chuỗi đó có thể nằm trong comment trong khi
+  // nhánh thật đã đổi thành "chờ tiếp". Bắt đúng NỘI DUNG của arm case 410),
+  // tới dấu ";;" kế tiếp, và đòi trong đó có return 1.
+  const m = /410\)([\s\S]*?);;/.exec(src);
+  assert.ok(m, 'không bắt 410 thì mã hết hạn xong script poll mãi tới hết deadline');
+  assert.match(m[1], /return 1/,
+    '410 phải DỪNG vòng lặp (return 1) — không chỉ được nhắc tới đâu đó trong file');
+  assert.match(src, /428\|429\)/, 'chưa duyệt và poll nhanh quá đều là "chờ tiếp", không phải lỗi');
+});
+
+test('setup-notify.sh vẫn cho dán token tay khi device-code hỏng', () => {
+  const src = read('setup-notify.sh');
+  assert.match(src, /ask TOKEN/,
+    'hub cũ hoặc mạng hỏng thì vẫn phải cài được — đừng bỏ đường lui');
+});
+
+// Bài trên chỉ soát HÌNH DẠNG của source text. Bài này chạy THẬT hàm
+// device_code_login (trích thẳng từ setup-notify.sh, không chép tay) chống
+// lại một hub giả trả 410, và đo thời gian: nếu 410 không còn dừng vòng lặp,
+// hub giả đặt ttl=30s nên test này sẽ chờ gần hết 30 giây rồi mới xong hoặc
+// bị kill bởi timeout — thấy ngay bằng thời gian chạy, không cần đọc log.
+test('device_code_login THẬT SỰ dừng ngay khi hub trả 410, không đợi hết ttl', async () => {
+  const src = read('setup-notify.sh');
+  const fnStart = src.indexOf('json_field() {');
+  const fnEnd = src.indexOf('\nHUB_URL=');
+  assert.ok(fnStart !== -1 && fnEnd !== -1 && fnEnd > fnStart,
+    'không trích được json_field/device_code_login từ setup-notify.sh — vị trí trong file đã đổi?');
+  const funcs = src.slice(fnStart, fnEnd);
+
+  const server = http.createServer((req, res) => {
+    if (req.url === '/api/device/start') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({
+        ok: true, deviceCode: 'd'.repeat(32), userCode: 'AB12', ttl: 30, interval: 1,
+      }));
+      return;
+    }
+    if (req.url === '/api/device/poll') {
+      res.writeHead(410, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: 'expired' }));
+      return;
+    }
+    res.writeHead(404);
+    res.end();
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = server.address().port;
+
+  // `if device_code_login; then ...` là đúng cách setup-notify.sh gọi hàm này
+  // thật (chỗ TOKEN=... trong file chính) — điều kiện của if được set -e miễn
+  // trừ, nên bài test dùng đúng ngữ cảnh mà code thật chạy trong đó.
+  const script = `
+set -euo pipefail
+say() { :; }
+${funcs}
+HUB_URL="http://127.0.0.1:${port}"
+if device_code_login; then
+  echo "RC=0"
+else
+  echo "RC=$?"
+fi
+`;
+  // spawnSync ở đây từng làm test TREO CHẾT: nó khoá cứng event loop của
+  // chính tiến trình node đang chạy server giả, nên server không bao giờ kịp
+  // trả lời request của curl từ tiến trình con — cả hai đứng chờ nhau mãi.
+  // Đo được bằng thực nghiệm (mọi lần đều timeout, stdout/stderr rỗng dù
+  // curl gọi thủ công tới cùng server thành công tức thì). spawn() bất đồng
+  // bộ giữ event loop chạy nên server vẫn phục vụ được trong lúc chờ.
+  const child = spawn('bash', ['-c', script]);
+  let stdout = '';
+  let stderr = '';
+  child.stdout.on('data', (d) => { stdout += d; });
+  child.stderr.on('data', (d) => { stderr += d; });
+  const startedAt = Date.now();
+  const { code, signal } = await new Promise((resolve) => {
+    const timer = setTimeout(() => { child.kill('SIGTERM'); }, 10000);
+    child.on('exit', (exitCode, exitSignal) => {
+      clearTimeout(timer);
+      resolve({ code: exitCode, signal: exitSignal });
+    });
+  });
+  const elapsedMs = Date.now() - startedAt;
+  server.close();
+
+  assert.ok(!signal, `bị kill bởi timeout (signal=${signal}) — 410 không dừng vòng lặp. stdout=${stdout} stderr=${stderr}`);
+  assert.equal(code, 0, `bash -c bọc ngoài phải thoát 0 (chỉ nhánh if/else in RC ra). stdout=${stdout} stderr=${stderr}`);
+  // Neo cả hai đầu dòng: /RC=1/ không neo cũng khớp "RC=127" (command not
+  // found nếu hàm bị thiếu/đổi tên) — bài test khi đó xanh dù device_code_login
+  // không hề chạy đúng.
+  assert.match(stdout, /^RC=1$/m, `device_code_login phải trả 1 khi hub trả 410. stdout=${stdout} stderr=${stderr}`);
+  assert.ok(elapsedMs < 8000,
+    `mất ${elapsedMs}ms — nếu 410 không dừng vòng lặp, test này phải đợi gần hết ttl=30s thay vì dừng ở lần poll đầu`);
+});
+
+// Duyệt nhầm mã là chuyện xảy ra được: userCode được đọc to trong phòng hoặc
+// dán vào chat. Nếu nhầm, máy dev vừa ghi token VĨNH VIỄN của người khác vào
+// ~/.ccrc/config, và mọi thông báo từ máy này chảy sang tài khoản họ — im
+// lặng. Dòng in tên là chỗ DUY NHẤT bắt được việc đó ngay lúc nó xảy ra, nên
+// nó được kiểm bằng cách chạy thật hàm trích từ chính script, không phải bằng
+// một phép so chuỗi trên source.
+async function runDeviceCodeLogin(pollBody) {
+  const src = read('setup-notify.sh');
+  const fnStart = src.indexOf('json_field() {');
+  const fnEnd = src.indexOf('\nHUB_URL=');
+  assert.ok(fnStart !== -1 && fnEnd !== -1 && fnEnd > fnStart,
+    'không trích được json_field/device_code_login từ setup-notify.sh — vị trí trong file đã đổi?');
+  const funcs = src.slice(fnStart, fnEnd);
+
+  const server = http.createServer((req, res) => {
+    if (req.url === '/api/device/start') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({
+        ok: true, deviceCode: 'd'.repeat(32), userCode: 'AB12', ttl: 30, interval: 1,
+      }));
+      return;
+    }
+    if (req.url === '/api/device/poll') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify(pollBody));
+      return;
+    }
+    res.writeHead(404);
+    res.end();
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = server.address().port;
+
+  // say() in thật ở đây (khác bài 410 ở trên, nơi nó bị nuốt): thứ đang được
+  // kiểm CHÍNH LÀ dòng chữ người dùng đọc được.
+  const script = `
+set -euo pipefail
+say() { printf '%s\\n' "$*"; }
+${funcs}
+HUB_URL="http://127.0.0.1:${port}"
+if device_code_login; then echo "RC=0"; else echo "RC=$?"; fi
+echo "TOKEN=\${DEVICE_TOKEN}"
+`;
+  const child = spawn('bash', ['-c', script]);
+  let stdout = '';
+  child.stdout.on('data', (d) => { stdout += d; });
+  await new Promise((resolve) => {
+    const timer = setTimeout(() => child.kill('SIGTERM'), 10000);
+    child.on('exit', () => { clearTimeout(timer); resolve(); });
+  });
+  server.close();
+  return stdout;
+}
+
+test('nhận token xong thì IN TÊN người đã duyệt — duyệt nhầm phải thấy được ngay', async () => {
+  const out = await runDeviceCodeLogin({ ok: true, token: 'tok-abc', displayName: 'huy' });
+  assert.match(out, /RC=0/, `device_code_login phải thành công. stdout=${out}`);
+  assert.match(out, /TOKEN=tok-abc/, `token phải được nhận. stdout=${out}`);
+  assert.match(out, /Đã nhận token của huy\./,
+    `phải in tên người duyệt, nếu không thì duyệt nhầm người là lỗi im lặng. stdout=${out}`);
+});
+
+test('hub không trả displayName → vẫn báo xong, KHÔNG in "undefined"', async () => {
+  const out = await runDeviceCodeLogin({ ok: true, token: 'tok-abc' });
+  assert.match(out, /RC=0/, `stdout=${out}`);
+  assert.match(out, /Đã nhận token\./, `phải rơi về câu cũ. stdout=${out}`);
+  assert.doesNotMatch(out, /undefined|null|của \./,
+    `stdout=${out}`);
+});
+
+// Hub (saveSlackUser) ghi đúng file này qua temp+rename. Một tên tạm DÙNG
+// CHUNG nghĩa là hai tiến trình đạp lên nhau ngay trong file tạm và rename ra
+// một nội dung lai của cả hai — một mối nguy thứ hai chồng lên cuộc đua
+// đọc-sửa-ghi vốn có, và là mối nguy DUY NHẤT trong hai cái mà tầng này xoá
+// được.
+// interval=0 lọt qua bộ lọc chữ số, và `sleep 0` biến vòng poll thành một
+// vòng quay không nghỉ suốt 600 giây — nhánh 428|429 chỉ "chờ tiếp", nó không
+// giãn nhịp. Chạy THẬT với một hub trả interval=0 và đếm số lần poll: nếu
+// guard hỏng, con số này là hàng nghìn thay vì một nhúm.
+test('hub trả interval=0 KHÔNG biến vòng poll thành vòng quay không nghỉ', async () => {
+  const src = read('setup-notify.sh');
+  const fnStart = src.indexOf('json_field() {');
+  const fnEnd = src.indexOf('\nHUB_URL=');
+  const funcs = src.slice(fnStart, fnEnd);
+
+  let polls = 0;
+  const server = http.createServer((req, res) => {
+    if (req.url === '/api/device/start') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      // ttl 3 giây để bài kiểm kết thúc nhanh; interval 0 là thứ đang bị kiểm.
+      res.end(JSON.stringify({
+        ok: true, deviceCode: 'd'.repeat(32), userCode: 'AB12', ttl: 3, interval: 0,
+      }));
+      return;
+    }
+    if (req.url === '/api/device/poll') {
+      polls += 1;
+      res.writeHead(428, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: 'chưa duyệt' }));
+      return;
+    }
+    res.writeHead(404);
+    res.end();
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = server.address().port;
+
+  const script = `
+set -euo pipefail
+say() { :; }
+${funcs}
+HUB_URL="http://127.0.0.1:${port}"
+if device_code_login; then echo "RC=0"; else echo "RC=$?"; fi
+`;
+  const child = spawn('bash', ['-c', script]);
+  let stdout = '';
+  child.stdout.on('data', (d) => { stdout += d; });
+  await new Promise((resolve) => {
+    const timer = setTimeout(() => child.kill('SIGTERM'), 20000);
+    child.on('exit', () => { clearTimeout(timer); resolve(); });
+  });
+  server.close();
+
+  assert.match(stdout, /^RC=1$/m, `hết ttl mà chưa duyệt thì phải trả 1. stdout=${stdout}`);
+  // Với interval rơi về 5 và ttl=3 thì đúng 1 lượt poll. Cho rộng tay: bất cứ
+  // con số nhỏ nào cũng nghĩa là có ngủ thật giữa hai lượt.
+  assert.ok(polls <= 5,
+    `poll ${polls} lần trong 3 giây — interval=0 đã lọt qua guard và vòng lặp đang quay không nghỉ`);
+});
+
+// --- install.sh: cùng luồng device-code, nhưng là POSIX sh, không phải bash -
+//
+// Đây là đường cài chính mà docs/huong-dan.md đưa cho thành viên mới — thứ mà
+// setup-notify.sh có nhưng install.sh (trước sửa này) không có, nên tính năng
+// không tới được đúng người nó được xây cho. Cùng lý luận với bộ test phía
+// trên cho setup-notify.sh, áp lại cho install.sh.
+//
+// install.sh chạy dưới /bin/sh, và các bài runtime bên dưới ƯU TIÊN chạy bằng
+// dash THẬT, không phải `sh`. Lý do không dùng `sh`: trên macOS /bin/sh là
+// bash 3.2 ở chế độ POSIX — nó vẫn hiểu `printf -v`, mảng, `${v:0:3}`, tức là
+// KHÔNG chết như dash thật trước những thứ đó (đo được, xem hasBinary/HAS_DASH
+// ở đầu file). Máy không có dash thì các bài runtime bên dưới tự skip thay vì
+// âm thầm chạy dưới `sh` và xanh vì lý do sai.
+test('install.sh có luồng device-code và DỪNG khi hub trả 410', () => {
+  const src = read('server/public/install.sh');
+  assert.match(src, /\/api\/device\/start/, 'phải xin được mã');
+  assert.match(src, /\/api\/device\/poll/, 'phải poll được');
+  const m = /410\)([\s\S]*?);;/.exec(src);
+  assert.ok(m, 'không bắt 410 thì mã hết hạn xong script poll mãi tới hết deadline');
+  assert.match(m[1], /return 1/,
+    '410 phải DỪNG vòng lặp (return 1) — không chỉ được nhắc tới đâu đó trong file');
+  assert.match(src, /428\|429\)/, 'chưa duyệt và poll nhanh quá đều là "chờ tiếp", không phải lỗi');
+});
+
+test('install.sh CHỈ chạy device-code khi thiếu token — có token thì hành vi không đổi', () => {
+  const src = read('server/public/install.sh');
+  // TOKEN vẫn phải tới từ tham số/biến môi trường trước tiên, không đổi hình
+  // dạng — server/test/notify-api.test.js đã khoá đúng chuỗi này ở phía hub.
+  assert.match(src, /TOKEN="\$\{1:-\$\{CCRC_TOKEN:-\}\}"/,
+    'thứ tự nhận token (tham số rồi tới CCRC_TOKEN) không được đổi — admin và cài lại phụ thuộc vào nó');
+  // device_code_login() phải nằm trong nhánh "TOKEN rỗng" — có token thì
+  // không được gọi tới, không được chờ mạng vô ích hay in mã ra màn hình.
+  const guard = /if \[ -z "\$TOKEN" \]; then\s*\n\s*device_code_login/.exec(src);
+  assert.ok(guard, 'device_code_login phải được gói trong `if [ -z "$TOKEN" ]`');
+});
+
+test('install.sh KHÔNG còn dead-end im lặng khi thiếu token — die phải nói rõ cả hai đường lui', () => {
+  const src = read('server/public/install.sh');
+  // Thông điệp "Thiếu token" cũ chết trước khi device-code kịp chạy — đúng
+  // hình dạng lỗi mà sửa này phải xoá.
+  assert.ok(!/die "Thiếu token\./.test(src),
+    'còn thông điệp "Thiếu token" cũ nghĩa là die vẫn chạy trước khi thử device-code');
+  // Người dùng phải biết còn cách nào khác khi device-code hỏng (mạng, hub
+  // cũ...) — không được dead-end mà không nói gì.
+  assert.match(src, /die "[^"]*\n[^"]*<token-cua-ban>/,
+    'die khi hết đường phải còn chỉ cách dùng token tay — không được dead-end vô hồn');
+});
+
+// install.sh không có dòng `read` nào cả (device-code chỉ dùng curl/sleep),
+// nên một bài test lọc theo `read` sẽ luôn thấy mảng rỗng — không có cách nào
+// làm nó đỏ. install.sh đã nằm trong PIPED ở bài lint "không được dùng `read`
+// từ stdin" phía trên (áp dụng đúng quy tắc này cho mọi script), nên không có
+// gì cần khoá thêm ở đây. Không giữ một bài test chỉ có thể pass.
+
+// device_code_login() đọc/ghi $TMP trước cả khi biết token có hợp lệ hay
+// không. Reviewer đo được: dời khối `TMP=$(mktemp -d)` + `trap` xuống DƯỚI
+// đoạn kiểm tra token (ví dụ khi ai đó "gộp logic liên quan" lại gần nhau) thì
+// mọi test tĩnh phía trên vẫn xanh — cả hai đoạn còn nguyên trong file, chỉ
+// đổi chỗ — nhưng chạy thật thì chết ngay với "TMP: parameter not set", exit
+// 2, không qua die(). Khoá đúng THỨ TỰ, không chỉ sự tồn tại.
+test('install.sh: TMP và trap dọn dẹp phải được thiết lập TRƯỚC khi kiểm tra token', () => {
+  const src = read('server/public/install.sh');
+  const tmpIdx = src.indexOf('TMP=$(mktemp -d)');
+  const trapIdx = src.indexOf('trap cleanup EXIT');
+  const tokenCheckIdx = src.indexOf('[ -n "$TOKEN" ] || die "Không lấy được token.');
+  assert.ok(tmpIdx !== -1, 'không tìm thấy TMP=$(mktemp -d)');
+  assert.ok(trapIdx !== -1, 'không tìm thấy trap cleanup EXIT');
+  assert.ok(tokenCheckIdx !== -1, 'không tìm thấy đoạn kiểm tra token cuối cùng');
+  assert.ok(tmpIdx < tokenCheckIdx && trapIdx < tokenCheckIdx,
+    'TMP/trap phải đứng TRƯỚC đoạn kiểm tra token — device_code_login() dùng $TMP, dời preamble xuống dưới làm mọi lần cài không-token chết với "TMP: parameter not set"');
+});
+
+// Bài trên chỉ soát HÌNH DẠNG. Bài này chạy THẬT hàm device_code_login (trích
+// thẳng từ install.sh) dưới dash — không phải bash, không phải sh trên macOS —
+// chống lại một hub giả trả 410, đo thời gian y như bài tương ứng của
+// setup-notify.sh ở trên.
+function extractInstallShFuncs() {
+  const src = read('server/public/install.sh');
+  const fnStart = src.indexOf('json_field() {');
+  const fnEnd = src.indexOf('\nif [ -z "$TOKEN"');
+  assert.ok(fnStart !== -1 && fnEnd !== -1 && fnEnd > fnStart,
+    'không trích được json_field/device_code_login từ install.sh — vị trí trong file đã đổi?');
+  return src.slice(fnStart, fnEnd);
+}
+
+// Dùng riêng cho bài Ctrl-C: khác extractInstallShFuncs() ở trên, bài đó CHỦ Ý
+// bỏ qua trap thật và hand-write một bản riêng, vì nó không kiểm trap. Bài
+// Ctrl-C kiểm CHÍNH cái trap, nên nó phải chạy đúng TMP=.../trap thật của
+// install.sh — nếu không, mutate trap trong file thật sẽ không làm bài test
+// đỏ, đúng cái lỗ mà reviewer chỉ ra ở chỗ khác trong harness này.
+function extractInstallShPreambleAndFuncs() {
+  const src = read('server/public/install.sh');
+  const start = src.indexOf('TMP=$(mktemp -d)');
+  const end = src.indexOf('\nif [ -z "$TOKEN"');
+  assert.ok(start !== -1 && end !== -1 && end > start,
+    'không trích được preamble (TMP/trap) + json_field/device_code_login từ install.sh — vị trí trong file đã đổi?');
+  return src.slice(start, end);
+}
+
+function runInstallShDeviceCodeLogin(script) {
+  const child = spawn('dash', ['-c', script]);
+  let stdout = '';
+  let stderr = '';
+  child.stdout.on('data', (d) => { stdout += d; });
+  child.stderr.on('data', (d) => { stderr += d; });
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => child.kill('SIGTERM'), 10000);
+    child.on('exit', (code, signal) => {
+      clearTimeout(timer);
+      resolve({ code, signal, stdout, stderr });
+    });
+  });
+}
+
+test('install.sh: device_code_login THẬT SỰ dừng ngay khi hub trả 410, chạy dưới dash thật', async (t) => {
+  if (!HAS_DASH) { t.skip('không có dash trên máy này'); return; }
+  const funcs = extractInstallShFuncs();
+
+  const server = http.createServer((req, res) => {
+    if (req.url === '/api/device/start') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({
+        ok: true, deviceCode: 'd'.repeat(32), userCode: 'AB12', ttl: 30, interval: 1,
+      }));
+      return;
+    }
+    if (req.url === '/api/device/poll') {
+      res.writeHead(410, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: 'expired' }));
+      return;
+    }
+    res.writeHead(404);
+    res.end();
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = server.address().port;
+
+  const script = `
+set -eu
+say() { :; }
+TMP=$(mktemp -d)
+trap 'rm -rf "$TMP"' EXIT INT TERM
+${funcs}
+HUB="http://127.0.0.1:${port}"
+if device_code_login; then
+  echo "RC=0"
+else
+  echo "RC=$?"
+fi
+`;
+  const startedAt = Date.now();
+  const { code, signal, stdout, stderr } = await runInstallShDeviceCodeLogin(script);
+  const elapsedMs = Date.now() - startedAt;
+  server.close();
+
+  assert.ok(!signal, `bị kill bởi timeout (signal=${signal}) — 410 không dừng vòng lặp. stdout=${stdout} stderr=${stderr}`);
+  assert.equal(code, 0, `dash -c bọc ngoài phải thoát 0. stdout=${stdout} stderr=${stderr}`);
+  // Neo cả hai đầu dòng: không neo thì /RC=1/ cũng khớp "RC=127" — thứ dash in
+  // ra khi device_code_login KHÔNG TỒN TẠI (vd. install.sh bị sắp lại khiến
+  // đoạn trích chỉ còn json_field, không còn device_code_login). Bài test khi
+  // đó xanh dù hàm cần kiểm chưa từng chạy.
+  assert.match(stdout, /^RC=1$/m, `device_code_login phải trả 1 khi hub trả 410. stdout=${stdout} stderr=${stderr}`);
+  assert.ok(elapsedMs < 8000,
+    `mất ${elapsedMs}ms — nếu 410 không dừng vòng lặp, test này phải đợi gần hết ttl=30s. stdout=${stdout} stderr=${stderr}`);
+});
+
+test('install.sh: device_code_login THẬT SỰ lấy được token khi hub duyệt, chạy dưới dash thật', async (t) => {
+  if (!HAS_DASH) { t.skip('không có dash trên máy này'); return; }
+  const funcs = extractInstallShFuncs();
+
+  const server = http.createServer((req, res) => {
+    if (req.url === '/api/device/start') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({
+        ok: true, deviceCode: 'd'.repeat(32), userCode: 'AB12', ttl: 30, interval: 1,
+      }));
+      return;
+    }
+    if (req.url === '/api/device/poll') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, token: 'tok-from-device-code', displayName: 'huy' }));
+      return;
+    }
+    res.writeHead(404);
+    res.end();
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = server.address().port;
+
+  const script = `
+set -eu
+say() { printf '%s\\n' "$*"; }
+TMP=$(mktemp -d)
+trap 'rm -rf "$TMP"' EXIT INT TERM
+${funcs}
+HUB="http://127.0.0.1:${port}"
+if device_code_login; then TOKEN="$DEVICE_TOKEN"; echo "RC=0"; else echo "RC=$?"; fi
+echo "TOKEN=${'$'}{TOKEN:-}"
+`;
+  const { code, signal, stdout, stderr } = await runInstallShDeviceCodeLogin(script);
+  server.close();
+
+  assert.ok(!signal, `bị kill bởi timeout. stdout=${stdout} stderr=${stderr}`);
+  assert.equal(code, 0, `stdout=${stdout} stderr=${stderr}`);
+  assert.match(stdout, /RC=0/, `stdout=${stdout} stderr=${stderr}`);
+  assert.match(stdout, /TOKEN=tok-from-device-code/,
+    `TOKEN phải được gán từ DEVICE_TOKEN đúng như install.sh thật làm. stdout=${stdout}`);
+  assert.match(stdout, /Đã nhận token của huy\./, `phải in tên người duyệt. stdout=${stdout}`);
+});
+
+// Guard ttl/interval ở trên (case + [ -gt 0 ]) không có bài runtime nào canh —
+// bài tĩnh "có luồng device-code..." chỉ khoá 410/428/429, không đụng tới
+// mấy dòng case/[ -gt 0 ]. Xoá cả ba guard đó đi, 42/42 bài cũ vẫn xanh; chạy
+// dưới dash thật với ttl:"oops" thì "Illegal number: oops", exit 2, xuyên qua
+// die() — đúng lớp lỗi mà setup-notify.sh đã từng vá, chưa có coverage ở đây.
+// $ttl/$interval không có "local" nên còn sống sau khi hàm return — đọc lại
+// được ngay trong script bọc ngoài để khẳng định ĐÚNG giá trị fallback, không
+// chỉ "không chết".
+test('install.sh: ttl/interval không phải số → rơi về mặc định, không abort giữa chừng (dash thật)', async (t) => {
+  if (!HAS_DASH) { t.skip('không có dash trên máy này'); return; }
+  const funcs = extractInstallShFuncs();
+
+  const server = http.createServer((req, res) => {
+    if (req.url === '/api/device/start') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, deviceCode: 'd'.repeat(32), userCode: 'AB12', ttl: 'oops', interval: 'oops' }));
+      return;
+    }
+    if (req.url === '/api/device/poll') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, token: 'tok-fallback' }));
+      return;
+    }
+    res.writeHead(404);
+    res.end();
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = server.address().port;
+
+  const script = `
+set -eu
+say() { :; }
+TMP=$(mktemp -d)
+trap 'rm -rf "$TMP"' EXIT INT TERM
+${funcs}
+HUB="http://127.0.0.1:${port}"
+if device_code_login; then echo "RC=0"; else echo "RC=$?"; fi
+echo "TTL=$ttl"
+echo "INTERVAL=$interval"
+`;
+  const { code, signal, stdout, stderr } = await runInstallShDeviceCodeLogin(script);
+  server.close();
+
+  assert.ok(!signal, `bị kill bởi timeout — ttl/interval không phải số làm script treo thay vì rơi về mặc định. stdout=${stdout} stderr=${stderr}`);
+  assert.equal(code, 0, `dash -c bọc ngoài phải thoát 0, không phải "Illegal number"/"unbound variable". stdout=${stdout} stderr=${stderr}`);
+  assert.match(stdout, /^RC=0$/m, `stdout=${stdout} stderr=${stderr}`);
+  assert.match(stdout, /^TTL=600$/m, `ttl không phải số phải rơi về mặc định 600. stdout=${stdout}`);
+  assert.match(stdout, /^INTERVAL=5$/m, `interval không phải số phải rơi về mặc định 5. stdout=${stdout}`);
+});
+
+// ttl=0/interval=0 lọt qua bộ lọc CHỮ SỐ (case) — chỉ [ -gt 0 ] mới bắt được.
+// Xoá riêng hai dòng [ -gt 0 ] (giữ nguyên case), 42/42 bài cũ vẫn xanh; chạy
+// thật thì ttl=0 in "chờ duyệt tối đa 0 giây" rồi thoát vòng while ngay lập
+// tức — 0 lượt poll, mã hub vừa cấp bị bỏ phí dù còn hạn — và interval=0 biến
+// vòng poll thành vòng quay không nghỉ.
+test('install.sh: ttl=0/interval=0 → rơi về mặc định, không bỏ qua vòng poll và không quay vòng không nghỉ (dash thật)', async (t) => {
+  if (!HAS_DASH) { t.skip('không có dash trên máy này'); return; }
+  const funcs = extractInstallShFuncs();
+
+  let polls = 0;
+  const server = http.createServer((req, res) => {
+    if (req.url === '/api/device/start') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, deviceCode: 'd'.repeat(32), userCode: 'AB12', ttl: 0, interval: 0 }));
+      return;
+    }
+    if (req.url === '/api/device/poll') {
+      polls += 1;
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, token: 'tok-zero' }));
+      return;
+    }
+    res.writeHead(404);
+    res.end();
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = server.address().port;
+
+  const script = `
+set -eu
+say() { :; }
+TMP=$(mktemp -d)
+trap 'rm -rf "$TMP"' EXIT INT TERM
+${funcs}
+HUB="http://127.0.0.1:${port}"
+if device_code_login; then echo "RC=0"; else echo "RC=$?"; fi
+echo "TTL=$ttl"
+echo "INTERVAL=$interval"
+`;
+  const { code, signal, stdout, stderr } = await runInstallShDeviceCodeLogin(script);
+  server.close();
+
+  assert.ok(!signal, `bị kill bởi timeout. stdout=${stdout} stderr=${stderr}`);
+  assert.equal(code, 0, `stdout=${stdout} stderr=${stderr}`);
+  assert.match(stdout, /^RC=0$/m,
+    `ttl=0 phải vẫn poll được ít nhất một lần — nếu không rơi về mặc định, vòng while thoát ngay ở lần kiểm đầu. stdout=${stdout}`);
+  assert.match(stdout, /^TTL=600$/m, `ttl=0 phải rơi về mặc định 600, không phải "chờ duyệt tối đa 0 giây". stdout=${stdout}`);
+  assert.match(stdout, /^INTERVAL=5$/m, `interval=0 phải rơi về mặc định 5. stdout=${stdout}`);
+  assert.ok(polls >= 1 && polls <= 3,
+    `poll ${polls} lần — nên đúng 1 (không phải 0 vì ttl=0, không phải hàng nghìn vì interval=0 quay không nghỉ). stdout=${stdout}`);
+});
+
+// --- Ctrl-C trong lúc chờ duyệt phải DỪNG script NGAY, không "chạy tiếp" ---
+//
+// Bug thật (reviewer đo bằng pty thật): `trap 'rm -rf "$TMP"' EXIT INT TERM`
+// chỉ dọn $TMP rồi TRẢ ĐIỀU KHIỂN LẠI đúng chỗ vừa bị ngắt — /bin/sh không tự
+// exit sau khi chạy xong lệnh trong trap trừ khi chính lệnh đó gọi exit.
+// Script sống sót qua 4 lần Ctrl-C liên tiếp và chạy hết ttl; tệ hơn, $TMP đã
+// bị xoá trong khi vòng poll còn tiếp tục, nên mọi `curl -o "$TMP/..."` sau
+// đó thất bại và mã hub vừa duyệt (dùng một lần) bị bỏ phí.
+//
+// Bài dưới gửi Ctrl-C THẬT qua một pty (byte 0x03 đi qua line discipline của
+// terminal — không phải kill -INT gửi thẳng tín hiệu vào tiến trình, để đúng
+// với cách người dùng thật ngắt script) trong lúc device_code_login() đang
+// `sleep` giữa hai lượt poll, chống lại một hub không bao giờ duyệt (poll
+// luôn 428), rồi đo xem dash có thoát ngay bằng mã quy ước 130 (128+SIGINT)
+// không, thay vì sống sót.
+//
+// spawn() BẤT ĐỒNG BỘ, không phải spawnSync(): hub giả ở dưới chạy TRONG CÙNG
+// tiến trình node đang chạy bài test này. spawnSync khoá cứng event loop của
+// chính process đó trong lúc chờ — thấy lại đúng cái bẫy đã ghi ở
+// runDeviceCodeLogin() phía trên cho setup-notify.sh — nên request đầu tiên
+// (POST /api/device/start) treo mãi không ai trả lời, curl bị Ctrl-C giết
+// giữa chừng, device_code_login return 1 vì lý do hoàn toàn khác, và bài test
+// xanh dù không hề đo được thứ nó tưởng đang đo (bắt được bằng cách chạy thử
+// với spawnSync trước khi đổi sang spawn — assert 130 thất bại, elapsed quá
+// nhanh, không có network round-trip thật).
+function runInstallShCtrlCViaPty(script) {
+  const py = `
+import pty, os, sys, time
+pid, fd = pty.fork()
+if pid == 0:
+    os.execvp('dash', ['dash', '-c', sys.argv[1]])
+else:
+    time.sleep(0.6)
+    os.write(fd, b'\\x03')
+    start = time.time()
+    deadline = start + 5
+    while time.time() < deadline:
+        wpid, status = os.waitpid(pid, os.WNOHANG)
+        if wpid != 0:
+            elapsed = time.time() - start
+            if os.WIFEXITED(status):
+                print(f"PTYRESULT exited code={os.WEXITSTATUS(status)} elapsed={elapsed:.2f}")
+            elif os.WIFSIGNALED(status):
+                print(f"PTYRESULT killed signal={os.WTERMSIG(status)} elapsed={elapsed:.2f}")
+            sys.exit(0)
+        time.sleep(0.05)
+    print("PTYRESULT survived elapsed=5.00+")
+    os.kill(pid, 9)
+    os.waitpid(pid, 0)
+`;
+  const child = spawn('python3', ['-c', py, script]);
+  let stdout = '';
+  let stderr = '';
+  child.stdout.on('data', (d) => { stdout += d; });
+  child.stderr.on('data', (d) => { stderr += d; });
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => child.kill('SIGKILL'), 15000);
+    child.on('exit', (code, signal) => {
+      clearTimeout(timer);
+      resolve({ code, signal, stdout, stderr });
+    });
+  });
+}
+
+test('install.sh: Ctrl-C THẬT (qua pty) trong lúc chờ duyệt phải dừng script ngay, không sống sót tới hết ttl', async (t) => {
+  if (!HAS_DASH || !HAS_PYTHON3) { t.skip('cần cả dash và python3 để dựng pty thật'); return; }
+  // Trích CẢ preamble (TMP=.../trap) THẬT từ install.sh — không hand-write lại
+  // như extractInstallShFuncs() ở các bài khác. Bài này kiểm chính cái trap;
+  // hand-write một bản trap riêng ở đây sẽ khiến test không bao giờ thấy được
+  // một cú mutate trap trong file thật (verified: xoá `exit 130`/`exit 143`
+  // khỏi install.sh mà không đổi bản hand-write thì test vẫn xanh).
+  const block = extractInstallShPreambleAndFuncs();
+
+  const server = http.createServer((req, res) => {
+    if (req.url === '/api/device/start') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, deviceCode: 'd'.repeat(32), userCode: 'AB12', ttl: 30, interval: 2 }));
+      return;
+    }
+    if (req.url === '/api/device/poll') {
+      res.writeHead(428, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: false }));
+      return;
+    }
+    res.writeHead(404);
+    res.end();
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = server.address().port;
+
+  const script = `
+set -eu
+say() { :; }
+${block}
+HUB="http://127.0.0.1:${port}"
+if device_code_login; then echo "RC=0"; else echo "RC=$?"; fi
+`;
+  const { code, signal, stdout, stderr } = await runInstallShCtrlCViaPty(script);
+  server.close();
+
+  assert.ok(!signal, `python3 harness bị kill bởi timeout — pty không thoát trong 15s. stdout=${stdout} stderr=${stderr}`);
+  assert.equal(code, 0, `python3 harness tự nó phải thoát 0. stdout=${stdout} stderr=${stderr}`);
+  assert.match(stdout, /PTYRESULT exited code=130/,
+    `Ctrl-C phải khiến dash thoát mã 130 (128+SIGINT) NGAY LẬP TỨC, không "survived" tới hết ttl. stdout=${stdout} stderr=${stderr}`);
+});
+
+test('deploy.sh dùng tên file tạm riêng cho users.json, không đụng tên của hub', () => {
+  const src = read('deploy.sh');
+  assert.doesNotMatch(src, /f \+ "\.tmp"/,
+    'tên tạm cố định ".tmp" là tên hub cũng dùng — hai tiến trình ghi đè lên nhau trong chính file tạm');
+  const uses = src.match(/f \+ "\.tmp\." \+ process\.pid/g) || [];
+  assert.equal(uses.length, 2, 'cả adduser lẫn deluser đều phải có tên tạm riêng');
+});
+
+// --- deploy.sh phải tự đóng cặp trust-proxy / bind ---------------------------
+//
+// Khi có CCRC_TUNNEL_TOKEN, chính script chọn `--profile cloudflare`: đó là
+// lúc nó BIẾT CHẮC có proxy đứng trước. Không ghi CCRC_TRUST_PROXY=1 thì mọi
+// request mang địa chỉ container cloudflared, cả team dùng chung MỘT rổ
+// rate-limit của /api/device/start, và người thứ 6 chạy ./setup-notify.sh
+// trong 10 phút ăn 429 rồi âm thầm rơi về dán token tay. Không ghi kèm
+// CCRC_BIND=127.0.0.1 thì cổng 8720 vẫn publish ra 0.0.0.0 (compose làm thế ở
+// MỌI profile) và đường đi thẳng đó biến CCRC_TRUST_PROXY=1 thành lỗ hổng.
+// Hai biến này chỉ đúng khi đi CÙNG NHAU.
+//
+// Chạy script thật trong một thư mục tạm — deploy.sh `cd "$(dirname "$0")"`
+// nên bản sao chỉ đụng .env của chính nó, không đụng .env của repo.
+function runDeployInSandbox(envContent) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccrc-deploy-'));
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'ccrc-fakebin-'));
+  try {
+    fs.copyFileSync(path.join(root, 'deploy.sh'), path.join(dir, 'deploy.sh'));
+    fs.chmodSync(path.join(dir, 'deploy.sh'), 0o755);
+    fs.writeFileSync(path.join(dir, '.env'), envContent);
+    // `docker compose version` phải qua để script đi tiếp; mọi lời gọi khác
+    // (tức `up -d --build`) hỏng — chuẩn bị .env đã xong trước đó rồi.
+    fs.writeFileSync(path.join(bin, 'docker'),
+      '#!/bin/sh\n[ "$1" = compose ] && [ "$2" = version ] && exit 0\nexit 1\n');
+    fs.chmodSync(path.join(bin, 'docker'), 0o755);
+    spawnSync('bash', [path.join(dir, 'deploy.sh'), 'deploy'], {
+      env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    return fs.readFileSync(path.join(dir, '.env'), 'utf8');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(bin, { recursive: true, force: true });
+  }
+}
+
+test('deploy.sh có tunnel token thì tự ghi CẢ CẶP CCRC_TRUST_PROXY=1 và CCRC_BIND=127.0.0.1', () => {
+  const env = runDeployInSandbox('CCRC_TOKEN=abc123\nCCRC_TUNNEL_TOKEN=eyJgia\n');
+  assert.match(env, /^CCRC_TRUST_PROXY=1$/m,
+    'biết chắc có cloudflared mà không bật thì cả internet chung một rổ rate-limit');
+  assert.match(env, /^CCRC_BIND=127\.0\.0\.1$/m,
+    'trust proxy mà cổng vẫn mở ra 0.0.0.0 là mở lại đúng cái lỗ nó sinh ra để bịt');
+});
+
+test('deploy.sh KHÔNG ghi hai biến đó khi không có tunnel token', () => {
+  const env = runDeployInSandbox('CCRC_TOKEN=abc123\nCCRC_TUNNEL_TOKEN=\n');
+  assert.doesNotMatch(env, /^CCRC_TRUST_PROXY=1$/m,
+    'không có proxy mà bật trust proxy là tự cho client bịa X-Forwarded-For');
+  assert.doesNotMatch(env, /^CCRC_BIND=/m,
+    'không tunnel thì hub được với tới thẳng — đóng về localhost là phá cài đặt LAN/tailnet');
+});
+
+test('deploy.sh KHÔNG ghi đè giá trị người vận hành đã tự đặt', () => {
+  const env = runDeployInSandbox(
+    'CCRC_TOKEN=abc123\nCCRC_TUNNEL_TOKEN=eyJgia\nCCRC_TRUST_PROXY=\nCCRC_BIND=10.0.0.5\n');
+  assert.doesNotMatch(env, /^CCRC_TRUST_PROXY=1$/m,
+    'đặt rỗng là cố ý TẮT — script không được cãi lại người vận hành');
+  assert.match(env, /^CCRC_BIND=10\.0\.0\.5$/m);
+  assert.equal((env.match(/^CCRC_BIND=/gm) || []).length, 1, 'không được thêm dòng thứ hai');
+});
+
+test('deploy.sh có deluser và nó KHÔNG đoán khi khớp nhiều người', () => {
+  const src = read('deploy.sh');
+  assert.match(src, /cmd_deluser/);
+  assert.match(src, /deluser\)/, 'phải có nhánh dispatch, không thì lệnh không gọi được');
+  assert.match(src, /removeUser/, 'dùng lại luật trong users.js chứ không viết lại trong shell');
+  assert.match(src, /matches\.length > 1/,
+    'xoá nhầm người là mất push subs, lịch sử và phiên đang mở của họ');
 });

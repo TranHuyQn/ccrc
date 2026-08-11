@@ -12,6 +12,7 @@
 # Cách dùng:
 #   ./deploy.sh                  # triển khai / cập nhật (hỏi token lần đầu)
 #   ./deploy.sh adduser <tên>    # cấp token cho thành viên mới
+#   ./deploy.sh deluser <tên>    # thu hồi token của một người
 #   ./deploy.sh status           # trạng thái + log gần nhất
 #   ./deploy.sh down             # dừng (giữ nguyên dữ liệu cấu hình)
 # =============================================================================
@@ -46,15 +47,88 @@ cmd_adduser() {
   compose exec -T hub node -e '
     const fs = require("fs");
     const f = "/data/users.json";
-    let arr = []; try { arr = JSON.parse(fs.readFileSync(f, "utf8")); } catch {}
+    let arr = [];
+    try {
+      arr = JSON.parse(fs.readFileSync(f, "utf8"));
+    } catch (e) {
+      // ENOENT (chưa ai adduser bao giờ) là bình thường, ra mảng rỗng. Mọi
+      // lỗi khác nghĩa là file CÓ tồn tại nhưng đọc/parse hỏng — coi đó là
+      // rỗng thì lệnh dưới sẽ ghi đè lên một file hỏng như thể nó chưa từng
+      // hỏng, xoá sạch mọi user còn lại. Phải dừng và nói rõ.
+      if (e.code !== "ENOENT") {
+        console.error("Không đọc được users.json — file có thể hỏng, chưa đổi gì: " + e.message);
+        process.exit(1);
+      }
+    }
     const name = process.argv[1], token = process.argv[2];
     if (arr.some(u => u.name === name)) { console.error("User đã tồn tại: " + name); process.exit(1); }
     arr.push({ name, token });
-    fs.writeFileSync(f, JSON.stringify(arr, null, 2));
+    // Ghi qua temp + rename như saveSlackUser (server/src/index.js): một
+    // users.json cụt vì mất điện giữa chừng là cả team mất quyền cùng lúc.
+    // Tên tạm mang pid: hub cũng ghi đúng file này, và một tên tạm DÙNG CHUNG
+    // nghĩa là hai tiến trình đạp lên nhau ngay trong file tạm rồi rename ra
+    // một nội dung lai. (Cuộc đua đọc-sửa-ghi giữa hai tiến trình thì tên
+    // riêng không xoá được — lệnh này chạy tay lúc có sự cố nhân sự, và cách
+    // đúng vẫn là đừng chạy nó cùng lúc với một lượt đăng nhập.)
+    const tmp = f + ".tmp." + process.pid;
+    fs.writeFileSync(tmp, JSON.stringify(arr, null, 2));
+    fs.renameSync(tmp, f);
     console.log("OK");
   ' "$name" "$token" >/dev/null
   echo "✅ Đã tạo user '$name'. Token (gửi riêng cho người đó, hub tự nạp trong ~5s):"
   echo "   $token"
+}
+
+cmd_deluser() {
+  local needle="${1:-}"
+  [ -n "$needle" ] || { echo "Dùng: ./deploy.sh deluser <tên hiển thị hoặc slack_user_id>"; exit 1; }
+  # Luật khớp nằm trong server/src/users.js, không viết lại ở đây: nó đã có
+  # test, và hai bản sao của cùng một luật là hai bản sao sẽ lệch nhau.
+  compose exec -T hub node --input-type=module -e '
+    import fs from "node:fs";
+    import { removeUser } from "/app/server/src/users.js";
+    const f = "/data/users.json";
+    let arr = [];
+    try {
+      arr = JSON.parse(fs.readFileSync(f, "utf8"));
+    } catch (e) {
+      // ENOENT là bình thường (chưa ai adduser bao giờ). Mọi lỗi khác nghĩa
+      // là file hỏng — im lặng coi nó là rỗng thì "không tìm thấy tên đó" sẽ
+      // trông giống một cú tra cứu trượt bình thường, đúng lúc người vận
+      // hành cần biết sự thật là file đang cụt, không phải người kia đã bị
+      // xoá từ trước.
+      if (e.code !== "ENOENT") {
+        console.error(`Không đọc được users.json — file có thể hỏng, chưa đổi gì: ${e.message}`);
+        process.exit(1);
+      }
+    }
+    if (!Array.isArray(arr)) arr = [];
+    const label = (u) => `${u.name}  (${u.displayName ?? u.name})`;
+    const { list, removed, matches } = removeUser(arr, process.argv[1]);
+    if (removed) {
+      // Ghi qua temp + rename như saveSlackUser (server/src/index.js): một
+      // users.json cụt vì mất điện giữa chừng là cả team mất quyền cùng lúc.
+      // Tên tạm mang pid: hub cũng ghi đúng file này, và một tên tạm DÙNG CHUNG
+      // nghĩa là hai tiến trình đạp lên nhau ngay trong file tạm rồi rename ra
+      // một nội dung lai. (Cuộc đua đọc-sửa-ghi giữa hai tiến trình thì tên
+      // riêng không xoá được — lệnh này chạy tay lúc có sự cố nhân sự, và cách
+      // đúng vẫn là đừng chạy nó cùng lúc với một lượt đăng nhập.)
+      const tmp = f + ".tmp." + process.pid;
+      fs.writeFileSync(tmp, JSON.stringify(list, null, 2));
+      fs.renameSync(tmp, f);
+      console.log("OK " + label(removed));
+      process.exit(0);
+    }
+    if (matches.length > 1) {
+      console.error("Khớp nhiều người — gõ lại bằng cột đầu:");
+      for (const m of matches) console.error("  " + label(m));
+      process.exit(1);
+    }
+    console.error(`Không tìm thấy "${process.argv[1]}". Đang có:`);
+    for (const u of arr) console.error("  " + label(u));
+    process.exit(1);
+  ' "$needle"
+  echo "✅ Đã thu hồi. Hub tự nạp lại trong ~5s."
 }
 
 cmd_status() {
@@ -71,10 +145,11 @@ cmd_down() { compose --profile cloudflare down; echo "Đã dừng. Dữ liệu c
 
 case "${1:-deploy}" in
   adduser) shift; cmd_adduser "$@"; exit 0 ;;
+  deluser) shift; cmd_deluser "$@"; exit 0 ;;
   status)  cmd_status; exit 0 ;;
   down)    cmd_down; exit 0 ;;
   deploy)  ;;
-  *) echo "Lệnh không hợp lệ: $1 (dùng: deploy | adduser <tên> | status | down)"; exit 1 ;;
+  *) echo "Lệnh không hợp lệ: $1 (dùng: deploy | adduser <tên> | deluser <tên> | status | down)"; exit 1 ;;
 esac
 
 # ----------------------------------------------------------------------------
@@ -94,6 +169,35 @@ if ! grep -q '^CCRC_TUNNEL_TOKEN=..*' .env 2>/dev/null; then
   if [ -n "$tuntok" ]; then
     echo "CCRC_TUNNEL_TOKEN=$tuntok" >> .env
   fi
+fi
+
+# Có tunnel token = chắc chắn có cloudflared đứng trước hub (bên dưới script tự
+# chọn --profile cloudflare). Đây là lúc duy nhất script BIẾT CHẮC hình dạng
+# triển khai, nên nó ghi luôn cặp biến đi liền nhau, thay vì để người vận hành
+# đọc README rồi tự đoán:
+#
+#   CCRC_TRUST_PROXY=1  — không có nó thì mọi request đều mang địa chỉ của
+#     container cloudflared, cả team dùng CHUNG một rổ rate-limit của
+#     /api/device/start, và người thứ 6 chạy ./setup-notify.sh trong 10 phút ăn
+#     429 rồi âm thầm rơi về dán token tay.
+#   CCRC_BIND=127.0.0.1 — bắt buộc đi kèm. Compose publish 8720 ở
+#     ${CCRC_BIND:-0.0.0.0} kể cả trong profile cloudflare, nên nếu không đóng
+#     thì vẫn còn một đường đi THẲNG vào hub; trên đường đó, CCRC_TRUST_PROXY=1
+#     bảo hub tin header của chính kẻ gọi và rate-limit thành trang trí. Bật
+#     một mình cái trên là mở lại đúng cái lỗ nó sinh ra để bịt. (Trên VPS cũng
+#     đừng tin mỗi ufw: iptables của Docker chạy trước ufw.)
+#
+# Cùng quy tắc với CCRC_TOKEN ở trên: chỉ bổ sung khi CHƯA có, không bao giờ
+# ghi đè giá trị người vận hành đã tự đặt.
+if grep -q '^CCRC_TUNNEL_TOKEN=..*' .env 2>/dev/null; then
+  grep -q '^CCRC_TRUST_PROXY=' .env 2>/dev/null || {
+    echo "CCRC_TRUST_PROXY=1" >> .env
+    echo "• Đặt CCRC_TRUST_PROXY=1 (có cloudflared đứng trước — rate-limit đếm đúng IP client)"
+  }
+  grep -q '^CCRC_BIND=' .env 2>/dev/null || {
+    echo "CCRC_BIND=127.0.0.1" >> .env
+    echo "• Đặt CCRC_BIND=127.0.0.1 (cổng 8720 chỉ mở cho localhost — bắt buộc đi cùng CCRC_TRUST_PROXY)"
+  }
 fi
 
 # 2) Build + khởi động (ephemeral mặc định — không lưu nội dung phiên ra đĩa)

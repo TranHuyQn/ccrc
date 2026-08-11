@@ -16,8 +16,88 @@ function logout() {
   token = '';
   localStorage.removeItem('ccrc_token');
   $('main').classList.add('hidden');
+  // #link-card cũng phải ẩn. Một lần 401 trong lúc đang bấm "Duyệt" ở /link
+  // gọi thẳng vào đây, và thiếu dòng này thì thẻ duyệt nằm chồng lên thẻ đăng
+  // nhập: người dùng thấy cả ô nhập mã lẫn ô dán token, không biết cái nào
+  // đang có tác dụng.
+  $('link-card').classList.add('hidden');
   $('login').classList.remove('hidden');
 }
+
+// Nút Slack chỉ hiện khi hub thực sự cấu hình được. Hỏi hub thay vì đoán:
+// một nút dẫn tới 503 tệ hơn là không có nút.
+(async () => {
+  try {
+    const { slackLogin } = await (await fetch('/api/auth/config')).json();
+    if (slackLogin) $('slack-login').classList.remove('hidden');
+    else $('login-or').classList.add('hidden');
+  } catch {
+    // Im lặng: ô dán token vẫn còn đó, người dùng vẫn vào được.
+    $('login-or').classList.add('hidden');
+  }
+})();
+
+$('slack-login').onclick = () => { location.href = '/auth/start'; };
+
+// ?login=<claimCode> — đổi lấy token thật rồi xoá mã khỏi thanh địa chỉ.
+async function consumeLoginCode() {
+  const code = new URLSearchParams(location.search).get('login');
+  if (!code) return false;
+  // replaceState TRƯỚC await: nếu người dùng chia sẻ hay bookmark đúng lúc
+  // request đang bay, cái họ cầm không được là một mã còn dùng được.
+  history.replaceState(null, '', location.pathname);
+  try {
+    const res = await fetch('/api/auth/claim', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ code }),
+    });
+    if (!res.ok) return false;
+    const body = await res.json();
+    if (!body.token) return false;
+    token = body.token;
+    localStorage.setItem('ccrc_token', token);
+    // Nói ngay mình vừa đăng nhập thành AI. Đăng nhập bằng Slack GHI ĐÈ token
+    // đang có trong localStorage, nên đây là khoảnh khắc duy nhất người dùng
+    // có thể nhận ra "đây không phải tài khoản của tôi" — chính là thứ mà cú
+    // tấn công state-không-ràng-buộc (xem /auth/start trong server/src/index.js)
+    // làm âm thầm. /api/me ngay sau đó là nguồn sự thật và sẽ vẽ đè lên; dòng
+    // này chỉ để không có khoảng trống nào ở giữa.
+    if (body.displayName) $('who').textContent = body.displayName;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Trang /link: duyệt một máy dev đang chờ.
+function showLink() {
+  $('login').classList.add('hidden');
+  $('main').classList.add('hidden');
+  if (!token) { $('login').classList.remove('hidden'); return; }
+  $('link-card').classList.remove('hidden');
+}
+
+$('link-btn').onclick = async () => {
+  $('link-err').classList.add('hidden');
+  $('link-msg').classList.add('hidden');
+  const userCode = $('link-code').value.trim();
+  if (!userCode) return;
+  const res = await api('/api/device/approve', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ userCode }),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (res.ok) {
+    $('link-msg').textContent = 'Đã duyệt. Quay lại terminal máy dev — nó tự nhận token trong vài giây.';
+    $('link-msg').classList.remove('hidden');
+    $('link-code').value = '';
+    return;
+  }
+  $('link-err').textContent = body.error || 'Duyệt không thành công.';
+  $('link-err').classList.remove('hidden');
+};
 
 async function showMain() {
   const me = await (await api('/api/me')).json();
@@ -727,6 +807,23 @@ $('login-btn').onclick = async () => {
   $('login-err').classList.add('hidden');
   token = $('token').value.trim();
   try {
+    // Ở /link thì đăng nhập xong phải quay lại ĐÚNG thẻ duyệt. Trước bản này
+    // nhánh duy nhất là showMain(), nên người vào /link chưa đăng nhập bị
+    // showLink() đẩy về thẻ đăng nhập (đúng), rồi đăng nhập xong lại bị ném
+    // sang màn hình thông báo — với thanh địa chỉ vẫn là /link, không còn ô
+    // nhập mã, và không có gì bảo họ nạp lại trang. Máy dev thì vẫn đang
+    // ngồi đếm giây chờ được duyệt.
+    if (location.pathname === '/link') {
+      // Vẫn phải THỬ token trước khi tin nó: showLink() không gọi hub, nên
+      // không có bước này thì một token sai chỉ lộ ra ở lần bấm "Duyệt", dưới
+      // dạng 401 → logout() → về màn hình đăng nhập, không kèm lời giải thích
+      // nào.
+      const res = await api('/api/me');
+      if (!res.ok) throw new Error('token không dùng được');
+      localStorage.setItem('ccrc_token', token);
+      showLink();
+      return;
+    }
     await showMain();
     localStorage.setItem('ccrc_token', token);
   } catch (e) {
@@ -1253,4 +1350,21 @@ async function cancelPairing() {
 $('pair-cancel').onclick = () => cancelPairing();
 
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
-if (token) showMain().catch(() => logout());
+
+(async () => {
+  const onLink = location.pathname === '/link';
+  // Có ?login= thì phải đổi mã TRƯỚC, vì token trong localStorage (nếu có)
+  // là của lần đăng nhập cũ.
+  //
+  // Chạy TRƯỚC nhánh /link, không phải sau: hôm nay hub luôn redirect về
+  // `/?login=`, nhưng nếu một ngày nào đó nó giữ lại đường dẫn thì thứ tự cũ
+  // sẽ hiện thẻ đăng nhập trong khi một claimCode còn sống nằm ngay trên
+  // thanh địa chỉ — vừa là ngõ cụt, vừa để một mã dùng được nằm phơi ra.
+  if (await consumeLoginCode()) {
+    if (onLink) { showLink(); return; }
+    showMain().catch(() => logout());
+    return;
+  }
+  if (onLink) { showLink(); return; }
+  if (token) showMain().catch(() => logout());
+})();

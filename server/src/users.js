@@ -34,9 +34,33 @@
 export const HUB_USER_NAME = 'admin';
 
 /**
+ * Hình dạng hợp lệ của một `slack_user_id`: một chữ HOA rồi tới chữ HOA và
+ * số. Slack cấp `U…`/`W…` (người) và `B…` (bot), 8–12 ký tự — luật ở đây rộng
+ * hơn thế một chút để không đỏ vì Slack nới độ dài, nhưng vẫn là DANH SÁCH
+ * CHO PHÉP chứ không phải danh sách cấm.
+ *
+ * Vì sao phải là allowlist. `name` là khoá của `pushSubs`, của lịch sử thông
+ * báo và của danh sách phiên. `pushSubs` là một object thường, nên một `name`
+ * bằng `__proto__` làm `pushSubs[user.name] || []` trả về Object.prototype —
+ * truthy, nhưng không có `.some()` — và mọi lần đăng ký push của người đó nổ
+ * thành 500. `constructor`, `toString` cũng cùng họ. Chặn từng cái một là
+ * cuộc chơi đuổi bắt; mô tả hình dạng ĐÚNG thì cả họ đó rơi ra ngoài một
+ * lượt, và `admin` (chữ thường) cũng vậy.
+ *
+ * Chỉ tới được khi token-slayer bị chiếm hoặc có bug — hub tin danh tính nó
+ * trả về. Nhưng "phải tin" và "phải nhận bất cứ chuỗi nào" là hai chuyện.
+ */
+const SLACK_USER_ID_RE = /^[A-Z][A-Z0-9]{1,31}$/;
+
+/** @param {unknown} v */
+export function isValidSlackUserId(v) {
+  return typeof v === 'string' && SLACK_USER_ID_RE.test(v);
+}
+
+/**
  * @param {unknown} parsed  the already-JSON.parse'd contents of users.json
  * @param {string} hubToken CCRC_TOKEN — an entry reusing it is dropped too
- * @returns {{users: Map<string, {name: string, admin: boolean}>, rejected: Array<{name: string, why: string}>}}
+ * @returns {{users: Map<string, {name: string, displayName: string, admin: boolean}>, rejected: Array<{name: string, why: string}>}}
  *   `users` maps token -> user. `rejected` is what was thrown out and why, so
  *   the caller can say it out loud instead of failing silently.
  */
@@ -56,7 +80,62 @@ export function parseUsers(parsed, hubToken) {
       rejected.push({ name, why: 'token trùng CCRC_TOKEN của hub' });
       continue;
     }
-    users.set(u.token, { name, admin: !!u.admin });
+    // displayName mặc định bằng name: users.json trên hub đang chạy toàn entry
+    // cũ do `deploy.sh adduser` tạo, và chúng không có trường này. Không cần
+    // migration file — chỉ cần đọc được cả hai hình.
+    const displayName = typeof u.displayName === 'string' && u.displayName ? u.displayName : name;
+    users.set(u.token, { name, displayName, admin: !!u.admin });
   }
   return { users, rejected };
+}
+
+/**
+ * Thêm hoặc cập nhật entry theo slack_user_id. THUẦN: nhận mảng, trả mảng mới,
+ * không đụng đĩa — index.js là nơi duy nhất đọc/ghi file.
+ *
+ * Token cũ được GIỮ NGUYÊN khi entry đã tồn tại. Đăng nhập lại trên điện thoại
+ * mà đổi token là đá văng máy dev của chính người đó, và họ sẽ không hiểu vì
+ * sao thông báo im bặt.
+ *
+ * @param {Array} list      nội dung users.json đã JSON.parse
+ * @param {string} slackUserId  khoá bất biến (`name`)
+ * @param {string} displayName  handle Slack, chỉ để hiển thị
+ * @param {string} newToken     token dùng khi phải tạo mới
+ * @returns {{list: Array, token: string, created: boolean}}
+ */
+export function upsertBySlackId(list, slackUserId, displayName, newToken) {
+  const arr = Array.isArray(list) ? [...list] : [];
+  const i = arr.findIndex((u) => u && typeof u === 'object' && u.name === slackUserId);
+
+  if (i >= 0) {
+    const token = arr[i].token;
+    arr[i] = { ...arr[i], name: slackUserId, displayName, token };
+    return { list: arr, token, created: false };
+  }
+
+  arr.push({ name: slackUserId, displayName, token: newToken });
+  return { list: arr, token: newToken, created: true };
+}
+
+/**
+ * Xoá một entry theo `name` HOẶC `displayName`.
+ *
+ * Khớp nhiều thì KHÔNG xoá gì và trả về danh sách khớp: lệnh này chạy lúc có
+ * sự cố nhân sự, và xoá nhầm người là mất push subs, lịch sử và phiên đang mở
+ * của họ. Thà bắt gõ lại bằng `name` còn hơn đoán.
+ *
+ * @param {Array} list
+ * @param {string} needle
+ * @returns {{list: Array, removed: object|null, matches: Array}}
+ */
+export function removeUser(list, needle) {
+  const arr = Array.isArray(list) ? list : [];
+  const matches = arr.filter(
+    (u) => u && typeof u === 'object' && (u.name === needle || u.displayName === needle),
+  );
+
+  if (matches.length !== 1) return { list: arr, removed: null, matches };
+
+  const removed = matches[0];
+  return { list: arr.filter((u) => u !== removed), removed, matches };
 }
