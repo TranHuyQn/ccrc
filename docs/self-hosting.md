@@ -58,6 +58,15 @@ It generates `CCRC_TOKEN`, asks for the tunnel token from step 1, writes both to
 `.env`, then builds and health-checks. Run it again any time to update — it
 keeps the answers it already has.
 
+Because a tunnel token means a proxy is in front, it also writes
+`CCRC_TRUST_PROXY=1` and `CCRC_BIND=127.0.0.1`. Those two belong together: the
+first tells the hub to read the client IP from the proxy's header so per-IP
+rate limiting counts real clients, and the second closes the direct route to
+port 8720 — which Compose publishes on `0.0.0.0` in every profile. Leave the
+port open and the flag is worthless, because anyone reaching it directly can
+write that header themselves. If you already have either key in `.env`, it
+leaves your value alone.
+
 **4. Check.**
 
 ```bash
@@ -104,9 +113,31 @@ do, so a `git pull` and the data never share a directory.
 
 ## Adding people
 
-Each person needs exactly two things, and nothing else:
+### Let them sign themselves in (optional)
 
-**1. A personal token**, issued on the hub machine:
+If you run token-slayer — a Slack-OAuth identity service — alongside the hub,
+people enrol without you doing anything. Set **both** of these in `.env`:
+
+| Variable | What it is |
+|---|---|
+| `CCRC_TS_PUBLIC_URL` | The URL the browser is redirected to |
+| `CCRC_TS_INTERNAL_URL` | The URL the hub calls itself, over the internal network |
+
+and set `CCRC_CALLBACK_URL` on the token-slayer side to `https://<your-hub>/auth/callback`.
+
+Both hub variables are required. With only one set the feature stays off and the
+sign-in page falls back to the paste-a-token box — deliberately, so a
+half-configured hub fails visibly rather than sending people into a login it
+cannot finish. Swap the two and sign-in appears to work in the browser but fails
+on the hub side.
+
+The hub asks that service who just signed in and issues its own token for that
+person. It never holds a credential of theirs.
+
+### Or issue a token by hand
+
+For anyone who cannot use that service — a script, a contractor, a shared
+account — or if you are not running it at all:
 
 ```bash
 ./deploy.sh adduser their-name
@@ -120,19 +151,45 @@ Editing `users.json` inside the data volume by hand does the same thing:
 ```json
 [
   { "name": "alice", "token": "alices-own-token" },
-  { "name": "bob",   "token": "bobs-own-token" }
+  { "name": "U01ABCDEF", "displayName": "bob", "token": "bobs-own-token" }
 ]
 ```
+
+Both shapes are valid. Entries created by hand carry just a name; entries
+created by signing in are keyed by the provider's immutable id, with the
+display name kept alongside — so somebody renaming themselves upstream does not
+orphan their push subscriptions and open sessions. An entry with no
+`displayName` simply shows its `name`.
 
 The name `admin` is reserved for `CCRC_TOKEN` itself, and an entry using it is
 ignored with a message in the log rather than silently dropped.
 
-**2. Their own Tailscale account** — needed only for the web terminal, not for
-notifications. Do not invite them to your tailnet and do not join theirs. The
+### Their own Tailscale account
+
+This part you cannot do for them, and it is needed only for the web terminal,
+not for notifications. Do not invite them to your tailnet and do not join
+theirs. The
 free personal plan is enough. The reasoning is in
 [`huong-dan.md`](huong-dan.md) §6 and [`../SECURITY.md`](../SECURITY.md); the
 short version is that leaving a tailnet is each person's own kill switch, and a
 shared tailnet takes that switch away from them.
+
+## Removing people
+
+```bash
+./deploy.sh deluser their-name        # display name or provider id
+```
+
+If the name matches more than one entry the command **removes nothing** and
+lists the candidates, so you can retype using the unambiguous id. This runs
+during a personnel incident, and deleting the wrong person costs them their
+push subscriptions, notification history and open sessions.
+
+**The hub never re-checks with the identity provider.** It asks once, at first
+sign-in, and issues its own token. Disabling somebody's Slack account blocks
+new logins and does nothing to the token already on their laptop — that keeps
+working until you run the command above. Put it in your off-boarding checklist;
+it will not happen on its own.
 
 ## Dev machine setup
 
@@ -142,8 +199,18 @@ From a checkout:
 ./setup-notify.sh
 ```
 
-Or on a machine with no checkout, straight from your hub — the hub URL is
-required and has no default:
+Or on a machine with no checkout, straight from your hub. The hub URL is
+required and has no default — this project has no central server to fall back
+on, and guessing one would send a token to a stranger's machine.
+
+With sign-in configured, no token is needed. The installer prints a short code
+and waits for somebody already signed in to approve it at `https://<your-hub>/link`:
+
+```bash
+curl -fsSL https://<your-hub>/install.sh | CCRC_HUB_URL=https://<your-hub> sh
+```
+
+With a token issued by hand:
 
 ```bash
 curl -fsSL https://<your-hub>/install.sh | sh -s -- <token> https://<your-hub>
@@ -188,11 +255,14 @@ start — but every phone has to re-subscribe and every token has to be reissued
 |---|---|---|
 | `CCRC_TOKEN` | (required) | Hub admin token; also logs in as the `admin` user |
 | `CCRC_PORT` | `8720` | HTTP port |
-| `CCRC_BIND` | `0.0.0.0` | Host bind address. Set `127.0.0.1` once a tunnel or proxy is in front, so the port is not exposed to your LAN |
+| `CCRC_BIND` | `0.0.0.0` | Host bind address (Compose only — a bare `node server/src/index.js` ignores it and listens on every interface). Set `127.0.0.1` once a tunnel or proxy is in front, so the port is not exposed to your LAN |
+| `CCRC_TRUST_PROXY` | (empty = off) | Set `1` when a tunnel or reverse proxy is in front, so per-IP rate limiting reads the real client IP. **Pair it with `CCRC_BIND=127.0.0.1`** — with the port still reachable directly, a client can write its own `X-Forwarded-For` and the flag buys nothing. Leaving it off *behind* a proxy fails the other way: every request looks like it comes from the proxy, so one noisy caller rate-limits everybody |
 | `CCRC_DATA_DIR` | `server/data` (Docker: volume `ccrc-data`) | Users, VAPID keys, push subscriptions |
 | `CCRC_VAPID_SUBJECT` | `mailto:admin@localhost` | Contact address embedded in Web Push |
 | `CCRC_TUNNEL_TOKEN` | (empty) | Cloudflare Tunnel token — required by the `cloudflare` profile |
 | `CCRC_DOMAIN` | (empty) | Domain for Caddy — required by the `tls` profile |
+| `CCRC_TS_PUBLIC_URL` | (empty) | Identity service URL the browser is redirected to. Pairs with the next one; with only one set, sign-in stays off |
+| `CCRC_TS_INTERNAL_URL` | (empty) | Identity service URL the hub calls itself, over the internal network |
 
 ## When it does not work
 
@@ -204,3 +274,7 @@ start — but every phone has to re-subscribe and every token has to be reissued
 | `/notify` on a dev machine says it cannot reach the hub | Wrong URL or token in `~/.ccrc/config` — rerun `setup-notify.sh` |
 | Browser will not enable notifications | Not on HTTPS, or (on iPhone) the page was opened in a Safari tab instead of the installed home-screen app |
 | Hub exits immediately with `CCRC_TOKEN is required` | `.env` missing or the variable is empty |
+| No "sign in with Slack" button on the login page | One of `CCRC_TS_PUBLIC_URL` / `CCRC_TS_INTERNAL_URL` is unset — the pair is all-or-nothing |
+| Sign-in reaches the identity service but the hub then says the session expired | Its `CCRC_CALLBACK_URL` does not point back at this hub, or more than five minutes passed between clicking and returning |
+| Everyone starts getting `429` from the installer at once | A proxy is in front but `CCRC_TRUST_PROXY` is unset, so the whole internet shares one rate-limit bucket |
+| Installer prints a code, then "expired" even though somebody approved it | The wait was interrupted with Ctrl-C; that spends the approval. Run the installer again for a fresh code |
