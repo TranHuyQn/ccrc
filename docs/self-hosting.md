@@ -231,27 +231,16 @@ in `docker-compose.yml`), but that only fires once the Docker daemon itself is
 back after a host reboot — on Linux that means `systemctl enable docker`;
 `./deploy.sh` does not do this for you.
 
-`./deploy.sh status` and `./deploy.sh down` were written for the tunnel path,
-and both have a gap here — a direct consequence of `tls` never being a profile
-`./deploy.sh` knows about:
+`./deploy.sh status` and `./deploy.sh down` are safe to use as-is on this
+path: `down` stops the whole project regardless of which profile flag it is
+given — `./deploy.sh down` hardcodes `--profile cloudflare`, but that still
+tears down `caddy` along with `hub`.
 
-- `status` (plain `docker compose ps`, no profile flag) still shows `caddy`
-  correctly — Compose's `ps` always lists every container in the project
-  regardless of profile, unlike `up` and `down` — so it's safe to use as-is.
-- `down` is not safe as-is: `./deploy.sh down` hardcodes
-  `docker compose --profile cloudflare down`, and `down` **does** filter by
-  profile, so on this path it stops `hub` and leaves `caddy` running, still
-  holding 80 and 443. Stop it explicitly instead:
-
-  ```bash
-  docker compose -p cc-remote-control --profile tls down
-  ```
-
-Re-running bare `./deploy.sh` after a `git pull` rebuilds and restarts `hub`
-the same as always, but it will not touch `caddy` — that service is outside
-`./deploy.sh`'s only-ever-`cloudflare` profile, same root cause as `down`
-above. If you change the Caddyfile or want to pick up a new Caddy image,
-rebuild that service explicitly:
+Re-running bare `./deploy.sh` after a `git pull` is not the same: it rebuilds
+and restarts `hub` as always, but it will not touch `caddy` — `up` (unlike
+`down`) only acts on services inside the profile it is given, and
+`./deploy.sh` never passes `tls`. If you change the Caddyfile or want to pick
+up a new Caddy image, rebuild that service explicitly:
 
 ```bash
 docker compose -p cc-remote-control --profile tls up -d --build caddy
