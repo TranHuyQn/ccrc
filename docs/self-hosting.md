@@ -75,29 +75,191 @@ curl -fsS https://<your-hostname>/healthz     # {"ok":true}
 
 ## Option B — Caddy with your own domain
 
-For a machine that can accept inbound traffic on ports 80 and 443.
+For a machine that can accept inbound traffic on ports 80 and 443 — a VPS, or a
+home server with those ports forwarded and an address that does not move
+(static IP, or dynamic DNS keeping the A record current).
+
+**⚠ `./deploy.sh` does not drive this path — read this whole section before
+running anything.** It was written for Option A: it only ever fills in
+`.env` for a Cloudflare Tunnel, and the one profile it ever brings up is
+`cloudflare`, never `tls`. Run bare `./deploy.sh` on a Caddy box and it happily
+builds and starts the hub with nothing listening on 80 or 443, while also
+skipping two `.env` variables that a tunnel deployment gets for free. Both gaps
+are in the steps below, with the commands that work around them. `./deploy.sh
+adduser` / `deluser` are unaffected — they talk to whichever hub container is
+already running — but do not use bare `./deploy.sh` for this path.
+
+**Prerequisites**
+
+- A domain with an A (and/or AAAA) record **already** pointing at this
+  machine's public IP — confirm with `dig +short ccrc.example.com` before you
+  go further. Caddy requests the certificate the moment it starts, and Let's
+  Encrypt validates over HTTP, so this has to be true first, not "soon."
+- Ports 80 and 443 reachable from the public internet, not just open in this
+  machine's own firewall — check any router or cloud security group in front
+  of it too. Let's Encrypt's validation request comes from the outside, and
+  one blocking layer anywhere on that path fails the same way as all of them
+  blocking it.
+- Docker with Compose v2 (`docker compose version`).
+
+**1. Prepare `.env` — by hand, not with `./deploy.sh`.**
 
 ```bash
+git clone https://github.com/TranHuyQn/ccrc && cd ccrc
 cp .env.example .env
-# set CCRC_TOKEN   (openssl rand -hex 24)
-# set CCRC_DOMAIN  (a domain whose DNS A/AAAA record points at this machine)
+```
+
+Edit `.env` and set:
+
+```
+CCRC_TOKEN=<output of: openssl rand -hex 24>
+CCRC_DOMAIN=ccrc.example.com
+CCRC_TRUST_PROXY=1
+CCRC_BIND=127.0.0.1
+```
+
+The last two do not happen on their own here, and that is the first real gap
+in `./deploy.sh`: it only ever writes `CCRC_TRUST_PROXY` and `CCRC_BIND` inside
+the branch that runs once `CCRC_TUNNEL_TOKEN` is already set. A Caddy
+deployment has no tunnel token, so that branch never runs, and both variables
+stay unset even after `./deploy.sh` finishes without complaint. Left unset,
+both failures are silent: the rate limiter reads Caddy's own address on every
+request, so one noisy caller exhausts the shared bucket for the whole team
+(same mechanism as the row about `429` in
+[When it does not work](#when-it-does-not-work), just with Caddy instead of a
+tunnel in front); and Compose still publishes port 8720 on
+`${CCRC_BIND:-0.0.0.0}` under the `tls` profile exactly as it does everywhere
+else, so anyone on the same LAN can skip Caddy entirely and talk to the hub
+directly — on that direct path `CCRC_TRUST_PROXY=1` is actively harmful,
+because the "trusted" header it reads is now whatever the direct caller wrote.
+Set both by hand, as above, before you bring anything up. See
+[Environment variables](#environment-variables) for what each one does.
+
+**2. Bring it up — with the `tls` profile named explicitly.**
+
+```bash
 docker compose -p cc-remote-control --profile tls up -d --build
 ```
 
-Caddy obtains and renews a Let's Encrypt certificate automatically. DNS has to
-resolve to this machine **before** you start it, or the certificate request
-fails.
+`--profile tls` is the second gap: it is not optional, and `./deploy.sh` never
+passes it under any circumstance. Leave it off and Compose brings up the `hub`
+service only — it builds, it health-checks fine internally, and there is
+still nothing on 80 or 443 for the outside world to reach.
 
-Keep the `-p cc-remote-control`. `deploy.sh` uses that project name, while
+Keep `-p cc-remote-control` too, for an unrelated reason that bites here just
+as it would on Option A: `deploy.sh` always uses that project name, while
 Compose on its own names the project after whatever directory you cloned into.
 If the two disagree, `./deploy.sh status` prints an empty table and
-`./deploy.sh down` stops nothing, both while the hub is running fine — they are
-just looking at a different project. Nothing warns you; the output simply looks
-like the hub was never started.
+`./deploy.sh down` stops nothing, both while the hub is running fine — they
+are just looking at a different project. Nothing warns you; the output simply
+looks like the hub was never started.
 
-Note this puts the machine's hostname into public Certificate Transparency logs
-permanently. That is normal for a public service, but it is the exact tradeoff
-the terminal daemon refuses to make — see [`../SECURITY.md`](../SECURITY.md).
+This starts two services from `docker-compose.yml`: `hub`, and `caddy`
+(`caddy:2-alpine`, publishing `80:80` and `443:443`, running
+[`deploy/Caddyfile.docker`](../deploy/Caddyfile.docker) — a single
+`reverse_proxy` to `hub:8720` on the domain read from `CCRC_DOMAIN`). Caddy
+requests and renews the Let's Encrypt certificate itself; there is nothing
+else to configure for that part.
+
+Note this puts the machine's hostname into public Certificate Transparency
+logs permanently. That is normal for a public service, but it is the exact
+tradeoff the terminal daemon refuses to make — see
+[`../SECURITY.md`](../SECURITY.md).
+
+**3. Verify, in this order.**
+
+```bash
+# a) Caddy issued a real certificate for your domain, not the localhost fallback
+openssl s_client -connect ccrc.example.com:443 -servername ccrc.example.com \
+  </dev/null 2>/dev/null | openssl x509 -noout -issuer -subject
+# issuer should mention "Let's Encrypt"; subject should be your domain, not "localhost"
+
+# b) the hub answers through Caddy
+curl -fsS https://ccrc.example.com/healthz     # {"ok":true}
+
+# c) 8720 is NOT reachable from another machine on the LAN
+curl -m 3 http://<this-machine's-LAN-IP>:8720/healthz
+# should time out or refuse the connection — if it answers, CCRC_BIND never
+# got set; go back to step 1
+```
+
+Do all three. (b) alone will not catch a leftover open port or a
+localhost-only certificate — those two fail quietly, and (a)/(c) are the only
+way to see them before someone else does.
+
+### Optional — Slack sign-in
+
+Same two hub variables as everywhere else in this guide — `CCRC_TS_PUBLIC_URL`
+and `CCRC_TS_INTERNAL_URL`, set together, all-or-nothing — see
+[Let them sign themselves in](#let-them-sign-themselves-in-optional). What is
+specific to this path is the other end: `CCRC_CALLBACK_URL` on the
+token-slayer side has to point at *this* hub's real domain —
+`https://ccrc.example.com/auth/callback` — because it is token-slayer's own
+server, not the browser, that reads it after the Slack round trip.
+
+**The cutover trap.** `CCRC_CALLBACK_URL` is a single value in token-slayer's
+own `.env` — one deployment of token-slayer can serve exactly one hub. If
+you're moving sign-in from a test or staging hub to this production hub, the
+two ends have to change in this order, or there's a window where **neither**
+hub can finish a sign-in:
+
+1. Bring the production hub up first, with `CCRC_TS_PUBLIC_URL` /
+   `CCRC_TS_INTERNAL_URL` already set, and confirm `/healthz` on its real
+   domain. Its "Sign in with Slack" button will not fully work yet — clicking
+   it still round-trips through the *old* callback — and that's expected;
+   nobody should be relying on it yet.
+2. Only once the production hub is confirmed up, change `CCRC_CALLBACK_URL` on
+   token-slayer to the production hub's callback URL and restart or redeploy
+   token-slayer so it picks up the change.
+3. Test one real sign-in against the production hub immediately after.
+
+Do step 2 before step 1 and you get the exact failure this order exists to
+prevent: the old hub's sign-in now points at a callback that no longer serves
+it, while the production hub — not yet up, or not yet configured with the two
+`CCRC_TS_*` variables — has nothing there to receive the callback either. Both
+broken at once, and neither error message points at the other end.
+
+Tokens already issued keep working through all of this — the hub never
+re-checks with the identity provider after first sign-in (see
+[Removing people](#removing-people)) — so the cutover only affects people
+signing in for the first time, or on a new device, during the switch.
+
+### Operating a Caddy deployment
+
+Both services restart automatically after a crash (`restart: unless-stopped`
+in `docker-compose.yml`), but that only fires once the Docker daemon itself is
+back after a host reboot — on Linux that means `systemctl enable docker`;
+`./deploy.sh` does not do this for you.
+
+`./deploy.sh status` and `./deploy.sh down` were written for the tunnel path,
+and both have a gap here — a direct consequence of `tls` never being a profile
+`./deploy.sh` knows about:
+
+- `status` (plain `docker compose ps`, no profile flag) still shows `caddy`
+  correctly — Compose's `ps` always lists every container in the project
+  regardless of profile, unlike `up` and `down` — so it's safe to use as-is.
+- `down` is not safe as-is: `./deploy.sh down` hardcodes
+  `docker compose --profile cloudflare down`, and `down` **does** filter by
+  profile, so on this path it stops `hub` and leaves `caddy` running, still
+  holding 80 and 443. Stop it explicitly instead:
+
+  ```bash
+  docker compose -p cc-remote-control --profile tls down
+  ```
+
+Re-running bare `./deploy.sh` after a `git pull` rebuilds and restarts `hub`
+the same as always, but it will not touch `caddy` — that service is outside
+`./deploy.sh`'s only-ever-`cloudflare` profile, same root cause as `down`
+above. If you change the Caddyfile or want to pick up a new Caddy image,
+rebuild that service explicitly:
+
+```bash
+docker compose -p cc-remote-control --profile tls up -d --build caddy
+```
+
+Back up the data volume the same way as any other deployment — see
+[Backups](#backups); nothing about running Caddy in front changes what's in
+it.
 
 ## Without Docker
 
@@ -270,7 +432,11 @@ start — but every phone has to re-subscribe and every token has to be reissued
 |---|---|
 | Tunnel container restarts in a loop | `CCRC_TUNNEL_TOKEN` empty or wrong. `./deploy.sh status` shows the cloudflared log |
 | Hub is up, hostname returns 502 | Tunnel's public hostname is not pointing at `HTTP → hub:8720` |
-| Caddy cannot get a certificate | DNS does not resolve to this machine yet, or 80/443 are not reachable from outside |
+| Certificate never gets issued, DNS looks right | Port 80 or 443 is not reachable from the public internet — check the router or cloud security group in front of this machine, not just its own firewall; Let's Encrypt's validation request comes from outside |
+| Certificate never gets issued, and/or Caddy logs a DNS error | DNS has not propagated yet, or points at the wrong IP — `dig +short ccrc.example.com` should already match this machine before you bring Caddy up |
+| `openssl s_client` shows a certificate for `localhost`, not your domain | `CCRC_DOMAIN` is unset in `.env` — Compose falls back to `CCRC_DOMAIN=localhost` and Caddy self-signs for that instead of requesting a real one |
+| Hub answers directly (`docker compose exec hub …/healthz`) but the domain 502s | Caddy is up but can't reach `hub` — check `docker compose -p cc-remote-control ps` for a hub container that's still building or has crashed |
+| One noisy caller seems to rate-limit the whole team, and this deployment has no tunnel | `CCRC_TRUST_PROXY` / `CCRC_BIND` were never set — `./deploy.sh` only writes that pair when `CCRC_TUNNEL_TOKEN` exists, which a Caddy deployment never has. Set both by hand — see Option B, step 1 |
 | `/notify` on a dev machine says it cannot reach the hub | Wrong URL or token in `~/.ccrc/config` — rerun `setup-notify.sh` |
 | Browser will not enable notifications | Not on HTTPS, or (on iPhone) the page was opened in a Safari tab instead of the installed home-screen app |
 | Hub exits immediately with `CCRC_TOKEN is required` | `.env` missing or the variable is empty |
