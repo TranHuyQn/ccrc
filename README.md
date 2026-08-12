@@ -182,7 +182,7 @@ Exactly two, matching Claude Code's `Notification` hook:
 | `CCRC_BIND` | `0.0.0.0` | Host bind address (Docker); set `127.0.0.1` when a tunnel or reverse proxy sits in front |
 | `CCRC_TRUST_PROXY` | (empty = off) | Set to `1` when a tunnel or reverse proxy sits in front, so the rate limiter counts the real client IP. **Pair it with `CCRC_BIND=127.0.0.1`** — Compose publishes 8720 on `0.0.0.0` in every profile, and a direct route to that port makes the flag meaningless because the client can write its own `X-Forwarded-For`. Leaving it off *behind* a proxy fails the other way: the whole internet shares one bucket, so one noisy caller rate-limits everybody |
 | `CCRC_DATA_DIR` | `server/data` (Docker: volume `ccrc-data`) | Where `users.json`, VAPID keys and push subscriptions live |
-| `CCRC_VAPID_SUBJECT` | `mailto:admin@localhost` | Web Push contact |
+| `CCRC_VAPID_SUBJECT` | `mailto:admin@localhost` | Web Push contact — **you must set a real one if anyone uses an iPhone**. Apple refuses to deliver push for the default subject (403 `BadJwtToken`); the hub still reports `/notify` as successful, but the iPhone never receives anything. Android (FCM) and Firefox are unaffected, so this slips through hand-testing on an Android device. The hub warns on startup if the subject is still the default or points at localhost — set it to `https://<your-hub-domain>` or a real `mailto:` contact to silence it |
 | `CCRC_TUNNEL_TOKEN` | (empty) | Cloudflare Tunnel token (profile `cloudflare`) |
 | `CCRC_DOMAIN` | (empty) | Domain for Caddy TLS (profile `tls`) |
 | `CCRC_TS_PUBLIC_URL` | (empty) | token-slayer URL the browser is redirected to — comes as a pair with `CCRC_TS_INTERNAL_URL`; with only one set, Slack sign-in stays off |

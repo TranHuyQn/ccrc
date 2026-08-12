@@ -144,7 +144,7 @@ Chỉ hai loại, đúng theo hook `Notification` của Claude Code:
 | `CCRC_BIND` | `0.0.0.0` | Địa chỉ bind cổng trên host (chỉ Compose — chạy `node server/src/index.js` trực tiếp thì nó bị bỏ qua và hub nghe trên mọi interface); đặt `127.0.0.1` khi đã có tunnel/reverse proxy đứng trước |
 | `CCRC_TRUST_PROXY` | (trống = tắt) | Đặt `1` khi có tunnel/reverse proxy đứng trước, để rate-limit đếm đúng IP client. **Phải đi kèm `CCRC_BIND=127.0.0.1`** — cổng còn vào thẳng được thì cờ này vô nghĩa, vì client tự viết được `X-Forwarded-For`. Quên bật khi CÓ proxy thì hỏng chiều ngược lại: mọi request trông như đến từ proxy, một người gọi nhiều là cả team ăn 429 |
 | `CCRC_DATA_DIR` | `server/data` (Docker: volume `ccrc-data`) | Nơi lưu `users.json`, khoá VAPID, push subscriptions |
-| `CCRC_VAPID_SUBJECT` | `mailto:admin@localhost` | Contact cho Web Push |
+| `CCRC_VAPID_SUBJECT` | `mailto:admin@localhost` | Contact cho Web Push — **bắt buộc đặt thật nếu có người dùng iPhone**. Apple từ chối gửi push tới subject mặc định (403 `BadJwtToken`); hub vẫn báo `/notify` thành công, nhưng iPhone không bao giờ nhận được gì. Android (FCM) và Firefox không bị ảnh hưởng nên lỗi này dễ lọt qua test thủ công trên máy Android. Hub tự cảnh báo ra log lúc khởi động nếu subject còn là mặc định hoặc trỏ về localhost — đặt thành `https://<domain-hub-của-bạn>` hoặc một `mailto:` liên hệ thật để tắt cảnh báo |
 | `CCRC_TUNNEL_TOKEN` | (trống) | Token Cloudflare Tunnel (profile `cloudflare`) |
 | `CCRC_DOMAIN` | (trống) | Domain cho Caddy TLS (profile `tls`) |
 | `CCRC_TS_PUBLIC_URL` | (trống) | URL dịch vụ định danh cho trình duyệt redirect tới — đi cùng cặp với biến dưới, thiếu một trong hai thì đăng nhập Slack tắt hẳn |

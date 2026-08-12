@@ -19,6 +19,8 @@ import { createIdentity } from './identity.js';
 import { createOneShotStore } from './oauth-state.js';
 import { createDeviceCodes, DEVICE_TTL_MS, MAX_PENDING } from './device-code.js';
 import { createRateLimit } from './rate-limit.js';
+import { DEFAULT_VAPID_SUBJECT, isVapidSubjectUnusableForApple } from './vapid-subject.js';
+import { formatPushErrorBody } from './push-error.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -171,7 +173,7 @@ function resolveUser(token) {
 
 const VAPID_FILE = path.join(DATA_DIR, 'vapid.json');
 const PUSH_SUBS_FILE = path.join(DATA_DIR, 'push-subs.json');
-const VAPID_SUBJECT = process.env.CCRC_VAPID_SUBJECT || 'mailto:admin@localhost';
+const VAPID_SUBJECT = process.env.CCRC_VAPID_SUBJECT || DEFAULT_VAPID_SUBJECT;
 
 let vapidKeys;
 try {
@@ -181,6 +183,23 @@ try {
   fs.writeFileSync(VAPID_FILE, JSON.stringify(vapidKeys, null, 2));
 }
 webpush.setVapidDetails(VAPID_SUBJECT, vapidKeys.publicKey, vapidKeys.privateKey);
+// Kiểm toán 2026-08-12: hub từng khởi động câm lặng với subject mặc định
+// (hoặc bất kỳ giá trị nào trỏ về máy mình), và Apple từ chối nó với 403
+// BadJwtToken cho MỌI push — thấy được đúng một lần, lúc người dùng iPhone
+// đầu tiên không bao giờ nhận được thông báo, còn /notify vẫn báo "ok". Đây
+// KHÔNG phải lỗi chặn khởi động: hub chỉ phục vụ Android vẫn chạy tốt với
+// giá trị này, refuse-to-start sẽ là một regression cho họ. Chỉ cảnh báo.
+if (isVapidSubjectUnusableForApple(VAPID_SUBJECT)) {
+  console.error(
+    `[hub] CẢNH BÁO: CCRC_VAPID_SUBJECT đang là "${VAPID_SUBJECT}" — Apple từ chối giá\n`
+    + '[hub] trị này khi gửi push (403 BadJwtToken). Người dùng iPhone sẽ KHÔNG nhận\n'
+    + '[hub] được thông báo nào, kể cả khi /notify vẫn báo { ok: true, pushed: true }.\n'
+    + '[hub] Android (FCM) và Firefox không bị ảnh hưởng, vì hai dịch vụ đó không\n'
+    + '[hub] kiểm subject chặt như Apple.\n'
+    + '[hub] Sửa: đặt CCRC_VAPID_SUBJECT thành "https://<domain-hub-của-bạn>" hoặc\n'
+    + '[hub] một "mailto:" liên hệ thật rồi khởi động lại hub.',
+  );
+}
 
 /** @type {Record<string, Array<any>>} userName -> push subscriptions */
 let pushSubs = {};
@@ -199,7 +218,12 @@ async function notifyUser(userName, payload) {
       await webpush.sendNotification(sub, JSON.stringify(payload), { TTL: 3600 });
     } catch (err) {
       if (err.statusCode === 404 || err.statusCode === 410) dead.push(sub.endpoint);
-      else console.error('[hub] push failed:', err.statusCode || err.message);
+      // `err.body` is the push service's own response text — for a rejection
+      // like Apple's 403 BadJwtToken it is the ONLY place the actual reason
+      // lives. Logging just the status code used to throw it away, which is
+      // what made a mis-set CCRC_VAPID_SUBJECT take 40 minutes to diagnose
+      // instead of one grep (kiểm toán 2026-08-12).
+      else console.error('[hub] push failed:', err.statusCode || err.message, '-', formatPushErrorBody(err.body));
     }
   }));
   if (dead.length) {

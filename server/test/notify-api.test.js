@@ -31,17 +31,23 @@ function freePort() {
 
 const DEFAULT_USERS = [{ name: 'huy', token: 'tok-huy' }, { name: 'kien', token: 'tok-kien' }];
 
-async function startHub(users = DEFAULT_USERS) {
+async function startHub(users = DEFAULT_USERS, extraEnv = {}) {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccrc-data-'));
   fs.writeFileSync(path.join(dataDir, 'users.json'), JSON.stringify(users));
   const port = await freePort();
   // Tên biến là CCRC_PORT và CCRC_DATA_DIR — không phải PORT. Dùng sai tên thì
   // server bind cổng mặc định 8720 và test đỏ vì lý do không liên quan.
   const proc = spawn('node', [SRV], {
-    env: { ...process.env, CCRC_DATA_DIR: dataDir, CCRC_PORT: String(port), CCRC_TOKEN: 'admin-tok' },
+    env: {
+      ...process.env, CCRC_DATA_DIR: dataDir, CCRC_PORT: String(port), CCRC_TOKEN: 'admin-tok',
+      ...extraEnv,
+    },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let died = null;
+  // Giữ lại vì cảnh báo CCRC_VAPID_SUBJECT lúc khởi động là MỘT DÒNG LOG —
+  // không có API nào để hỏi hub "bạn có cảnh báo không", đúng khuôn với
+  // stderr() của device-api.test.js.
   let stderr = '';
   proc.stderr.on('data', (c) => { stderr += c; });
   proc.once('exit', (code, signal) => { died = `hub thoát sớm (code=${code}, signal=${signal})`; });
@@ -58,7 +64,7 @@ async function startHub(users = DEFAULT_USERS) {
     await new Promise((r) => setTimeout(r, 100));
   }
   if (died) throw new Error(`${died}\n${stderr}`);
-  return { proc, base, dataDir, stop: () => proc.kill() };
+  return { proc, base, dataDir, stop: () => proc.kill(), stderr: () => stderr };
 }
 
 const NOTE = { type: 'idle_prompt', title: '🔔 dev · dự-án', body: 'Claude đang chờ bạn nhập', tag: 'ccrc-idle_prompt' };
@@ -308,6 +314,47 @@ test('/api/vapid-key trả về khoá công khai', async () => {
   const j = await (await fetch(h.base + '/api/vapid-key')).json();
   assert.ok(typeof j.publicKey === 'string' && j.publicKey.length > 20);
   h.stop();
+});
+
+// --- Kiểm toán 2026-08-12: CCRC_VAPID_SUBJECT mặc định bị Apple từ chối ----
+//
+// Xác nhận sống với một hub thật và một subscription iPhone thật: đổi đúng
+// một biến này, giữ nguyên mọi thứ khác, quan sát 403 BadJwtToken đổi thành
+// 201. Google/Mozilla nuốt subject mặc định mà không phàn nàn, nên lỗi chỉ lộ
+// ra trên iPhone — đúng đối tượng chính của sản phẩm. Hub không được từ chối
+// khởi động vì việc này (một hub chỉ phục vụ Android vẫn đúng với subject mặc
+// định), nên cách đúng là cảnh báo to ra log, không phải chặn.
+async function subjectWarning(extraVapidEnv) {
+  const h = await startHub(DEFAULT_USERS, { CCRC_VAPID_SUBJECT: '', ...extraVapidEnv });
+  try {
+    assert.equal((await fetch(h.base + '/healthz')).status, 200, 'hub phải sống dù subject có vấn đề');
+    const vapid = await (await fetch(h.base + '/api/vapid-key')).json();
+    assert.ok(typeof vapid.publicKey === 'string' && vapid.publicKey.length > 20,
+      'hub phải phục vụ bình thường, không chỉ /healthz — cảnh báo không được làm gãy route khác');
+    return h.stderr();
+  } finally { h.stop(); }
+}
+
+test('không đặt CCRC_VAPID_SUBJECT (rơi về mặc định) → hub cảnh báo ra log lúc khởi động', async () => {
+  const stderr = await subjectWarning({});
+  assert.match(stderr, /CCRC_VAPID_SUBJECT/, `phải nêu tên biến để người vận hành biết sửa gì. stderr=${stderr}`);
+  assert.match(stderr, /BadJwtToken/i, `phải nói rõ Apple từ chối thế nào, không chỉ "có vấn đề". stderr=${stderr}`);
+});
+
+test('CCRC_VAPID_SUBJECT trỏ về localhost → hub cảnh báo, dù không phải giá trị mặc định', async () => {
+  const stderr = await subjectWarning({ CCRC_VAPID_SUBJECT: 'mailto:admin@localhost' });
+  assert.match(stderr, /CCRC_VAPID_SUBJECT/, `stderr=${stderr}`);
+});
+
+test('CCRC_VAPID_SUBJECT là domain https thật → KHÔNG cảnh báo', async () => {
+  const stderr = await subjectWarning({ CCRC_VAPID_SUBJECT: 'https://hub.acme.dev' });
+  assert.doesNotMatch(stderr, /CCRC_VAPID_SUBJECT/,
+    `subject hợp lệ mà vẫn bị cảnh báo thì người vận hành sẽ bỏ qua cảnh báo thật. stderr=${stderr}`);
+});
+
+test('CCRC_VAPID_SUBJECT là mailto thật → KHÔNG cảnh báo', async () => {
+  const stderr = await subjectWarning({ CCRC_VAPID_SUBJECT: 'mailto:ops@mycompany.vn' });
+  assert.doesNotMatch(stderr, /CCRC_VAPID_SUBJECT/, `stderr=${stderr}`);
 });
 
 test('không còn endpoint WebSocket', async () => {
