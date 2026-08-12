@@ -234,7 +234,18 @@ back after a host reboot — on Linux that means `systemctl enable docker`;
 `./deploy.sh status` and `./deploy.sh down` are safe to use as-is on this
 path: `down` stops the whole project regardless of which profile flag it is
 given — `./deploy.sh down` hardcodes `--profile cloudflare`, but that still
-tears down `caddy` along with `hub`.
+tears down `caddy` along with `hub`. Verified on Compose v5; older versions
+were reported to filter `down` by profile, so confirm the first time rather
+than assume:
+
+```bash
+./deploy.sh down
+docker compose -p cc-remote-control ps      # expect no rows
+```
+
+An empty list is the point — if `caddy` survives, it is still holding 80 and
+443, and the port looks closed from the outside only because nothing is
+answering behind it.
 
 Re-running bare `./deploy.sh` after a `git pull` is not the same: it rebuilds
 and restarts `hub` as always, but it will not touch `caddy` — `up` (unlike
