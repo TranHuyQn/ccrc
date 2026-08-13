@@ -78,25 +78,45 @@ function showLink() {
   $('link-card').classList.remove('hidden');
 }
 
-$('link-btn').onclick = async () => {
-  $('link-err').classList.add('hidden');
-  $('link-msg').classList.add('hidden');
-  const userCode = $('link-code').value.trim();
-  if (!userCode) return;
-  const res = await api('/api/device/approve', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ userCode }),
-  });
-  const body = await res.json().catch(() => ({}));
-  if (res.ok) {
-    $('link-msg').textContent = 'Đã duyệt. Quay lại terminal máy dev — nó tự nhận token trong vài giây.';
-    $('link-msg').classList.remove('hidden');
-    $('link-code').value = '';
-    return;
-  }
-  $('link-err').textContent = body.error || 'Duyệt không thành công.';
-  $('link-err').classList.remove('hidden');
+// Duyệt có HAI chỗ vào, cùng một xử lý: trang /link (mở từ trình duyệt) và thẻ
+// gập trong app. Chỗ thứ hai không phải tiện thêm — nó là chỗ vào DUY NHẤT của
+// người đã cài PWA, vì app standalone không gõ được URL và iOS không deep-link
+// vào web app đã cài. Một hàm cho cả hai để hai đường không trôi khỏi nhau.
+function bindApprove(codeId, btnId, msgId, errId) {
+  $(btnId).onclick = async () => {
+    $(errId).classList.add('hidden');
+    $(msgId).classList.add('hidden');
+    const userCode = $(codeId).value.trim();
+    if (!userCode) return;
+    const res = await api('/api/device/approve', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ userCode }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (res.ok) {
+      $(msgId).textContent = 'Đã duyệt. Quay lại terminal máy dev — nó tự nhận token trong vài giây.';
+      $(msgId).classList.remove('hidden');
+      $(codeId).value = '';
+      return;
+    }
+    $(errId).textContent = body.error || 'Duyệt không thành công.';
+    $(errId).classList.remove('hidden');
+  };
+}
+
+bindApprove('link-code', 'link-btn', 'link-msg', 'link-err');
+bindApprove('approve-code', 'approve-btn', 'approve-msg', 'approve-err');
+
+let approveOpen = false;
+$('approve-toggle').onclick = () => {
+  approveOpen = !approveOpen;
+  $('approve-body').classList.toggle('hidden', !approveOpen);
+  $('approve-toggle').textContent = approveOpen ? 'Đóng' : 'Mở';
+  // focus() nằm trong handler của một cú chạm thật, nên iOS chịu bật bàn phím
+  // — mở thẻ ra rồi còn phải chạm thêm lần nữa vào ô nhập thì mất đúng cái
+  // tiện mà thẻ này sinh ra để có.
+  if (approveOpen) $('approve-code').focus();
 };
 
 async function showMain() {

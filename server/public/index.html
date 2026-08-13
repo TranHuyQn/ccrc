@@ -13,9 +13,15 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="theme-color" content="#0f1115">
-<!-- Bump ?v= whenever app.js or style.css changes. An installed PWA also caches
-     index.html itself, so a markup change needs the app reinstalled. -->
-<link rel="stylesheet" href="style.css?v=12">
+<!-- Bump ?v= whenever app.js or style.css changes. Not optional: the hub sends
+     `no-cache` for every asset, but Cloudflare replaces that with its own 4h
+     Browser Cache TTL for .js/.css, so a new `?v=` is the only thing that
+     actually reaches a browser that already loaded the page. index.html itself
+     really is `no-cache` end to end — verified against the live hub — so a
+     markup change lands on the next open, and the installed PWA sees the new
+     `?v=` immediately. No reinstall needed (an earlier version of this comment
+     claimed otherwise; the service worker caches nothing at all). -->
+<link rel="stylesheet" href="style.css?v=13">
 </head>
 <body>
 
@@ -61,6 +67,26 @@
     </div>
   </div>
 
+  <!-- Duyệt máy dev ngay trong app. Trang /link vẫn còn cho đường trình duyệt,
+       nhưng nó KHÔNG với tới được người đã cài PWA: app standalone không có
+       thanh địa chỉ để gõ /link, và iOS không deep-link vào web app đã cài —
+       nên đúng người mà hướng dẫn nhắm tới lại là người không vào được. Gập
+       mặc định: cài máy mới là việc hoạ hoằn, không đáng chiếm chỗ mỗi ngày. -->
+  <div class="card">
+    <div class="row">
+      <span>Duyệt máy dev</span>
+      <button id="approve-toggle" class="ghost">Mở</button>
+    </div>
+    <div id="approve-body" class="hidden">
+      <p class="dim small">Nhập mã đang hiện trên terminal của máy dev.</p>
+      <input id="approve-code" type="text" placeholder="XXXX-XXXX" autocomplete="off"
+             autocapitalize="characters" spellcheck="false">
+      <button id="approve-btn">Duyệt</button>
+      <p id="approve-msg" class="dim hidden"></p>
+      <p id="approve-err" class="err hidden"></p>
+    </div>
+  </div>
+
   <div id="pair-panel" class="card hidden">
     <div class="row" id="pair-title">Ghép máy này</div>
     <p class="dim small" id="pair-step">Đang chờ máy dev…</p>
@@ -79,6 +105,6 @@
   <div id="list"></div>
 </div>
 
-<script src="app.js?v=12"></script>
+<script src="app.js?v=13"></script>
 </body>
 </html>

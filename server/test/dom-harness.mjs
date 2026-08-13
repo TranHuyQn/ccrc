@@ -48,6 +48,9 @@ export class FakeElement {
     // plain object is enough since nothing here computes layout.
     this.style = {};
   }
+  // app.js gọi focus() khi bung thẻ duyệt. Không cần đọc lại trong test,
+  // nhưng thiếu hẳn phương thức thì script nổ ngay lúc bấm nút.
+  focus() { this.focused = true; }
   appendChild(child) { child._parent = this; this.children.push(child); return child; }
   // app.js gỡ chấm "chưa đọc" tại chỗ khi người dùng chạm vào thẻ, thay vì
   // dựng lại cả danh sách. Không có remove() thì đường đó nổ trong test dù
@@ -116,12 +119,15 @@ export class FakeWindow {
 // The full set of ids app.js reaches for via `$(id)` at SCRIPT LOAD time
 // (top-level `.onclick = …` assignments) — these must exist in the fake DOM
 // before the script runs at all, or those assignments throw on a `null`.
-const REQUIRED_IDS = [
+// Xuất ra để app-markup.test.js đối chiếu được với id thật trong index.html —
+// danh sách này chép tay, và không có gì khác bắt nó khớp với markup.
+export const REQUIRED_IDS = [
   'login', 'main', 'who', 'list',
   'push-state', 'enable-push',
   'token', 'login-btn', 'login-err', 'logout',
   'slack-login', 'login-or',
   'link-card', 'link-code', 'link-btn', 'link-msg', 'link-err',
+  'approve-toggle', 'approve-body', 'approve-code', 'approve-btn', 'approve-msg', 'approve-err',
   'terminal-list', 'terminal-err', 'terminal-empty',
   'devices-wrap', 'devices', 'devices-toggle', 'devices-err',
   'pair-panel', 'pair-title', 'pair-step', 'pair-sas', 'pair-help',
@@ -208,6 +214,7 @@ export function loadAppPage({
   const byId = {};
   const BUTTON_IDS = new Set([
     'login-btn', 'logout', 'enable-push', 'devices-toggle',
+    'approve-toggle', 'approve-btn',
     'pair-cancel', 'slack-login', 'link-btn',
   ]);
   for (const id of REQUIRED_IDS) byId[id] = new FakeElement(BUTTON_IDS.has(id) ? 'button' : 'div');
