@@ -334,11 +334,21 @@
     };
   }
 
+  var loiTimer = null;
+
   function handleControlFrame(raw) {
     var msg = null;
     try { msg = JSON.parse(raw); } catch (e) { /* malformed control frame */ }
     if (msg && msg.type === 'ccrc_session' && typeof msg.key === 'string') {
       safeStorageSet(STORAGE_KEY, msg.key);
+    }
+    // tmux từ chối một lệnh của daemon. Nói ra chỗ người dùng nhìn thấy: cái
+    // hỏng ở đây là chữ họ vừa bấm Gửi KHÔNG tới nơi, và trước bản này nó
+    // hỏng hoàn toàn im lặng — ô soạn vẫn trống đi như đã gửi.
+    if (msg && msg.type === 'ccrc_loi' && typeof msg.message === 'string') {
+      setStatus('Không gửi được: ' + msg.message, 'loi');
+      if (loiTimer) clearTimeout(loiTimer);
+      loiTimer = setTimeout(function () { setStatus('đã nối', 'dim'); loiTimer = null; }, 8000);
     }
     // Whatever this frame was — valid session key, malformed JSON, anything
     // else — it is never written to the terminal. It was consumed as THE

@@ -25,6 +25,7 @@ import { wheelBytes, notchesForLines, clickBytes } from '../src/mouse.js';
 import { resolveSessionName } from '../src/session-name.js';
 import { writeSession, removeSession } from '../../shared/session-registry.js';
 import { attachControlOutput } from '../src/control-stream.js';
+import { splitForSendKeys } from '../src/key-chunks.js';
 import { readConfig } from '../src/config.js';
 import { checkPrereqs } from '../src/tailscale.js';
 import { parsePositiveMs, requestedPortLabel } from '../src/env.js';
@@ -77,6 +78,10 @@ const MAX_TERM_ROWS = 500;
 // Bound on a single `ccrc_scroll` request. Same reasoning as the cols/rows
 // bounds above: this number comes from a browser and lands in a tmux command.
 const MAX_SCROLL_LINES = 500;
+// Nhịp nghỉ giữa nội dung dán và cú Enter kết thúc nó. Đủ để TUI phía kia đọc
+// xong đoạn dán trong một lượt riêng, đủ nhỏ để không ai nhận ra. Xem
+// typeIntoPane() bên dưới để biết vì sao phải tách.
+const COMMIT_DELAY_MS = 30;
 // Mã đóng WebSocket cho "phiên này chấm dứt hẳn".
 //
 // Phân biệt với rớt mạng là điều bắt buộc: rớt mạng thì trang phải nối lại,
@@ -489,6 +494,10 @@ wss.on('connection', (ws, mintKey) => {
     // screen on the way back, so nothing written meanwhile is missed.
     if (historyOffset > 0) return;
     ws.send(data);
+  }, (message) => {
+    // tmux từ chối một lệnh. Nói ra — im lặng ở đây nghĩa là người dùng ngồi
+    // chờ Claude trả lời một câu nó chưa bao giờ nhận.
+    try { ws.send(JSON.stringify({ type: 'ccrc_loi', message: String(message).slice(0, 200) })); } catch {}
   });
 
   // Binary frames are keystrokes; text frames are control messages (so far
@@ -511,11 +520,47 @@ wss.on('connection', (ws, mintKey) => {
     // pane whatever the browser is displaying, so leaving a history screen up
     // would show the user their input landing nowhere.
     if (historyOffset > 0) showHistory(0);
-    // send-keys -H takes hex, which sidesteps every quoting question about
-    // control characters, newlines and UTF-8 the shell would otherwise raise.
-    const hex = Buffer.from(data).toString('hex').match(/../g) || [];
-    ctl.stdin.write(`send-keys -t ${PANE} -H ${hex.join(' ')}\n`);
+    typeIntoPane(data);
   });
+
+  // send-keys -H takes hex, which sidesteps every quoting question about
+  // control characters, newlines and UTF-8 the shell would otherwise raise.
+  function sendKeysHex(bytes) {
+    const hex = Buffer.from(bytes).toString('hex').match(/../g) || [];
+    if (hex.length === 0) return;
+    ctl.stdin.write(`send-keys -t ${PANE} -H ${hex.join(' ')}\n`);
+  }
+
+  // Gõ một khối byte của người dùng vào pane, theo hai kỷ luật mà một lệnh
+  // send-keys duy nhất không giữ được:
+  //
+  //  1. CẮT NHỎ. tmux dựng mỗi byte thành một token, và một khối đủ dài làm
+  //     tràn stack parser của nó (đo được: 8000 byte xuôi, 12000 byte trả
+  //     `%error parse error: yacc stack overflow`). Xem src/key-chunks.js.
+  //
+  //  2. ENTER ĐI RIÊNG. Ô soạn gửi lên "[mở-paste] nội dung [đóng-paste]
+  //     Enter" trong một khối, nên TUI phía kia nhận trọn cả cụm trong một
+  //     lượt đọc và phải tự tách đoạn dán khỏi cú Enter. Người dùng báo lại
+  //     rằng thỉnh thoảng nó không tách: chữ nằm lại trong ô nhập của Claude
+  //     Code, phải tự bấm Enter. KHÔNG tái hiện được — 24/24 lần thử trên
+  //     Claude Code thật (rảnh/bận, một dòng/nhiều dòng) đều gửi bình
+  //     thường, nên đây là PHÒNG NGỪA chứ không phải bản vá cho một nguyên
+  //     nhân đã chứng minh. Việc tách bỏ hẳn khả năng đó khỏi bàn cờ với giá
+  //     một nhịp nghỉ không ai cảm nhận được.
+  let typeQueue = Promise.resolve();
+  function typeIntoPane(data) {
+    const { chunks, commit } = splitForSendKeys(data);
+    if (chunks.length === 0 && !commit) return;
+    // Nối tiếp, không song song: hai tin nhắn gửi sát nhau mà đan vào nhau
+    // thì Enter của cái trước có thể gửi đi nửa nội dung của cái sau.
+    typeQueue = typeQueue.then(async () => {
+      for (const chunk of chunks) sendKeysHex(chunk);
+      if (commit) {
+        await new Promise((r) => setTimeout(r, COMMIT_DELAY_MS));
+        sendKeysHex(commit);
+      }
+    }).catch(() => { /* một lượt hỏng không được làm nghẽn những lượt sau */ });
+  }
 
   // A text frame that isn't valid JSON, or whose `type` isn't recognised,
   // is dropped — never typed into the pane, never echoed anywhere. cols/rows

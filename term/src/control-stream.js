@@ -11,23 +11,49 @@
 // `setEncoding('utf8')` wires in Node's own StringDecoder, which buffers an
 // incomplete trailing multi-byte sequence until the remaining bytes arrive
 // in a later chunk.
-export function attachControlOutput(stdout, paneId, onOutput) {
+/**
+ * @param {import('node:stream').Readable} stdout
+ * @param {string} paneId
+ * @param {(data: string) => void} onOutput
+ * @param {(message: string) => void} [onError] mỗi lệnh bị tmux từ chối một
+ *   lần, với nguyên văn lời từ chối. Không truyền thì lỗi bị bỏ đúng như
+ *   trước — nhưng đừng: xem lý do ngay dưới.
+ */
+export function attachControlOutput(stdout, paneId, onOutput, onError) {
   stdout.setEncoding('utf8');
   // %output lines can split across two 'data' events (e.g. mid-escape-code
   // under load). Carry any trailing partial line over to the next chunk
   // instead of dropping it.
   let buf = '';
+  // Trả lời cho một lệnh là một khối: `%begin` … `%end` khi xuôi, `%error`
+  // thay cho `%end` khi tmux từ chối. Trước bản này mọi dòng không phải
+  // `%output` đều bị bỏ, nên lời từ chối biến mất — và vì daemon cũng chẳng
+  // chờ đợi gì, phía người dùng ô soạn vẫn trống đi như đã gửi thành công.
+  // Đó là kiểu hỏng tệ nhất: mất dữ liệu mà không ai biết để mà nghi.
+  let block = null;
   stdout.on('data', (chunk) => {
     buf += chunk;
     const lines = buf.split('\n');
     buf = lines.pop();
     for (const line of lines) {
+      if (line.startsWith('%begin')) { block = []; continue; }
+      if (line.startsWith('%end')) { block = null; continue; }
+      if (line.startsWith('%error')) {
+        // Nguyên văn của tmux nằm trong THÂN khối, không nằm trên dòng
+        // `%error` (dòng đó chỉ có timestamp/số lệnh/cờ).
+        if (onError) onError((block || []).join(' ').trim() || 'tmux từ chối lệnh');
+        block = null;
+        continue;
+      }
       // %output %<pane> <octal-escaped bytes>
-      if (!line.startsWith('%output ')) continue;
-      const sp = line.indexOf(' ', 8);
-      if (sp < 0) continue;
-      if (line.slice(8, sp) !== paneId) continue;
-      onOutput(unescapeOctal(line.slice(sp + 1)));
+      if (line.startsWith('%output ')) {
+        const sp = line.indexOf(' ', 8);
+        if (sp < 0) continue;
+        if (line.slice(8, sp) !== paneId) continue;
+        onOutput(unescapeOctal(line.slice(sp + 1)));
+        continue;
+      }
+      if (block) block.push(line);
     }
   });
 }
