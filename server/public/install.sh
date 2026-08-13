@@ -4,9 +4,9 @@
 # Có token (người quản trị hub gửi riêng cho bạn):
 #   curl -fsSL https://<hub-cua-ban>/install.sh | sh -s -- <token> https://<hub-cua-ban>
 #
-# Không có token: script tự xin bằng device-code — in một mã ngắn, chờ bạn mở
-# <hub>/link trên thiết bị đã đăng nhập để duyệt, rồi tự đổi ra token. Không
-# cần người quản trị phát tay.
+# Không có token: bỏ trống, script tự xin bằng device-code — in một mã ngắn,
+# chờ bạn duyệt trong app (hoặc <hub>/link trên trình duyệt), rồi tự đổi ra
+# token. Không cần người quản trị phát tay.
 #
 #   curl -fsSL https://<hub-cua-ban>/install.sh | CCRC_HUB_URL=https://<hub-cua-ban> sh
 #
@@ -122,8 +122,16 @@ device_code_login() {
   [ "$ttl" -gt 0 ] 2>/dev/null || ttl=600
   [ "$interval" -gt 0 ] 2>/dev/null || interval=5
 
+  # App trước, /link sau — cố ý theo thứ tự đó. Ai đã cài app vào màn hình
+  # chính thì KHÔNG mở được /link: app standalone không có thanh địa chỉ, và
+  # iOS không deep-link vào web app đã cài. Dòng này từng chỉ nói mỗi /link,
+  # nên nó dẫn đúng nhóm người dùng đông nhất vào ngõ cụt — họ mở Safari, thấy
+  # màn hình đăng nhập (app và trình duyệt là hai phiên tách biệt trên iOS) và
+  # tưởng mình làm sai bước nào đó.
   say ""
-  say "  Mở ${HUB}/link trên thiết bị đã đăng nhập, rồi nhập mã:"
+  say "  Duyệt mã này trong app CC Notify trên điện thoại:"
+  say "  thẻ \"Duyệt máy dev\" → Mở → nhập mã."
+  say "  Chưa cài app thì mở ${HUB}/link trên trình duyệt đã đăng nhập."
   say ""
   say "      ${ucode}"
   say ""

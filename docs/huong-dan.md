@@ -57,18 +57,30 @@ curl -fsSL https://<hub-cua-ban>/install.sh | CCRC_HUB_URL=https://<hub-cua-ban>
 
 Không cần token, không cần git, không cần quyền truy cập repo — lệnh tự tải code về.
 
+**Vì sao địa chỉ hub phải viết hai lần:** lần đầu là để tải script, lần sau là để nói cho
+script biết nó phục vụ hub nào. Nghe thừa, nhưng script chạy trên máy bạn thì không có cách
+nào biết nó vừa được tải về từ đâu. Bỏ `CCRC_HUB_URL=` đi thì nó dừng ngay với
+`✗ Thiếu URL hub.` — cố ý, vì đoán bừa một hub là gửi token của bạn tới nhầm chỗ.
+
 Nó sẽ in ra một **mã 8 ký tự** rồi đứng chờ:
 
 ```
-  Mở https://ccrc.example.com/link trên thiết bị đã đăng nhập, rồi nhập mã:
+  Duyệt mã này trong app CC Notify trên điện thoại:
+  thẻ "Duyệt máy dev" → Mở → nhập mã.
+  Chưa cài app thì mở https://ccrc.example.com/link trên trình duyệt đã đăng nhập.
 
       K7M2-QX9F
 
   Đang chờ duyệt (tối đa 600 giây)…
 ```
 
-Mở đúng địa chỉ đó trên **điện thoại hoặc một tab trình duyệt đã đăng nhập Slack**, nhập mã,
-bấm **Duyệt**. Terminal tự nhận token trong vài giây và in tên người vừa duyệt:
+**Cách nhanh nhất là duyệt ngay trong app trên điện thoại** — không cần mở trình duyệt:
+
+1. Mở app CC Notify
+2. Thẻ **Duyệt máy dev** → bấm **Mở**
+3. Gõ mã, bấm **Duyệt**
+
+Terminal tự nhận token trong vài giây và in tên người vừa duyệt:
 
 ```
   ✓ Đã nhận token của nguyen-van-a.
@@ -78,7 +90,15 @@ bấm **Duyệt**. Terminal tự nhận token trong vài giây và in tên ngư�
 này vừa ghi token của họ. Chạy `curl -fsSL https://<hub-cua-ban>/uninstall.sh | sh` rồi cài
 lại.
 
-Sau đó nó hỏi **tên máy** (hiện trong thông báo); Enter là lấy tên máy hiện tại.
+**Địa chỉ `/link` vẫn còn** cho ai muốn duyệt từ trình duyệt trên máy tính. Nhưng nếu bạn đã
+cài app vào màn hình chính thì đừng đi đường đó: app và trình duyệt là **hai phiên đăng nhập
+riêng biệt** (iOS giữ cookie tách hẳn), nên mở `/link` trong Safari sẽ bắt bạn đăng nhập lại
+từ đầu. Duyệt trong app là xong.
+
+Sau đó nó hỏi **tên máy** (hiện trong thông báo). Có tên gợi ý trong ngoặc vuông thì Enter là
+lấy tên đó. **Không phải máy nào cũng có gợi ý:** máy lấy IP làm hostname (`hostname` ra
+`192.168.x.x`) thì script bỏ gợi ý đi — một cái tên toàn số chẳng phân biệt được máy nào với
+máy nào — và Enter suông sẽ bị hỏi lại. Cứ gõ tên bạn nhận ra được, ví dụ `MacBook của Kiên`.
 
 Muốn đọc script trước khi chạy — hoàn toàn hợp lý, vì nó chạy trên máy bạn:
 
@@ -94,7 +114,8 @@ CCRC_HUB_URL=https://<hub-cua-ban> sh install.sh
 curl -fsSL https://<hub-cua-ban>/install.sh | sh -s -- <token-cua-ban> https://<hub-cua-ban>
 ```
 
-Có token thì script bỏ qua hẳn bước mã ngắn.
+Có token thì script bỏ qua hẳn bước mã ngắn. Địa chỉ hub đứng sau token — cùng lý do đã nói ở
+trên, script không tự biết nó được tải về từ đâu.
 
 **Lệnh này đụng vào đúng năm chỗ, không gì khác:**
 
@@ -127,8 +148,8 @@ Nó hỏi:
 | URL hub | `https://ccrc.example.com` |
 | Tên máy hiện trong thông báo | tên bạn nhận ra được, ví dụ `MacBook của Kiên` |
 
-Phần token nó **không hỏi** — cũng in mã 8 ký tự và chờ bạn duyệt ở `/link` như cách nhanh
-bên trên. Máy nào đã cài trước đó thì nó dùng lại token cũ, không bắt duyệt lại.
+Phần token nó **không hỏi** — cũng in mã 8 ký tự và chờ bạn duyệt trong app (hoặc ở `/link`)
+như cách nhanh bên trên. Máy nào đã cài trước đó thì nó dùng lại token cũ, không bắt duyệt lại.
 
 Xong nó sẽ:
 
@@ -170,6 +191,16 @@ cái tên.
 Đăng nhập lại trên máy khác vẫn ra **đúng token cũ**, nên điện thoại và các máy dev của bạn
 không đá nhau. Đổi tên hiển thị trên Slack cũng không mất gì: hub khoá theo id Slack, không
 khoá theo tên.
+
+### App và trình duyệt là hai phiên đăng nhập riêng
+
+Đăng nhập trong app **không tính** cho Safari, và ngược lại — iOS giữ cookie của web app đã
+cài tách hẳn khỏi trình duyệt. Nên đừng ngạc nhiên khi mở `https://<hub-cua-ban>` bằng
+Safari lại thấy màn hình đăng nhập dù trong app bạn đang đăng nhập sẵn.
+
+Đăng nhập ở cả hai chỗ cũng **không sao**: hub khoá theo id Slack nên nó trả lại **đúng token
+cũ**, không cấp token mới. Chỉ là bạn không cần làm vậy — mọi việc thường ngày, kể cả duyệt
+máy dev, đều làm được trong app.
 
 ### Kiểm tra
 
@@ -454,9 +485,9 @@ ghép lại từng máy**. Vài phút, nhưng biết trước thì đỡ hoảng
 | Hiện tượng | Nguyên nhân thường gặp |
 |---|---|
 | Lệnh cài in mã rồi báo **"Mã đã hết hạn"** | Mã sống 10 phút. Cũng xảy ra nếu bạn bấm Ctrl-C giữa chừng rồi duyệt sau — lượt duyệt đó bị tiêu mất. Chạy lại lệnh cài để lấy mã mới |
-| Lệnh cài in **"Hết thời gian chờ duyệt"** | Không ai bấm Duyệt trong 10 phút. Chạy lại, và mở sẵn `/link` trước khi chạy |
+| Lệnh cài in **"Hết thời gian chờ duyệt"** | Không ai bấm Duyệt trong 10 phút. Chạy lại, và mở sẵn thẻ **Duyệt máy dev** trong app trước khi chạy |
 | Duyệt xong nhưng tên in ra **không phải bạn** | Có người khác vừa nhập trúng mã của bạn. Gỡ cài đặt rồi cài lại — máy này đang giữ token của họ |
-| Mở `/link` mà thấy màn hình đăng nhập | Trình duyệt đó chưa đăng nhập. Đăng nhập bằng Slack ngay tại đó, nó quay lại đúng ô nhập mã |
+| Mở `/link` mà thấy màn hình đăng nhập | Trình duyệt đó chưa đăng nhập — app đã cài và trình duyệt là hai phiên riêng. Duyệt trong app cho nhanh, hoặc đăng nhập Slack ngay tại đó (nó quay lại đúng ô nhập mã) |
 | Không thấy nút **Đăng nhập bằng Slack** | Hub chưa cấu hình đăng nhập Slack — dùng ô dán token, và báo người quản trị hub (mục 12) |
 | Bấm nút Slack rồi báo **"Phiên đăng nhập hết hạn"** | Link callback bị mở lại, hoặc quá 5 phút giữa lúc bấm và lúc Slack trả về. Bấm đăng nhập lại từ đầu |
 | `/notify` báo "chưa có thiết bị nào đăng ký" | Chưa bật thông báo trên điện thoại, hoặc iPhone mở bằng Safari thay vì từ icon màn hình chính |
@@ -466,7 +497,7 @@ ghép lại từng máy**. Vài phút, nhưng biết trước thì đỡ hoảng
 | Thẻ hiện "Máy không phản hồi — có thể đã ngủ" | Máy tính ngủ hoặc mất mạng. **Đặt máy không ngủ trước khi rời đi** |
 | Bấm "Mở terminal" mà không vào được | Điện thoại chưa bật Tailscale, hoặc điện thoại và máy tính **không cùng tài khoản Tailscale của bạn** (ví dụ đăng nhập nhầm hai tài khoản khác nhau) |
 | Báo thẳng "chưa được ghép với máy đó" rồi đứng yên, không tự nối lại | Điện thoại này **chưa ghép** với máy đó, hoặc vừa bị `/remote unpair` gỡ — ghép lại bằng `/remote pair` (mục 8) |
-| Web hiện bản cũ sau khi cập nhật | **Gỡ app khỏi màn hình chính rồi cài lại** — bản đã cài giữ trang cũ |
+| Web hiện bản cũ sau khi cập nhật | Vuốt tắt hẳn app khỏi app switcher rồi mở lại. **Đừng gỡ app cài lại** — không sửa được gì mà mất luôn khoá ghép cặp. Còn cũ nữa thì là lỗi phía hub: người vận hành quên bump `?v=` khi deploy |
 
 Không có phiên nào hiện lên mà bạn chắc đã bật: chạy `/remote` trên máy để xem hub thấy gì.
 
