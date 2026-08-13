@@ -6,6 +6,13 @@ Bạn tự dựng hub? Đọc [`self-hosting.md`](self-hosting.md) (tiếng Anh)
 
 > 🇬🇧 English version: [`user-guide.md`](user-guide.md)
 
+> **`<hub-cua-ban>` trong tài liệu này là một chỗ trống, không phải địa chỉ có thật.**
+> Thay bằng domain hub của đội bạn — người dựng hub sẽ đưa cho bạn, dạng
+> `ccrc.congty.vn`. Mỗi đội một hub riêng: dự án này không vận hành hub dùng chung
+> nào cả, nên không có địa chỉ mặc định nào để điền sẵn.
+>
+> Gõ nguyên cả dấu ngoặc nhọn vào terminal thì lệnh sẽ hỏng — bỏ chúng đi luôn.
+
 ---
 
 ## 1. Hệ thống này làm gì
@@ -67,7 +74,7 @@ Nó sẽ in ra một **mã 8 ký tự** rồi đứng chờ:
 ```
   Duyệt mã này trong app CC Notify trên điện thoại:
   thẻ "Duyệt máy dev" → Mở → nhập mã.
-  Chưa cài app thì mở https://ccrc.example.com/link trên trình duyệt đã đăng nhập.
+  Chưa cài app thì mở https://<hub-cua-ban>/link trên trình duyệt đã đăng nhập.
 
       K7M2-QX9F
 
@@ -145,7 +152,7 @@ Nó hỏi:
 
 | Hỏi | Trả lời |
 |---|---|
-| URL hub | `https://ccrc.example.com` |
+| URL hub | `https://<hub-cua-ban>` |
 | Tên máy hiện trong thông báo | tên bạn nhận ra được, ví dụ `MacBook của Kiên` |
 
 Phần token nó **không hỏi** — cũng in mã 8 ký tự và chờ bạn duyệt trong app (hoặc ở `/link`)
@@ -167,7 +174,7 @@ thì đây là cách phân biệt.
 
 ### iPhone
 
-1. Mở **Safari** (phải là Safari, không dùng Chrome), vào `https://ccrc.example.com`
+1. Mở **Safari** (phải là Safari, không dùng Chrome), vào `https://<hub-cua-ban>`
 2. Nút Chia sẻ → **Thêm vào màn hình chính**
 3. **Mở app từ icon vừa thêm** — không mở lại bằng Safari
 4. Bấm **Đăng nhập bằng Slack**
@@ -179,7 +186,7 @@ thì đây là cách phân biệt.
 
 ### Android
 
-Chrome → vào `https://ccrc.example.com` → Chrome tự mời cài app → **Đăng nhập bằng Slack** →
+Chrome → vào `https://<hub-cua-ban>` → Chrome tự mời cài app → **Đăng nhập bằng Slack** →
 bật thông báo. Không bắt buộc cài, nhưng cài thì tiện hơn.
 
 ### Đăng nhập bằng Slack làm gì
@@ -268,7 +275,7 @@ của người quản trị, không mời ai vào tailnet của bạn.
 Nghe có vẻ ngược — cùng một hệ thống mà mỗi người một mạng riêng thì nối vào nhau kiểu gì?
 Câu trả lời: **không cần nối vào nhau**. Nội dung terminal chỉ đi từ máy bạn tới điện thoại
 bạn. Không có luồng nào cần chạy giữa máy bạn và máy người quản trị. Thứ duy nhất dùng chung là hub
-(`ccrc.example.com`) — nó nằm trên Internet công cộng và **không cần Tailscale**.
+(`<hub-cua-ban>`) — nó nằm trên Internet công cộng và **không cần Tailscale**.
 
 **Vì sao tách riêng lại quan trọng, chứ không chỉ là gọn:**
 
@@ -560,7 +567,7 @@ xong là mất danh sách đó; cài lại thì phải `/remote pair` lại từ
 ## 12. Thêm người dùng mới (dành cho người quản trị hub)
 
 **Bạn không phải phát token nữa.** Ai đăng nhập được Slack công ty thì tự cài được: mở
-`https://ccrc.example.com`, bấm Đăng nhập bằng Slack, rồi chạy lệnh cài một dòng ở mục 3. Hub
+`https://<hub-cua-ban>`, bấm Đăng nhập bằng Slack, rồi chạy lệnh cài một dòng ở mục 3. Hub
 tự tạo tài khoản cho họ ở lần đăng nhập đầu.
 
 Việc còn lại của người mới, và bạn không làm hộ được: **tài khoản Tailscale của riêng họ.**
@@ -603,7 +610,7 @@ Cần **cả hai** biến trong `.env`; thiếu một là tính năng tắt hẳ
 | `CCRC_TS_INTERNAL_URL` | URL nội bộ trong docker network — hub tự gọi, không ra internet |
 
 Bên token-slayer đặt `CCRC_CALLBACK_URL` trỏ ngược về hub, ví dụ
-`https://ccrc.example.com/auth/callback`.
+`https://<hub-cua-ban>/auth/callback`.
 
 ### Vì sao không dùng tailnet chung — dù nghe tiện hơn
 

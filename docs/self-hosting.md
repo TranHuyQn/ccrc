@@ -92,7 +92,7 @@ already running — but do not use bare `./deploy.sh` for this path.
 **Prerequisites**
 
 - A domain with an A (and/or AAAA) record **already** pointing at this
-  machine's public IP — confirm with `dig +short ccrc.example.com` before you
+  machine's public IP — confirm with `dig +short <your-hub>` before you
   go further. Caddy requests the certificate the moment it starts, and Let's
   Encrypt validates over HTTP, so this has to be true first, not "soon."
 - Ports 80 and 443 reachable from the public internet, not just open in this
@@ -113,7 +113,7 @@ Edit `.env` and set:
 
 ```
 CCRC_TOKEN=<output of: openssl rand -hex 24>
-CCRC_DOMAIN=ccrc.example.com
+CCRC_DOMAIN=<your-hub>
 CCRC_TRUST_PROXY=1
 CCRC_BIND=127.0.0.1
 ```
@@ -170,12 +170,12 @@ tradeoff the terminal daemon refuses to make — see
 
 ```bash
 # a) Caddy issued a real certificate for your domain, not the localhost fallback
-openssl s_client -connect ccrc.example.com:443 -servername ccrc.example.com \
+openssl s_client -connect <your-hub>:443 -servername <your-hub> \
   </dev/null 2>/dev/null | openssl x509 -noout -issuer -subject
 # issuer should mention "Let's Encrypt"; subject should be your domain, not "localhost"
 
 # b) the hub answers through Caddy
-curl -fsS https://ccrc.example.com/healthz     # {"ok":true}
+curl -fsS https://<your-hub>/healthz     # {"ok":true}
 
 # c) 8720 is NOT reachable from another machine on the LAN
 curl -m 3 http://<this-machine's-LAN-IP>:8720/healthz
@@ -194,7 +194,7 @@ and `CCRC_TS_INTERNAL_URL`, set together, all-or-nothing — see
 [Let them sign themselves in](#let-them-sign-themselves-in-optional). What is
 specific to this path is the other end: `CCRC_CALLBACK_URL` on the
 token-slayer side has to point at *this* hub's real domain —
-`https://ccrc.example.com/auth/callback` — because it is token-slayer's own
+`https://<your-hub>/auth/callback` — because it is token-slayer's own
 server, not the browser, that reads it after the Slack round trip.
 
 **The cutover trap.** `CCRC_CALLBACK_URL` is a single value in token-slayer's
@@ -433,7 +433,7 @@ start — but every phone has to re-subscribe and every token has to be reissued
 | Tunnel container restarts in a loop | `CCRC_TUNNEL_TOKEN` empty or wrong. `./deploy.sh status` shows the cloudflared log |
 | Hub is up, hostname returns 502 | Tunnel's public hostname is not pointing at `HTTP → hub:8720` |
 | Certificate never gets issued, DNS looks right | Port 80 or 443 is not reachable from the public internet — check the router or cloud security group in front of this machine, not just its own firewall; Let's Encrypt's validation request comes from outside |
-| Certificate never gets issued, and/or Caddy logs a DNS error | DNS has not propagated yet, or points at the wrong IP — `dig +short ccrc.example.com` should already match this machine before you bring Caddy up |
+| Certificate never gets issued, and/or Caddy logs a DNS error | DNS has not propagated yet, or points at the wrong IP — `dig +short <your-hub>` should already match this machine before you bring Caddy up |
 | `openssl s_client` shows a certificate for `localhost`, not your domain | `CCRC_DOMAIN` is unset in `.env` — Compose falls back to `CCRC_DOMAIN=localhost` and Caddy self-signs for that instead of requesting a real one |
 | Hub answers directly (`docker compose exec hub …/healthz`) but the domain 502s | Caddy is up but can't reach `hub` — check `docker compose -p cc-remote-control ps` for a hub container that's still building or has crashed |
 | One noisy caller seems to rate-limit the whole team, and this deployment has no tunnel | `CCRC_TRUST_PROXY` / `CCRC_BIND` were never set — `./deploy.sh` only writes that pair when `CCRC_TUNNEL_TOKEN` exists, which a Caddy deployment never has. Set both by hand — see Option B, step 1 |
