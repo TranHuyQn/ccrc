@@ -8,7 +8,7 @@ import {
   tmuxBin, currentPane, paneAlive, paneSession, capturePane, snapshotPane,
   createGroupSession, killGroupSession, hasSession,
   isOurGroupSession, claimGroupName, reclaimPaneSession, GROUP_MARKER_OPTION,
-  paneCwd, listPanes,
+  paneCwd, paneSocket, listPanes,
   makeRunId, isReclaimableMarker,
 } from '../src/tmux.js';
 
@@ -738,4 +738,25 @@ test('listPanes: mỗi entry đúng field, không lẫn pane của session khác
       assert.notEqual(r1.target, r2.target, 'hai session khác nhau phải cho target khác nhau');
     });
   });
+});
+
+// Vì sao hàm này tồn tại thay cho `process.env.TMUX` của chính daemon: daemon
+// không phải lúc nào cũng được khởi động từ BÊN TRONG pane nó phục vụ —
+// `ccrc remote` chạy CLI từ một shell bình thường rồi đưa `--pane`, và shell
+// ấy có thể chẳng có $TMUX nào. Môi trường trả lời "tôi được chạy từ đâu",
+// khác hẳn câu "pane này thuộc server nào".
+test('paneSocket trả đúng socket của server đang giữ pane', () => {
+  const sess = `ccrc-sock-${process.pid}`;
+  tmux('new-session', '-d', '-s', sess);
+  try {
+    const pane = tmux('display-message', '-p', '-t', sess, '#{pane_id}');
+    assert.equal(paneSocket(pane), tmux('display-message', '-p', '#{socket_path}'));
+  } finally {
+    tmux('kill-session', '-t', sess);
+  }
+});
+
+test('pane không tồn tại → chuỗi rỗng, không ném', () => {
+  assert.equal(paneSocket('%999999'), '');
+  assert.equal(paneSocket(''), '');
 });

@@ -14,6 +14,7 @@ import {
   DAEMON, startDaemon, waitExit, childPids, waitCtlPids, EVENT_TIMEOUT_MS, sleep,
   taoThietBiTest, ghiDevices,
 } from './helpers.mjs';
+import { registryDir } from '../../shared/session-registry.js';
 
 function connect(url) {
   return new Promise((resolve) => {
@@ -225,6 +226,96 @@ test('khung điều khiển (text frame) hợp lệ KHÔNG BAO GIỜ được g�
     await sleep(600);
     const man = execFileSync(tmuxBin(), ['capture-pane', '-p', '-t', d.pane], { encoding: 'utf8' });
     assert.doesNotMatch(man, /ccrc_resize/, 'khung điều khiển JSON không được xuất hiện trong pane như thể là phím gõ');
+    c.ws.close();
+  } finally { d.stop(); }
+});
+
+// --- ô soạn: DÁN, không phải gõ -------------------------------------------
+//
+// Đo bằng byte tới được ứng dụng, không bằng màn hình: chương trình trong pane
+// ghi ra đĩa đúng những gì nó nhận, nên test này nhìn thấy cả những thứ
+// capture-pane không bao giờ cho thấy — dấu bracketed paste, LF bị đổi thành
+// CR. Cả hai đều là lỗi đã xảy ra thật.
+//
+// `stty raw` là phần bắt buộc, không phải cho gọn: ở chế độ thường, tầng dòng
+// của tty tự đổi CR thành LF trước khi chương trình đọc được. Đo qua đó thì
+// "LF giữ nguyên" và "LF đã bị đổi thành CR" ra kết quả GIỐNG HỆT nhau — phép
+// đo trả lời một câu dễ hơn câu mình đang hỏi.
+//
+// `head -c` (không phải `cat`) vì raw mode không còn Ctrl-D làm EOF: đọc đủ số
+// byte mong đợi rồi tự thoát. Thừa byte (dấu bracketed paste chẳng hạn) thì
+// phần đầu vẫn lộ ra trong file, thiếu byte thì file không đủ và test đỏ.
+// `bracketed` dựng lại HAI ứng dụng khác nhau trong cùng một pane. tmux nhớ
+// chế độ này theo pane, và nhớ nó từ chính output của ứng dụng, nên in thẳng
+// chuỗi bật/tắt ra tty là cách trung thực để đóng vai một ứng dụng có xin
+// (zsh) hoặc không xin (Claude Code) bracketed paste. Không dựng cả hai thì
+// bài test chỉ chứng minh được đúng một nửa của "để tmux quyết định".
+async function panePasteBytes(d, text, { bracketed = false } = {}) {
+  const out = path.join(os.tmpdir(), `ccrc-paste-${Date.now()}-${Math.random().toString(36).slice(2)}.bin`);
+  const extra = bracketed ? '\x1b[200~'.length + '\x1b[201~'.length : 0;
+  const n = Buffer.byteLength(text, 'utf8') + 1 + extra; // + cú Enter kết thúc
+  const c = await connect(d.url(await d.token()));
+  assert.equal(c.ok, true);
+  const mode = bracketed ? '2004h' : '2004l';
+  c.ws.send(`stty raw -echo; printf '\\033[?${mode}'; head -c ${n} > ${out}; stty sane\r`, { binary: true });
+  // Chờ ĐẾN KHI lệnh thật sự chạy, không chờ một con số. Shell của người dùng
+  // có thể mất hơn một giây để lên prompt (oh-my-zsh, powerlevel10k), và dán
+  // trước lúc đó là đang đo shell ở prompt — nơi bracketed paste vẫn đang bật
+  // — chứ không phải ứng dụng mình vừa dựng. Redirect tạo file ngay, nên sự
+  // tồn tại của file là bằng chứng trực tiếp.
+  for (let i = 0; i < 100 && !fs.existsSync(out); i += 1) await sleep(100);
+  assert.ok(fs.existsSync(out), 'lệnh dựng bối cảnh chưa từng chạy trong pane');
+  await sleep(300);
+  c.ws.send(JSON.stringify({ type: 'ccrc_paste', text }));
+  await sleep(1500);
+  c.ws.close();
+  const got = fs.readFileSync(out);
+  fs.unlinkSync(out);
+  return got.toString('utf8');
+}
+
+test('ô soạn: chữ tới ứng dụng KHÔNG kèm dấu bracketed paste, và Enter đi sau cùng', async () => {
+  const d = await startDaemon();
+  try {
+    const got = await panePasteBytes(d, 'xin chào bạn');
+    assert.doesNotMatch(got, /\x1b\[20[01]~/,
+      'Claude Code không bật bracketed paste — gửi dấu đó vào hộp thoại AskUserQuestion là mất trắng nội dung');
+    assert.equal(got, 'xin chào bạn\r', 'phải đúng nội dung rồi mới tới Enter');
+  } finally { d.stop(); }
+});
+
+test('ô soạn nhiều dòng: LF giữ nguyên, không bị đổi thành CR (mỗi dòng một Enter)', async () => {
+  const d = await startDaemon();
+  try {
+    const got = await panePasteBytes(d, 'dòng một\ndòng hai');
+    assert.equal(got, 'dòng một\ndòng hai\r',
+      'tmux mặc định đổi LF thành CR khi dán — thế là dòng một bị gửi đi như một câu hoàn chỉnh');
+  } finally { d.stop(); }
+});
+
+// Nửa còn lại của "để tmux quyết định": với ứng dụng CÓ xin bracketed paste
+// (zsh chẳng hạn), dấu vẫn phải được bọc — nếu không thì một tin nhắn nhiều
+// dòng dán vào shell là mỗi dòng một lệnh chạy ngay.
+test('ứng dụng CÓ xin bracketed paste thì tmux vẫn bọc dấu như thường', async () => {
+  const d = await startDaemon();
+  try {
+    const got = await panePasteBytes(d, 'dòng một\ndòng hai', { bracketed: true });
+    assert.equal(got, '\x1b[200~dòng một\ndòng hai\x1b[201~\r');
+  } finally { d.stop(); }
+});
+
+test('khung ccrc_paste rỗng hoặc sai kiểu: không gõ gì vào pane, daemon vẫn sống', async () => {
+  const d = await startDaemon();
+  try {
+    const c = await connect(d.url(await d.token()));
+    assert.equal(c.ok, true);
+    for (const bad of [{ type: 'ccrc_paste' }, { type: 'ccrc_paste', text: '' }, { type: 'ccrc_paste', text: 42 }]) {
+      c.ws.send(JSON.stringify(bad));
+    }
+    await sleep(800);
+    const man = execFileSync(tmuxBin(), ['capture-pane', '-p', '-t', d.pane], { encoding: 'utf8' });
+    assert.doesNotMatch(man, /ccrc_paste|42/, 'khung hỏng không được biến thành phím gõ');
+    assert.equal(paneAlive(d.pane), true);
     c.ws.close();
   } finally { d.stop(); }
 });
@@ -923,6 +1014,70 @@ test('gõ phím trong lúc đọc lịch sử → tự nhảy về hiện tại'
     await sleep(1000);
     assert.ok(seen.join('').includes('GO-PHIM'),
       'gõ phím mà màn hình vẫn kẹt ở quá khứ — người dùng thấy chữ mình gõ biến mất');
+  } finally { d.stop(); }
+});
+
+// Cùng lý do như test gõ phím ngay trên, và là nhánh dễ mất nhất: từ khi ô
+// soạn chuyển sang khung điều khiển, nó không còn đi qua chỗ gõ phím nữa. Đọc
+// ngược lịch sử rồi trả lời là chuyện xảy ra suốt — và nếu màn hình kẹt lại ở
+// quá khứ thì người dùng gửi xong không thấy gì động đậy.
+test('gửi ô soạn trong lúc đọc lịch sử → tự nhảy về hiện tại', async () => {
+  const d = await startDaemon();
+  try {
+    const c = await connect(d.url(await d.token()));
+    assert.equal(c.ok, true);
+    c.ws.send(JSON.stringify({ type: 'ccrc_resize', cols: 80, rows: 24 }));
+    await fillPane(d, 120);
+    c.ws.send(JSON.stringify({ type: 'ccrc_scroll', lines: 40 }));
+    await sleep(800);
+
+    const seen = [];
+    c.ws.on('message', (m) => seen.push(String(m)));
+    c.ws.send(JSON.stringify({ type: 'ccrc_paste', text: 'echo O-SOAN' }));
+    await sleep(1200);
+    assert.ok(seen.join('').includes('O-SOAN'),
+      'gửi tin nhắn mà màn hình vẫn kẹt ở quá khứ — người dùng không thấy gì xảy ra cả');
+  } finally { d.stop(); }
+});
+
+// Daemon phục vụ nhiều client cùng lúc (xem groupClientCount, viewers). Hai
+// người cùng bấm Gửi mà dùng chung một tên buffer thì người này dán ra nội
+// dung của người kia, hoặc buffer bị xoá mất trước khi kịp dán.
+test('hai client cùng gửi: không ai nuốt tin nhắn của ai', async () => {
+  const d = await startDaemon();
+  try {
+    const a = await connect(d.url(await d.token()));
+    const b = await connect(d.url(await d.token()));
+    assert.equal(a.ok, true);
+    assert.equal(b.ok, true);
+    a.ws.send(Buffer.from('cat > /dev/null\r'), { binary: true }); // để shell không chạy lung tung
+    await sleep(600);
+    a.ws.send(JSON.stringify({ type: 'ccrc_paste', text: 'AAAA-CUA-A' }));
+    b.ws.send(JSON.stringify({ type: 'ccrc_paste', text: 'BBBB-CUA-B' }));
+    await sleep(2000);
+    const man = execFileSync(tmuxBin(), ['capture-pane', '-p', '-t', d.pane], { encoding: 'utf8' });
+    assert.match(man, /AAAA-CUA-A/, 'tin nhắn của client A biến mất');
+    assert.match(man, /BBBB-CUA-B/, 'tin nhắn của client B biến mất');
+  } finally { d.stop(); }
+});
+
+// `ccrc remote` chạy CLI từ một shell bình thường rồi đưa `--pane`, nên daemon
+// thừa hưởng môi trường của shell ấy — có thể không có $TMUX nào. Ghi socket
+// theo môi trường thì mục sổ tra ra rỗng, và khi rỗng thì pane `%1` của MỘT
+// tmux server khác cũng khớp: thông báo mang tên phiên của người khác, và hub
+// nén push vì tưởng người dùng đang xem terminal đó.
+test('sổ tra ghi socket tmux kể cả khi daemon chạy không có $TMUX', async () => {
+  const d = await startDaemon({ TMUX: '' });
+  try {
+    const dir = registryDir(d.home);
+    // Sổ tra được ghi ở nhịp heartbeat đầu, sau khi cổng đã bind — nên chờ nó
+    // xuất hiện, đừng chờ một con số.
+    for (let i = 0; i < 100 && !fs.existsSync(dir); i += 1) await sleep(100);
+    const files = fs.readdirSync(dir).filter((f) => f.endsWith('.json'));
+    assert.equal(files.length, 1, `sổ tra phải có đúng một mục, thấy ${files.length}`);
+    const entry = JSON.parse(fs.readFileSync(path.join(dir, files[0]), 'utf8'));
+    assert.equal(entry.pane, d.pane);
+    assert.ok(entry.tmux, 'thiếu socket thì pane cùng id ở tmux server khác cũng khớp');
   } finally { d.stop(); }
 });
 

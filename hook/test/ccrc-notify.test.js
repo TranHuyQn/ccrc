@@ -33,9 +33,15 @@ function stubServer() {
   return new Promise((r) => srv.listen(0, '127.0.0.1', () => r({ srv, received, port: srv.address().port })));
 }
 
-function run(stdin, home) {
+// TMUX/TMUX_PANE are stripped unless a test asks for them: this suite is
+// itself often run from inside tmux, and inheriting the runner's pane would
+// silently give every test a pane id it never asked for.
+function run(stdin, home, extraEnv = {}) {
+  const env = { ...process.env, HOME: home };
+  delete env.TMUX;
+  delete env.TMUX_PANE;
   return new Promise((resolve) => {
-    const child = execFile('node', [HOOK], { env: { ...process.env, HOME: home }, timeout: 15000 },
+    const child = execFile('node', [HOOK], { env: { ...env, ...extraEnv }, timeout: 15000 },
       (err, stdout, stderr) => resolve({ code: err ? (err.code ?? 1) : 0, stdout, stderr }));
     child.stdin.end(stdin);
   });
@@ -79,6 +85,39 @@ test('có phiên trong sổ tra → thông báo mang đúng tên và sessionId',
   assert.match(received[0].body.title, /du an A/);
   assert.equal(received[0].body.sessionId, 'sess-abc');
   assert.ok(!/cc-remote-control/.test(received[0].body.title));
+});
+
+// The bug this pairing exists to kill. Claude Code reports the directory the
+// SESSION is currently in, and one `cd` in a Bash call moves it; the pane the
+// daemon watches stays put. Measured on a real machine: every notification for
+// a session with a terminal open arrived with no sessionId at all, so the hub
+// had nothing to match and pushed anyway.
+test('cwd đã trôi sang thư mục con → vẫn ghép đúng phiên nhờ pane', async () => {
+  const { srv, received, port } = await stubServer();
+  const home = tmpHome({ notify: 'on\n', config: `CCRC_HUB_URL=http://127.0.0.1:${port}\nCCRC_TOKEN=tok-abc\n` });
+  writeSession({ sessionId: 'sess-pane', cwd: '/Users/dev/projects', name: 'du an B', pane: '%3', pid: process.pid }, { home });
+  const payload = JSON.stringify({
+    hook_event_name: 'Notification', notification_type: 'idle_prompt', session_id: 's1',
+    cwd: '/Users/dev/projects/app-cua-toi/packages/core/src',
+    message: 'Claude is waiting for your input',
+  });
+  const r = await run(payload, home, { TMUX_PANE: '%3' });
+  srv.close();
+  assert.equal(r.code, 0);
+  assert.equal(received.length, 1);
+  assert.equal(received[0].body.sessionId, 'sess-pane', 'thiếu sessionId thì hub không nén được push');
+  assert.match(received[0].body.title, /du an B/);
+});
+
+test('pane của mình không có trong sổ → vẫn lùi về khớp theo cwd', async () => {
+  const { srv, received, port } = await stubServer();
+  const home = tmpHome({ notify: 'on\n', config: `CCRC_HUB_URL=http://127.0.0.1:${port}\nCCRC_TOKEN=tok-abc\n` });
+  writeSession(
+    { sessionId: 'sess-abc', cwd: '/Users/dev/projects/cc-remote-control', name: 'du an A', pane: '%9', pid: process.pid },
+    { home });
+  const r = await run(PAYLOAD, home, { TMUX_PANE: '%3' });
+  srv.close();
+  assert.equal(received[0].body.sessionId, 'sess-abc');
 });
 
 test('phiên trong sổ nhưng KHÁC thư mục → không ghép, chỉ tên máy', async () => {

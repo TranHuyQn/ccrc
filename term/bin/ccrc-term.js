@@ -18,7 +18,7 @@ import { createSessionKeys } from '../src/session-keys.js';
 import {
   paneAlive, snapshotPane, tmuxBin,
   createGroupSession, killGroupSession, hasSession,
-  claimGroupName, reclaimPaneSession, paneCwd, makeRunId,
+  claimGroupName, reclaimPaneSession, paneCwd, paneSocket, makeRunId,
   captureHistory, paneHistorySize, paneMouseMode,
 } from '../src/tmux.js';
 import { wheelBytes, notchesForLines, clickBytes } from '../src/mouse.js';
@@ -82,6 +82,24 @@ const MAX_SCROLL_LINES = 500;
 // xong đoạn dán trong một lượt riêng, đủ nhỏ để không ai nhận ra. Xem
 // typeIntoPane() bên dưới để biết vì sao phải tách.
 const COMMIT_DELAY_MS = 30;
+
+// Trần cho MỘT lượt dán từ ô soạn. Không phải giới hạn của tmux (buffer nhận
+// thoải mái hơn thế nhiều) mà là trần cho thứ đến từ trình duyệt: nó được ghi
+// vào một tiến trình con và dội thẳng vào phiên đang sống của người dùng.
+// 100 KB rộng hơn mọi tin nhắn viết tay, và vẫn là một con số.
+const MAX_PASTE_BYTES = 100_000;
+
+// Bao lâu thì coi như `tmux load-buffer` treo. Nó ghi vào một tiến trình con,
+// và hàng đợi gõ phím của kết nối đó ĐANG chờ nó xong — treo mà không có trần
+// thì không chỉ tin nhắn ấy mất, mà mọi phím bấm sau đó của cái điện thoại ấy
+// cũng chết câm, không một lời báo.
+const PASTE_LOAD_TIMEOUT_MS = 5000;
+
+// Đếm chung cho cả tiến trình, KHÔNG phải cho từng kết nối: tên buffer sinh ra
+// từ nó phải là duy nhất trên toàn bộ tmux server, mà daemon thì phục vụ nhiều
+// client cùng lúc. Để trong phạm vi kết nối thì hai điện thoại đều bắt đầu từ
+// 0, đặt trùng tên nhau, và người này dán ra nội dung của người kia.
+let pasteSeq = 0;
 // Mã đóng WebSocket cho "phiên này chấm dứt hẳn".
 //
 // Phân biệt với rớt mạng là điều bắt buộc: rớt mạng thì trang phải nối lại,
@@ -547,7 +565,75 @@ wss.on('connection', (ws, mintKey) => {
   //     thường, nên đây là PHÒNG NGỪA chứ không phải bản vá cho một nguyên
   //     nhân đã chứng minh. Việc tách bỏ hẳn khả năng đó khỏi bàn cờ với giá
   //     một nhịp nghỉ không ai cảm nhận được.
+  // Dán nội dung ô soạn — KHÁC hẳn gõ phím ở trên, và khác vì một lý do đo
+  // được: ứng dụng trong pane có thể hiểu bracketed paste, hoặc không.
+  //
+  //   • Claude Code KHÔNG bật bracketed paste (`?2004h` xuất hiện 0 lần trong
+  //     toàn bộ bản dựng 2.1.233). Trang web trước đây tự bọc `ESC[200~ …
+  //     ESC[201~` nên trong hộp thoại AskUserQuestion cả cụm bị vứt, cú Enter
+  //     đi sau rơi vào ô "Type something." rỗng, và Enter trên ô rỗng bị tính
+  //     là TỪ CHỐI trả lời — hộp thoại đóng, trông y như vừa bấm Esc.
+  //   • zsh thì ngược lại: có bật. Gửi chữ thô nhiều dòng vào đấy là mỗi dòng
+  //     một lệnh chạy luôn.
+  //
+  // Không đoán hộ ai cả: `paste-buffer -p` bọc dấu KHI VÀ CHỈ KHI ứng dụng đã
+  // xin chế độ đó, và tmux là bên duy nhất biết điều ấy. `-r` giữ nguyên LF —
+  // mặc định tmux đổi LF thành CR, tức là gửi dòng đầu đi như một câu hoàn
+  // chỉnh. `-d` xoá buffer ngay sau khi dán để không bỏ rác vào danh sách
+  // buffer của người dùng.
+  //
+  // Nội dung đi qua stdin của `load-buffer`, không qua dòng lệnh: đó là cùng
+  // một kỷ luật đã khiến `send-keys -H` được chọn ở trên — không có câu hỏi
+  // trích dẫn nào để trả lời sai.
+  // Nối tiếp, không song song, và DÙNG CHUNG với typeIntoPane: một cú Enter
+  // của thanh phím chen vào giữa đoạn dán sẽ gửi đi nửa tin nhắn.
   let typeQueue = Promise.resolve();
+  function pasteIntoPane(text) {
+    const bytes = Buffer.from(text, 'utf8');
+    if (bytes.length === 0) return;
+    if (bytes.length > MAX_PASTE_BYTES) {
+      try { ws.send(JSON.stringify({ type: 'ccrc_loi', message: `tin nhắn quá dài (${bytes.length} byte)` })); } catch {}
+      return;
+    }
+    // Tên buffer riêng cho từng lượt dán: hai client dán cùng lúc mà dùng
+    // chung một tên thì lượt sau đè nội dung lượt trước ngay trước khi nó kịp
+    // được dán. SESSION_ID đã qua bộ lọc ký tự của sổ tra phiên.
+    const name = `ccrc-${SESSION_ID}-${pasteSeq += 1}`;
+    typeQueue = typeQueue.then(() => new Promise((resolve) => {
+      const loader = spawn(tmuxBin(), ['load-buffer', '-b', name, '-'], {
+        stdio: ['pipe', 'ignore', 'ignore'],
+      });
+      // Một lượt dán chỉ được kết thúc ĐÚNG MỘT LẦN. Khi spawn hỏng, Node bắn
+      // 'error' rồi bắn tiếp 'close' với mã null — không chốt lại thì người
+      // dùng nhận hai thông báo, cái thứ hai là "load-buffer trả mã null" vô
+      // nghĩa.
+      let done = false;
+      let treo = null;
+      const finish = () => { if (done) return false; done = true; clearTimeout(treo); resolve(); return true; };
+      const fail = (why) => {
+        // Im lặng ở đây nghĩa là ô soạn phía người dùng vẫn trống đi như đã
+        // gửi, còn tin nhắn thì chưa từng tồn tại — đúng lỗi mà bản vá tin
+        // nhắn dài trước đây đã phải đi sửa.
+        if (!finish()) return;
+        try { ws.send(JSON.stringify({ type: 'ccrc_loi', message: `không dán được: ${why}` })); } catch {}
+      };
+      treo = setTimeout(() => {
+        try { loader.kill('SIGKILL'); } catch {}
+        fail('tmux không phản hồi');
+      }, PASTE_LOAD_TIMEOUT_MS);
+      loader.on('error', (e) => fail(String(e && e.message).slice(0, 120)));
+      loader.on('close', (code) => {
+        if (done) return;
+        if (code !== 0) return fail(`load-buffer trả mã ${code}`);
+        ctl.stdin.write(`paste-buffer -d -p -r -b ${name} -t ${PANE}\n`);
+        // Enter đi riêng sau một nhịp nghỉ, cùng lý do như typeIntoPane.
+        setTimeout(() => { sendKeysHex(Buffer.from([0x0d])); finish(); }, COMMIT_DELAY_MS);
+      });
+      loader.stdin.on('error', () => { /* tiến trình chết trước khi ghi xong — 'close' ở trên lo nốt */ });
+      loader.stdin.end(bytes);
+    })).catch(() => { /* một lượt hỏng không được làm nghẽn những lượt sau */ });
+  }
+
   function typeIntoPane(data) {
     const { chunks, commit } = splitForSendKeys(data);
     if (chunks.length === 0 && !commit) return;
@@ -577,6 +663,20 @@ wss.on('connection', (ws, mintKey) => {
       if (typeof msg.visible === 'boolean') {
         viewers.set(ws, msg.visible);
         watchingChanged();
+      }
+      return;
+    }
+    if (msg.type === 'ccrc_paste') {
+      // Chuỗi, và không rỗng. Một khung hỏng không được biến thành cái gì gõ
+      // vào phiên đang sống của người dùng.
+      if (typeof msg.text === 'string' && msg.text.length > 0) {
+        // Gửi tin nhắn cũng là "tôi đọc xong rồi", y như gõ phím ở nhánh
+        // nhị phân — và cần nói riêng ở đây vì ô soạn KHÔNG còn đi qua nhánh
+        // đó nữa. Thiếu dòng này thì tin nhắn tới pane thật nhưng màn hình
+        // đứng im ở đoạn lịch sử đang đọc: người dùng bấm Gửi và không thấy
+        // gì xảy ra cả.
+        if (historyOffset > 0) showHistory(0);
+        pasteIntoPane(msg.text);
       }
       return;
     }
@@ -817,7 +917,16 @@ server.listen(PORT, bindAddr, async () => {
     // arriving in the same instant already has something to find.
     // paneCwd() never throws and returns '' for a dead pane, which simply
     // means no notification will match — never a wrong match.
-    writeSession({ sessionId: SESSION_ID, cwd: paneCwd(PANE), name: SESSION_NAME, pid: process.pid });
+    // `pane` (with the tmux server it belongs to) is what the hook matches on:
+    // the directory below is the PANE's, while a notification carries Claude
+    // Code's current one, and those two drift apart the moment a Bash call
+    // does a `cd`. The socket comes from tmux itself, not from this process's
+    // $TMUX — see paneSocket() for why the daemon's own environment is the
+    // wrong place to ask.
+    writeSession({
+      sessionId: SESSION_ID, cwd: paneCwd(PANE), name: SESSION_NAME,
+      pane: PANE, tmux: paneSocket(PANE), pid: process.pid,
+    });
     return tellHub('/api/terminal/register', {
       sessionId: SESSION_ID,
       machine: cfg ? cfg.machine : os.hostname(),

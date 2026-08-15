@@ -31,6 +31,14 @@ function entryPath(dir, sessionId) {
   return path.join(dir, `${sessionId}.json`);
 }
 
+// $TMUX is `<socket-path>,<server-pid>,<session-index>`; only the socket path
+// says WHICH tmux server, and the rest changes for reasons that have nothing
+// to do with identity. Stored and compared in that reduced form so the two
+// sides can hand each other the raw variable and still agree.
+function socketOf(tmuxEnv) {
+  return typeof tmuxEnv === 'string' && tmuxEnv ? tmuxEnv.split(',')[0] : '';
+}
+
 // `pid` is recorded so a reader can tell a live session from one whose daemon
 // was killed without getting the chance to clean up (`kill -9`, a crash, a
 // power cut). Nothing here may throw: a notification must still go out even
@@ -44,6 +52,10 @@ export function writeSession(entry, opts = {}) {
       sessionId: entry.sessionId,
       cwd: typeof entry.cwd === 'string' ? entry.cwd : '',
       name: typeof entry.name === 'string' ? entry.name : '',
+      // The tmux pane this session's daemon watches, and the server that pane
+      // belongs to. This is the pair the hook matches on — see findByPane.
+      pane: typeof entry.pane === 'string' ? entry.pane : '',
+      tmux: socketOf(entry.tmux),
       pid: Number(entry.pid) || 0,
     });
     // Written via a temp file and renamed, so a reader never sees a half-
@@ -113,7 +125,34 @@ export function listSessions(opts = {}) {
   return out;
 }
 
-// The lookup the hook does: which live session is running in this directory?
+// The lookup the hook does FIRST: which live session watches the pane I am
+// running inside?
+//
+// Why this beats the directory lookup below, which it now leads: the cwd a
+// notification carries is Claude Code's CURRENT directory, and that walks off
+// into subdirectories as the session works — one `cd` inside a Bash call is
+// enough. The pane never moves. Measured on a real session (2026-08-15): 24
+// events at the directory the pane was opened in against 266 in one
+// subdirectory and 212 in another, so the exact-directory match below missed
+// essentially every notification and the hub never had a session id to hold a
+// push back with.
+//
+// `pane` alone would be a cheap signal: pane ids are unique within ONE tmux
+// server, and a second server hands out `%0` all over again. So the socket has
+// to agree too — but only when both sides know it, since an entry written by
+// an older daemon has no socket recorded and must still be usable.
+export function findByPane(pane, opts = {}) {
+  if (typeof pane !== 'string' || !pane) return null;
+  const want = socketOf(opts.tmux);
+  for (const entry of listSessions(opts)) {
+    if (!entry.pane || entry.pane !== pane) continue;
+    if (entry.tmux && want && entry.tmux !== want) continue;
+    return entry;
+  }
+  return null;
+}
+
+// The lookup the hook falls back on: which live session is running in this directory?
 // Exact match only. A prefix or parent-directory match would be guessing, and
 // guessing wrong here means a notification labelled with the wrong session —
 // worse than one labelled with none.

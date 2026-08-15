@@ -60,23 +60,45 @@ function findResizeMessage(sent) {
   return msgs[msgs.length - 1];
 }
 
-// --- Đường 1: ô soạn kiểu chat, bracketed paste (spec §5.2) ----------------
+// --- Đường 1: ô soạn kiểu chat (spec §5.2) --------------------------------
+//
+// Trang này TỪNG tự bọc nội dung trong dấu bracketed paste (ESC[200~ …
+// ESC[201~). Đo được ngày 2026-08-15: Claude Code không bao giờ bật chế độ
+// bracketed paste (chuỗi `?2004h` xuất hiện 0 lần trong toàn bộ bản dựng của
+// nó), nên nó không hiểu cặp dấu đó. Ở ô nhập chính thì vô hại, nhưng trong
+// hộp thoại AskUserQuestion cả cụm bị vứt, rồi cú Enter đi sau rơi vào ô tự
+// nhập RỖNG — và Enter trên ô rỗng bị tính là từ chối trả lời, đóng hộp
+// thoại. Người dùng thấy y hệt như vừa bấm Esc.
+//
+// Nên trang không bọc gì nữa: nó gửi chữ nguyên bản, và daemon dán qua tmux —
+// tmux mới là nơi biết ứng dụng trong pane CÓ xin bracketed paste hay không.
 
-test('gửi nhiều dòng bọc trong bracketed paste, không thành nhiều Enter', () => {
+test('ô soạn gửi chữ NGUYÊN BẢN, không tự bọc dấu bracketed paste', () => {
   const page = loadTermPage({ storedKey: 'khoa-soan' });
   page.ws()[0].open();
   const gui = makeGui(page);
 
   const sent = gui.submit('dòng một\ndòng hai');
-  assert.equal(sent, '\x1b[200~dòng một\ndòng hai\x1b[201~\r');
+  const msg = JSON.parse(sent);
+  assert.equal(msg.type, 'ccrc_paste');
+  assert.equal(msg.text, 'dòng một\ndòng hai');
 });
 
-test('ô soạn gửi bằng KHUNG NHỊ PHÂN — daemon chỉ gõ vào pane những gì đến trên khung nhị phân', () => {
+test('ô soạn gửi bằng TEXT FRAME — khung nhị phân sẽ bị gõ thẳng từng byte vào pane', () => {
   const page = loadTermPage({ storedKey: 'khoa-soan-nhiphan' });
   page.ws()[0].open();
   page.oto.value = 'echo xin chao';
   page.soan.dispatch('submit');
-  assert.ok(lastSent(page) instanceof Uint8Array, 'phím gõ phải đi bằng khung nhị phân, không phải text frame');
+  assert.equal(typeof lastSent(page), 'string', 'nội dung ô soạn phải đi bằng text frame để daemon dán, không phải gõ');
+});
+
+test('ô soạn KHÔNG tự gửi Enter kèm nội dung — daemon gửi Enter riêng sau khi dán', () => {
+  const page = loadTermPage({ storedKey: 'khoa-soan-enter' });
+  page.ws()[0].open();
+  const gui = makeGui(page);
+
+  const msg = JSON.parse(gui.submit('git status'));
+  assert.equal(msg.text, 'git status', 'kèm \\r vào đây thì nó thành một phần của đoạn dán');
 });
 
 test('ô soạn được xoá sau khi gửi', () => {

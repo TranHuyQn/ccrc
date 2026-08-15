@@ -446,14 +446,24 @@
     if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
   }
 
-  // --- Đường 1: ô soạn kiểu chat, bracketed paste (spec §5.2) ---------------
+  // --- Đường 1: ô soạn kiểu chat (spec §5.2) --------------------------------
   //
-  // Sending raw text would turn every '\n' the user typed into its own
-  // Enter once it reaches the pane — for multi-line input that submits the
-  // first line to Claude as a finished answer and feeds the rest in as
-  // further prompts. Wrapping it as bracketed paste (ESC[200~ ... ESC[201~)
-  // makes the TUI treat the whole block as one paste instead, then a plain
-  // \r commits it.
+  // The message is HANDED OVER as text, not typed. This page used to wrap it
+  // in bracketed paste itself (ESC[200~ … ESC[201~) so that a '\n' would not
+  // land as an Enter. That wrapping was wrong for the one application that
+  // matters here: measured 2026-08-15, Claude Code never turns bracketed
+  // paste on (`?2004h` appears zero times in its whole build), so it has no
+  // idea what those markers are. In the main prompt they are swallowed
+  // harmlessly; inside an AskUserQuestion dialog the WHOLE chunk is dropped,
+  // and the \r that followed then landed on an empty "Type something." field
+  // — which counts as declining, so the dialog closed. It looked exactly like
+  // someone had pressed Esc, and cost the user their answer every time.
+  //
+  // Whether to bracket is not this page's call to make: tmux is the one that
+  // knows whether the application in the pane asked for bracketed paste, and
+  // the daemon lets it decide (see pasteIntoPane in bin/ccrc-term.js). So the
+  // text goes down as-is, on a control frame, with no trailing Enter — the
+  // daemon sends that separately once the paste has landed.
   //
   // Enter inside the textarea is deliberately left alone: a <textarea>
   // does not implicitly submit its form on Enter the way a text <input>
@@ -464,7 +474,7 @@
       e.preventDefault();
       var text = otoEl.value;
       if (text.length === 0) return; // nothing typed — nothing to send
-      sendInput('\x1b[200~' + text + '\x1b[201~\r');
+      sendControl({ type: 'ccrc_paste', text: text });
       otoEl.value = '';
     });
   }

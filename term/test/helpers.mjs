@@ -131,7 +131,9 @@ export async function startDaemon(extraEnv = {}, opts = {}) {
   }
 
   return {
-    proc, port, pane, sess, phone,
+    // `home` là HOME giả daemon chạy dưới — sổ tra phiên nằm trong đó, và test
+    // nào đọc sổ tra PHẢI đọc của daemon này chứ không phải của máy thật.
+    proc, port, pane, sess, phone, home,
     // Everything the daemon has said so far. Exposed because `/remote on`
     // parses these lines, so their ORDER is part of the contract between the
     // two — see the startup-line test in daemon.test.js.

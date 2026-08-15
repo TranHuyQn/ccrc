@@ -86,6 +86,34 @@ export function paneCwd(paneId) {
   }
 }
 
+// Which tmux SERVER this pane lives on, as its socket path.
+//
+// Pane ids (`%3`) are unique only inside one server, so the notification hook
+// needs this beside the pane id to be sure the session it found is the one it
+// is running in (shared/session-registry.js findByPane).
+//
+// Asked of tmux, not read from the daemon's own $TMUX: the daemon is not
+// always started from inside the pane it watches — `ccrc remote` runs the CLI
+// from an ordinary shell and hands it `--pane`, and that shell may have no
+// $TMUX at all. The environment answers "where was I started", which is a
+// different question from "which server owns this pane", and the two come
+// apart on exactly the path this project's own launcher uses.
+// paneAlive() first, and not for tidiness: `display-message -t <pane không có
+// thật>` exits 0 and prints the socket of the DEFAULT server anyway (đo
+// 2026-08-15, tmux 3.7b) — the same "exit 0 means yes" trap this file opens by
+// warning about. Without the check, a pane on another server would be recorded
+// under this one's socket, which is the exact confusion the field exists to
+// prevent.
+export function paneSocket(paneId) {
+  if (!paneAlive(paneId)) return '';
+  try {
+    const raw = tmux(['display-message', '-p', '-t', paneId, '#{socket_path}']);
+    return typeof raw === 'string' ? raw.trim() : '';
+  } catch {
+    return '';
+  }
+}
+
 // Every pane on this tmux server, for `candidates` (ccrc-term-cli.js) to
 // filter down to the ones running claude and offer as a pick list.
 //

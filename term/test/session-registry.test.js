@@ -13,7 +13,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  writeSession, removeSession, listSessions, findByCwd, registryDir,
+  writeSession, removeSession, listSessions, findByCwd, findByPane, registryDir,
 } from '../../shared/session-registry.js';
 
 function tmpHome() {
@@ -143,6 +143,54 @@ test('mục luôn đọc được: ghi qua file tạm rồi đổi tên', () => 
     assert.ok(got, 'đọc phải file đang ghi dở');
     assert.equal(got.name, 'ten-' + i);
   }
+});
+
+// --- tra theo pane ---------------------------------------------------------
+//
+// Why the pane id exists here at all: the cwd the notification hook reports is
+// Claude Code's CURRENT directory, and that walks off into subdirectories as
+// the session works (measured on a real session: 24 events at the directory
+// the pane was opened in, 266 in a subdirectory of it). The pane the daemon
+// watches never moves. Matching on the pane is matching on the thing that is
+// actually the same on both sides.
+
+test('tra theo pane khớp dù cwd đã trôi sang thư mục con', () => {
+  const home = tmpHome();
+  writeSession({ sessionId: 's1', cwd: '/du/an', name: 'k7m2', pane: '%3', pid: process.pid }, { home });
+  const got = findByPane('%3', { home, isAlive: ALIVE });
+  assert.ok(got, 'pane đúng mà không tra ra thì cả cơ chế nén thông báo chết ở đây');
+  assert.equal(got.sessionId, 's1');
+});
+
+test('pane khác thì KHÔNG khớp', () => {
+  const home = tmpHome();
+  writeSession({ sessionId: 's1', cwd: '/du/an', name: 'k7m2', pane: '%3', pid: process.pid }, { home });
+  assert.equal(findByPane('%4', { home, isAlive: ALIVE }), null);
+});
+
+test('mục cũ chưa có pane → không bao giờ khớp theo pane', () => {
+  const home = tmpHome();
+  writeSession({ sessionId: 's1', cwd: '/du/an', name: 'k7m2', pid: process.pid }, { home });
+  assert.equal(findByPane('%3', { home, isAlive: ALIVE }), null);
+  assert.equal(findByPane(undefined, { home, isAlive: ALIVE }), null);
+  assert.equal(findByPane('', { home, isAlive: ALIVE }), null);
+});
+
+// Pane ids are unique inside ONE tmux server. Two servers (a second socket,
+// or a tmux started as another user) both hand out `%0`, and matching across
+// them would name a notification after somebody else's session.
+test('cùng pane id nhưng khác tmux server → không khớp', () => {
+  const home = tmpHome();
+  writeSession({ sessionId: 's1', cwd: '/du/an', name: 'k7m2', pane: '%0', tmux: '/tmp/tmux-501/default', pid: process.pid }, { home });
+  assert.equal(findByPane('%0', { home, isAlive: ALIVE, tmux: '/tmp/tmux-0/default,1,0' }), null);
+  assert.ok(findByPane('%0', { home, isAlive: ALIVE, tmux: '/tmp/tmux-501/default,9177,3' }));
+});
+
+test('mục của daemon đã chết không tra ra theo pane, và bị dọn', () => {
+  const home = tmpHome();
+  writeSession({ sessionId: 's-chet', cwd: '/du/an', name: 'ma', pane: '%3', pid: 999999 }, { home });
+  assert.equal(findByPane('%3', { home, isAlive: DEAD }), null);
+  assert.equal(fs.existsSync(path.join(registryDir(home), 's-chet.json')), false);
 });
 
 test('mặc định dùng ~/.ccrc/sessions', () => {

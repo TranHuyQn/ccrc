@@ -15,7 +15,7 @@ import path from 'node:path';
 import http from 'node:http';
 import https from 'node:https';
 import { buildNotification } from '../src/notify-payload.js';
-import { findByCwd } from '../../shared/session-registry.js';
+import { findByCwd, findByPane } from '../../shared/session-registry.js';
 
 const CFG_DIR = path.join(os.homedir(), '.ccrc');
 const REQUEST_TIMEOUT_MS = 3000;
@@ -72,10 +72,21 @@ process.stdin.on('end', () => {
   try { payload = JSON.parse(raw); } catch { process.exit(0); }
   const cfg = readConfig();
   if (!cfg.CCRC_HUB_URL || !cfg.CCRC_TOKEN) process.exit(0);
-  // Looked up by the hook's own cwd. findByCwd never throws and returns null
-  // when the registry is missing, unreadable, or has no live session for this
-  // directory — in which case the notification simply carries no name.
-  const session = findByCwd(payload && payload.cwd);
+  // The pane comes first. This process is a child of the Claude Code running
+  // inside the pane, so $TMUX_PANE is inherited all the way down and names the
+  // pane the daemon watches — the one thing that is genuinely the same on both
+  // sides. The directory is not: Claude Code reports where the SESSION
+  // currently is, which walks into subdirectories as the work goes on, while
+  // the registry holds the pane's own path. Matching on it alone missed
+  // essentially every notification, and a notification with no session id is
+  // one the hub cannot hold back while the user is looking at that terminal.
+  //
+  // The directory lookup stays as the fallback for a Claude Code that is not
+  // running under tmux at all. Both never throw and return null when the
+  // registry is missing, unreadable, or has nothing matching — in which case
+  // the notification simply carries no name.
+  const session = findByPane(process.env.TMUX_PANE, { tmux: process.env.TMUX })
+    || findByCwd(payload && payload.cwd);
   const note = buildNotification(payload, {
     machineName: cfg.CCRC_MACHINE_NAME || os.hostname().replace(/\.local$/, ''),
     session,
