@@ -82,20 +82,36 @@ against the real daemon (`term/src/ticket.js`).
 
 Stated plainly so you can decide, rather than discovering them yourself:
 
-- **No rate limiting anywhere.** No endpoint throttles authentication attempts. Tokens are
-  24 random bytes, which makes online brute force impractical, but an authenticated caller
-  can also spam `/notify` freely, and the notification history is an in-RAM list per user.
-- **Token comparison is not constant-time.** `server/src/index.js` compares the admin token
-  with `===` and looks up user tokens in a `Map`. Remotely exploitable timing on either is
-  not realistic, but neither is it defended.
+- **An authenticated caller can spam `/notify`.** Nothing throttles a request that carries a
+  valid token, and the notification history is an in-RAM list per user. Bounded per entry
+  (200 characters for title and body, 50 entries per user) and lost on restart, so this
+  costs memory and phone battery rather than anything durable.
 - **No CORS policy, no security headers.** No `helmet`, no CSP on the hub's own pages.
-- **The hub binds `0.0.0.0` by default.** Correct behind a tunnel, wrong if you expose the
-  port directly. Set `CCRC_BIND=127.0.0.1` when a tunnel or reverse proxy is in front.
+- **Push subscriptions and the user list are stored unencrypted on disk** — see below.
 - **Push subscriptions and the user list are stored unencrypted on disk** in
   `CCRC_DATA_DIR`. Anyone with that directory can send push to those devices and read every
   token. Back it up accordingly — or rather, do not back it up carelessly.
 - **Notification history is per-user in RAM with no persistence and no size limit per
   field beyond 200 chars.** A hub restart loses it, by design.
+
+## Addressed since this file was first written
+
+Kept here rather than deleted: if you read an older copy, this says what changed.
+
+- **Token probing is throttled.** Requests that fail to authenticate are counted per client
+  IP — 20 per 10 minutes, then `429` with `Retry-After`. Only failures count, so a valid
+  token is never delayed or blocked. That asymmetry is deliberate: behind a proxy with
+  `CCRC_TRUST_PROXY` unset every request appears to come from one address, and blocking the
+  address itself would let a stranger with bad tokens lock a whole team out of their own hub.
+- **The admin token is compared with `crypto.timingSafeEqual`**, length checked first (it
+  throws on a length mismatch, and turning wrong-length tokens into `500`s would trade an
+  unexploitable timing leak for an availability bug). User tokens remain a `Map` lookup,
+  which is a hash lookup rather than a character-by-character compare.
+- **`CCRC_BIND` now reaches `app.listen()`.** It previously steered only the compose
+  `ports:` publish, so running the hub under Node directly ignored it: an operator could set
+  `127.0.0.1`, believe the port was closed, and still serve the whole LAN. The default is
+  still `0.0.0.0`, which is required inside a container — the tunnel reaches the hub over
+  the compose network, so binding loopback there would cut the origin off entirely.
 
 ## What is deliberately out of scope
 

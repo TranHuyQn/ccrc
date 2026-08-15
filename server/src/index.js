@@ -13,6 +13,7 @@ import { createTerminalSessions } from './terminal-sessions.js';
 import { createNotificationHistory } from './notification-history.js';
 import { deviceId, labelFromUserAgent, listDevices } from './push-devices.js';
 import { isSessionUrlAllowed } from './session-url.js';
+import { listenAddr } from './listen-addr.js';
 import { HUB_USER_NAME, isValidSlackUserId, parseUsers, upsertBySlackId } from './users.js';
 import { createPairings } from './pairing.js';
 import { createIdentity } from './identity.js';
@@ -159,11 +160,30 @@ function saveSlackUser(slackUserId, displayName) {
   return token;
 }
 
+// So sánh hai bí mật mà thời gian chạy không phụ thuộc nội dung.
+//
+// `timingSafeEqual` NÉM khi hai buffer khác độ dài, nên độ dài phải được lọc
+// trước — và lọc trước cũng đúng về mặt an toàn: độ dài token không phải bí
+// mật cần giấu, chỉ có nội dung mới là.
+//
+// Thành thật về giá trị: rò rỉ thời gian qua mạng ở đây không thực tế khai
+// thác, đúng như SECURITY.md vẫn nói. Vá vì nó rẻ và vì "không phòng gì cả" là
+// một câu khó chịu để phải viết trong tài liệu, không phải vì đã có ai bẻ được.
+function bangNhauAnToan(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  const x = Buffer.from(a, 'utf8');
+  const y = Buffer.from(b, 'utf8');
+  if (x.length !== y.length) return false;
+  return crypto.timingSafeEqual(x, y);
+}
+
 function resolveUser(token) {
   // Cả hai nhánh phải cùng hình dạng: callers (vd. /api/device/poll) đọc
   // displayName off either — thiếu nó ở nhánh admin thì grant đi ra ngoài
   // thiếu tên hiển thị, dù token vẫn đúng.
-  if (token === TOKEN) return { name: HUB_USER_NAME, displayName: HUB_USER_NAME, admin: true };
+  if (bangNhauAnToan(token, TOKEN)) return { name: HUB_USER_NAME, displayName: HUB_USER_NAME, admin: true };
+  // Token của người dùng tra bằng Map: đây là tra băm, không phải so từng ký
+  // tự, nên nó không có cái dốc thời gian mà so sánh chuỗi có.
   return usersByToken.get(token) || null;
 }
 
@@ -244,10 +264,43 @@ function userFromRequest(req) {
   return m ? resolveUser(m[1].trim()) : null;
 }
 
+// Chặn dò token: đếm theo IP, và CHỈ đếm những lượt xác thực HỎNG.
+//
+// Vì sao đếm ở nhánh hỏng thay vì chặn cả IP: một hub sau Cloudflare mà người
+// vận hành quên đặt CCRC_TRUST_PROXY thấy mọi request đến từ cùng một địa chỉ,
+// nên "khoá IP" ở đó nghĩa là một kẻ lạ gõ token bậy vài chục lần khoá được cả
+// team ra khỏi hub của chính họ — biến một lỗ hổng không ai khai thác thành một
+// nút tắt dịch vụ ai cũng bấm được. Token đúng đi thẳng qua, không bao giờ bị
+// tính, nên người dùng thật không cảm thấy chốt này tồn tại; còn kẻ dò token
+// thì mọi request của nó đều là lượt hỏng, nên chốt luôn đóng vào mặt nó.
+//
+// 20 lượt/10 phút: rộng hơn hẳn mọi cách gõ nhầm hay retry của PWA, và vẫn cắt
+// tốc độ dò xuống mức vô nghĩa trước một token 24 byte ngẫu nhiên.
+const AUTH_FAIL_LIMIT = 20;
+const AUTH_FAIL_WINDOW_MS = 10 * 60_000;
+const authFailLimit = createRateLimit({
+  limit: AUTH_FAIL_LIMIT, windowMs: AUTH_FAIL_WINDOW_MS,
+});
+
 function requireUser(req, res) {
   const user = userFromRequest(req);
-  if (!user) { res.status(401).json({ ok: false, error: 'Token không hợp lệ' }); return null; }
-  return user;
+  if (user) return user;
+
+  // `req.ip` là địa chỉ socket trừ khi người vận hành bật CCRC_TRUST_PROXY —
+  // cùng khoá, cùng lý do như /api/device/start ngay dưới.
+  const ip = req.ip || '';
+  const gate = authFailLimit.hit(ip);
+  if (!gate.ok) {
+    if (gate.firstTrip) {
+      console.error(`[hub] token sai từ IP ${ip}: vượt ${AUTH_FAIL_LIMIT} lượt/`
+        + `${Math.round(AUTH_FAIL_WINDOW_MS / 60_000)} phút — chặn tới hết cửa sổ`);
+    }
+    res.setHeader('retry-after', String(gate.retryIn));
+    res.status(429).json({ ok: false, error: 'Quá nhiều lần thử token sai từ địa chỉ này' });
+    return null;
+  }
+  res.status(401).json({ ok: false, error: 'Token không hợp lệ' });
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -906,6 +959,10 @@ app.use((err, _req, res, _next) => {
   res.status(400).json({ ok: false, error: 'Yêu cầu không hợp lệ' });
 });
 
-app.listen(PORT, () => {
-  console.log(`[hub] CC Remote Control hub listening on http://0.0.0.0:${PORT}`);
+const BIND = listenAddr(process.env);
+app.listen(PORT, BIND, () => {
+  // In ĐÚNG địa chỉ đang nghe, không in một hằng số: dòng này là thứ người vận
+  // hành đọc để tin rằng cổng đã đóng, và một dòng nói "0.0.0.0" trong khi thật
+  // ra đang nghe loopback (hoặc ngược lại) là cách nhanh nhất để họ tin nhầm.
+  console.log(`[hub] CC Remote Control hub listening on http://${BIND}:${PORT}`);
 });
