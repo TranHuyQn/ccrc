@@ -15,11 +15,14 @@
  * @param {import('node:stream').Readable} stdout
  * @param {string} paneId
  * @param {(data: string) => void} onOutput
- * @param {(message: string) => void} [onError] mỗi lệnh bị tmux từ chối một
- *   lần, với nguyên văn lời từ chối. Không truyền thì lỗi bị bỏ đúng như
- *   trước — nhưng đừng: xem lý do ngay dưới.
+ * @param {(ok: boolean, message: string) => void} [onReply] gọi MỘT lần cho
+ *   mỗi lệnh daemon đã gửi, theo đúng thứ tự gửi: `ok=true` khi tmux nhận
+ *   (`%end`), `ok=false` kèm nguyên văn lời từ chối khi không (`%error`).
+ *   Đây là cách duy nhất biết một lệnh có thật sự được thực hiện hay không —
+ *   ghi vào stdin của `tmux -C` luôn "thành công", kể cả với lệnh sẽ bị từ
+ *   chối ngay sau đó.
  */
-export function attachControlOutput(stdout, paneId, onOutput, onError) {
+export function attachControlOutput(stdout, paneId, onOutput, onReply) {
   stdout.setEncoding('utf8');
   // %output lines can split across two 'data' events (e.g. mid-escape-code
   // under load). Carry any trailing partial line over to the next chunk
@@ -37,11 +40,17 @@ export function attachControlOutput(stdout, paneId, onOutput, onError) {
     buf = lines.pop();
     for (const line of lines) {
       if (line.startsWith('%begin')) { block = []; continue; }
-      if (line.startsWith('%end')) { block = null; continue; }
+      if (line.startsWith('%end')) {
+        // Thân khối của một lệnh xuôi là OUTPUT của lệnh đó (vd
+        // `display-message -p`), không phải lời báo lỗi.
+        if (onReply) onReply(true, (block || []).join('\n'));
+        block = null;
+        continue;
+      }
       if (line.startsWith('%error')) {
         // Nguyên văn của tmux nằm trong THÂN khối, không nằm trên dòng
         // `%error` (dòng đó chỉ có timestamp/số lệnh/cờ).
-        if (onError) onError((block || []).join(' ').trim() || 'tmux từ chối lệnh');
+        if (onReply) onReply(false, (block || []).join(' ').trim() || 'tmux từ chối lệnh');
         block = null;
         continue;
       }

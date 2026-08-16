@@ -71,6 +71,13 @@ function findInTree(root, selector) {
   return null;
 }
 
+// Trang giao cho xterm một Uint8Array (bộ giải mã của xterm có trạng thái,
+// nên ký tự UTF-8 bị cắt ngang hai khung vẫn ghép đúng). Test thì muốn đọc
+// ra chữ — đây là chỗ dịch ngược, dùng chung cho mọi file test.
+export function decodeWrite(x) {
+  return typeof x === 'string' ? x : new TextDecoder().decode(x);
+}
+
 export class FakeDocument {
   constructor(byId, fonts) {
     this._byId = byId;
@@ -183,7 +190,17 @@ export class FakeWebSocket {
   }
   send(data) { this.sent.push(data); }
   open() { this.readyState = FakeWebSocket.OPEN; if (this.onopen) this.onopen({}); }
+  // Khung TEXT — khung điều khiển. Chuỗi tới trang y như một `ws.send(json)`
+  // bên daemon.
   receive(data) { if (this.onmessage) this.onmessage({ data }); }
+  // Khung NHỊ PHÂN — dữ liệu pane. Cái phân biệt hai đường không bao giờ là
+  // nội dung (một pane có quyền in ra đúng hình dạng khung điều khiển), mà
+  // là kiểu khung người gửi đã chọn. `binaryType='arraybuffer'` bên trang
+  // nghĩa là cái tới tay nó là một ArrayBuffer.
+  receiveData(text) {
+    const bytes = new TextEncoder().encode(text);
+    if (this.onmessage) this.onmessage({ data: bytes.buffer });
+  }
   // `code` is what tells a deliberate session close apart from a network
   // drop; term.js reconnects for one and stops for the other.
   dropped(code) {
@@ -264,6 +281,13 @@ export function loadTermPage({
   // treating a drag as a scroll — a drag that is extending a selection
   // belongs to copy, not to scrolling.
   selectionCollapsed = true,
+  // Nháp ô soạn còn lại từ một lần mở trang TRƯỚC. Khác sessionStorage ở
+  // storedKey: nháp phải sống qua cả việc đóng hẳn tab, nên nó nằm ở
+  // localStorage.
+  storedDraft = null,
+  // Chữ đã bấm Gửi nhưng chưa được daemon xác nhận, còn sót lại từ một lần mở
+  // trang TRƯỚC — tức tab chết đúng trong cửa sổ chờ. Phải sống lại được.
+  storedPending = null,
 } = {}) {
   FakeTerminal.instances.length = 0;
   FakeWebSocket.instances.length = 0;
@@ -303,6 +327,15 @@ export function loadTermPage({
     };
   }
 
+  const localStore = new Map();
+  if (storedDraft !== null) localStore.set('ccrc_nhap', storedDraft);
+  if (storedPending !== null) localStore.set('ccrc_dang_gui', storedPending);
+  const localStorage = {
+    getItem: (k) => (localStore.has(k) ? localStore.get(k) : null),
+    setItem: (k, v) => localStore.set(k, String(v)),
+    removeItem: (k) => localStore.delete(k),
+  };
+
   // `href` không được term.js đọc hay ghi ở đâu cả nữa. Giữ lại vì `location`
   // thật luôn có nó — một trang chạy thiếu thuộc tính chuẩn là bộ khung nói
   // dối, không phải bộ khung tối giản. Giá trị khởi tạo phản chiếu đúng hash
@@ -333,6 +366,7 @@ export function loadTermPage({
     location,
     history,
     sessionStorage,
+    localStorage,
     Terminal: TerminalCtor,
     FitAddon: { FitAddon: FakeFitAddon },
     WebSocket: FakeWebSocket,
@@ -347,6 +381,9 @@ export function loadTermPage({
     // binary WebSocket frames (see sendInput() — real browsers have this
     // as a standard global with no setup needed).
     TextEncoder,
+    // Trang giải mã khung nhị phân bằng nó trước khi đưa cho xterm. Cùng lý
+    // do như TextEncoder ngay trên: một vm context trống không có sẵn.
+    TextDecoder,
   };
   if (visualViewportImpl !== undefined) contextObj.visualViewport = visualViewportImpl;
 
@@ -368,6 +405,7 @@ export function loadTermPage({
     location,
     historyCalls,
     sessionStorage,
+    localStorage,
     clock,
     navigator: navigatorImpl,
     ws: () => FakeWebSocket.instances,

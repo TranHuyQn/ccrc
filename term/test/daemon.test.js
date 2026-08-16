@@ -304,6 +304,120 @@ test('ứng dụng CÓ xin bracketed paste thì tmux vẫn bọc dấu như thư
   } finally { d.stop(); }
 });
 
+// --- xác nhận đã dán: thứ duy nhất cho phép điện thoại quên chữ đi ---------
+//
+// Ô soạn từng trống đi ngay khi bấm Gửi, tức là "đã gọi hàm gửi" đứng thay cho
+// "chữ đã tới pane". Ba đường làm chữ bốc hơi trong im lặng — đang nối lại,
+// socket chết kiểu half-open (readyState vẫn OPEN), daemon từ chối — và chỉ
+// một lời xác nhận từ đầu này mới bịt được hai đường sau.
+
+test('dán xong thì daemon xác nhận, mang đúng seq của lượt gửi', async () => {
+  const d = await startDaemon();
+  try {
+    const c = await connect(d.url(await d.token()));
+    assert.equal(c.ok, true);
+    const khung = [];
+    c.ws.on('message', (m, isBinary) => { if (!isBinary) khung.push(String(m)); });
+
+    c.ws.send(JSON.stringify({ type: 'ccrc_paste', text: 'echo XAC-NHAN', seq: 7 }));
+
+    const t0 = Date.now();
+    let ack = null;
+    while (!ack && Date.now() - t0 < EVENT_TIMEOUT_MS) {
+      ack = khung.map((k) => { try { return JSON.parse(k); } catch { return null; } })
+        .find((m) => m && m.type === 'ccrc_ack');
+      if (!ack) await sleep(50);
+    }
+    assert.ok(ack, 'không nhận được ccrc_ack — điện thoại sẽ tưởng tin nhắn đã mất');
+    assert.equal(ack.seq, 7, 'seq phải đi ngược lại nguyên vẹn để trang ghép đúng lượt gửi');
+    c.ws.close();
+  } finally { d.stop(); }
+});
+
+test('tmux từ chối paste-buffer thì KHÔNG xác nhận — báo lỗi kèm seq', async () => {
+  const d = await startDaemon();
+  try {
+    const c = await connect(d.url(await d.token()));
+    const khung = [];
+    c.ws.on('message', (m, isBinary) => { if (!isBinary) khung.push(String(m)); });
+
+    // Đợi phiên nhóm dựng xong. Giết pane trong lúc daemon còn đang dựng thì
+    // nó đóng kết nối bằng mã "phiên đã chấm dứt" trước khi lượt dán kịp tới —
+    // đo được, và đó là lý do bản đầu của test này không bao giờ thấy ccrc_loi.
+    await sleep(300);
+    // Mở thêm một pane TRƯỚC khi giết pane của daemon: pane kia giữ cho window
+    // và phiên sống tiếp, nếu không thì giết pane duy nhất là giết luôn phiên,
+    // `tmux -C` thoát, và ws đóng trước khi kịp báo gì — đo được, và đó là lý
+    // do bản đầu của test này không dựng đúng cảnh nó muốn dựng.
+    execFileSync(tmuxBin(), ['split-window', '-d', '-t', d.pane]);
+    // Giết pane rồi dán ngay: `load-buffer` vẫn xuôi (nó không cần pane), còn
+    // `paste-buffer -t <pane>` thì tmux từ chối. Đây đúng là ca mà bản trước
+    // vẫn xác nhận "đã dán" sau 30ms — chữ của người dùng biến mất trong khi
+    // trang nói là gửi xong.
+    execFileSync(tmuxBin(), ['kill-pane', '-t', d.pane]);
+    c.ws.send(JSON.stringify({ type: 'ccrc_paste', text: 'câu không bao giờ tới', seq: 21 }));
+
+    const t0 = Date.now();
+    let loi = null;
+    while (!loi && Date.now() - t0 < EVENT_TIMEOUT_MS) {
+      loi = khung.map((k) => { try { return JSON.parse(k); } catch { return null; } })
+        .find((m) => m && m.type === 'ccrc_loi');
+      if (!loi) await sleep(50);
+    }
+    assert.ok(loi, 'tmux từ chối mà daemon im lặng — chữ của người dùng chết câm');
+    assert.equal(loi.seq, 21, 'thiếu seq thì trang không biết trả lại nội dung nào');
+
+    const ack = khung.map((k) => { try { return JSON.parse(k); } catch { return null; } })
+      .find((m) => m && m.type === 'ccrc_ack');
+    assert.equal(ack, undefined, 'không được xác nhận một lượt dán mà tmux đã từ chối');
+    c.ws.close();
+  } finally { d.stop(); }
+});
+
+test('daemon từ chối lượt dán quá dài thì báo kèm seq, không im lặng', async () => {
+  const d = await startDaemon();
+  try {
+    const c = await connect(d.url(await d.token()));
+    const khung = [];
+    c.ws.on('message', (m, isBinary) => { if (!isBinary) khung.push(String(m)); });
+
+    c.ws.send(JSON.stringify({ type: 'ccrc_paste', text: 'x'.repeat(200_000), seq: 12 }));
+
+    const t0 = Date.now();
+    let loi = null;
+    while (!loi && Date.now() - t0 < EVENT_TIMEOUT_MS) {
+      loi = khung.map((k) => { try { return JSON.parse(k); } catch { return null; } })
+        .find((m) => m && m.type === 'ccrc_loi');
+      if (!loi) await sleep(50);
+    }
+    assert.ok(loi, 'từ chối mà không nói gì thì chữ của người dùng chết câm');
+    assert.equal(loi.seq, 12, 'thiếu seq thì trang không biết trả lại nội dung nào');
+    c.ws.close();
+  } finally { d.stop(); }
+});
+
+test('dữ liệu pane đi khung NHỊ PHÂN, khung điều khiển đi khung TEXT', async () => {
+  const d = await startDaemon();
+  try {
+    const c = await connect(d.url(await d.token()));
+    const nhiPhan = [];
+    const text = [];
+    c.ws.on('message', (m, isBinary) => (isBinary ? nhiPhan : text).push(String(m)));
+
+    c.ws.send(Buffer.from('echo KHUNG-NHI-PHAN\r'), { binary: true });
+    await sleep(1200);
+
+    assert.ok(nhiPhan.some((x) => x.includes('KHUNG-NHI-PHAN')),
+      'output của pane phải tới bằng khung nhị phân');
+    // Đây là cái giữ cho kênh báo lỗi sống: nếu dữ liệu pane cũng đi khung
+    // text thì trang không còn cách nào phân biệt, và mọi ccrc_loi/ccrc_ack
+    // gửi sau khung đầu tiên lại bị vẽ ra lưới thành cục JSON như trước.
+    assert.ok(!text.some((x) => x.includes('KHUNG-NHI-PHAN')),
+      'output của pane không được đi lẫn vào kênh điều khiển');
+    c.ws.close();
+  } finally { d.stop(); }
+});
+
 test('khung ccrc_paste rỗng hoặc sai kiểu: không gõ gì vào pane, daemon vẫn sống', async () => {
   const d = await startDaemon();
   try {

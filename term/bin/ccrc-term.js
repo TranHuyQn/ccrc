@@ -354,12 +354,29 @@ server.on('upgrade', (req, socket, head) => {
 });
 
 wss.on('connection', (ws, mintKey) => {
+  // Hai đường ra, phân biệt bằng KIỂU KHUNG WebSocket, không bao giờ bằng nội
+  // dung: nhị phân là byte của pane, text là JSON điều khiển. Trang đọc đúng
+  // theo quy ước đó (public/term.js), và nó đối xứng với chiều vào — nơi
+  // khung nhị phân là phím gõ còn khung text là điều khiển.
+  //
+  // Trước 2026-08-16 cả hai đi chung khung text, nên trang phải đoán bằng
+  // "khung đầu tiên là điều khiển". Đoán ấy chỉ đủ cho MỘT khung điều khiển
+  // mỗi kết nối: mọi `ccrc_loi` gửi sau đó bị vẽ ra lưới thành cục JSON, tức
+  // là kênh báo lỗi thêm vào ngày 2026-08-15 chưa từng tới được người dùng.
+  function sendPane(text) {
+    if (!text) return;
+    try { ws.send(Buffer.from(text, 'utf8'), { binary: true }); } catch {}
+  }
+  function sendCtl(obj) {
+    try { ws.send(JSON.stringify(obj)); } catch {}
+  }
+
   // A key is only ever issued right after a ticket does its job — never on a
   // `?key=` reconnect, which cannot mint another one for itself. Sent first,
   // ahead of the pane snapshot below, so it is reliably the WebSocket's very
   // first message and a client can read it without racing terminal data.
   if (mintKey) {
-    ws.send(JSON.stringify({ type: 'ccrc_session', key: sessionKeys.issue() }));
+    sendCtl({ type: 'ccrc_session', key: sessionKeys.issue() });
   }
   // Send what is on screen right now, so the phone opens onto the current
   // state instead of an empty rectangle until the next byte of output.
@@ -368,7 +385,7 @@ wss.on('connection', (ws, mintKey) => {
   // for the two acceptance-run defects (content scrolled off a shorter
   // browser terminal; a leaked background colour tinting everything after)
   // this fixes.
-  ws.send(snapshotPane(PANE));
+  sendPane(snapshotPane(PANE));
 
   // Every browser client attaches to a shared GROUPED session, never to the
   // user's real tmux session directly — see spec §5.5 and src/tmux.js
@@ -495,7 +512,7 @@ wss.on('connection', (ws, mintKey) => {
       // everything that arrived while they were reading back, then let live
       // output through again.
       historyOffset = 0;
-      ws.send(snapshotPane(PANE));
+      sendPane(snapshotPane(PANE));
       return;
     }
     const screen = captureHistory(PANE, offset, clientRows);
@@ -504,18 +521,24 @@ wss.on('connection', (ws, mintKey) => {
     // blanking the terminal.
     if (!screen) return;
     historyOffset = offset;
-    ws.send(screen);
+    sendPane(screen);
   }
 
   attachControlOutput(ctl.stdout, PANE, (data) => {
     // Held back, not dropped: showHistory(0) re-sends the whole current
     // screen on the way back, so nothing written meanwhile is missed.
     if (historyOffset > 0) return;
-    ws.send(data);
-  }, (message) => {
-    // tmux từ chối một lệnh. Nói ra — im lặng ở đây nghĩa là người dùng ngồi
-    // chờ Claude trả lời một câu nó chưa bao giờ nhận.
-    try { ws.send(JSON.stringify({ type: 'ccrc_loi', message: String(message).slice(0, 200) })); } catch {}
+    sendPane(data);
+  }, (ok, message) => {
+    // Một lời đáp cho lệnh cũ nhất chưa được trả lời. Ghép theo vị trí, vì
+    // tmux trả lời đúng thứ tự nhận — xem ctlCmd() để biết vì sao mọi lệnh
+    // đều phải chiếm một chỗ ở đây.
+    const cb = choLoiDap.shift();
+    if (cb) { cb(ok, String(message || '').slice(0, 200)); return; }
+    // Không ai đăng ký nhận kết quả lệnh này. Xuôi thì chẳng có gì để nói;
+    // hỏng thì vẫn phải nói ra — im lặng ở đây nghĩa là người dùng ngồi chờ
+    // Claude trả lời một câu nó chưa bao giờ nhận.
+    if (!ok) sendCtl({ type: 'ccrc_loi', message: String(message).slice(0, 200) });
   });
 
   // Binary frames are keystrokes; text frames are control messages (so far
@@ -541,12 +564,28 @@ wss.on('connection', (ws, mintKey) => {
     typeIntoPane(data);
   });
 
+  // MỌI lệnh gửi vào tmux phải đi qua đây, không có ngoại lệ.
+  //
+  // tmux control mode trả lời mỗi lệnh bằng đúng một khối, theo đúng thứ tự
+  // nhận. Nên hàng đợi này ghép lời đáp với lệnh bằng vị trí — và điều đó chỉ
+  // đúng khi không lệnh nào lọt ra ngoài. Một `ctl.stdin.write()` viết thẳng ở
+  // đâu đó là lệch cả hàng từ điểm ấy trở đi, và từ đó mọi lượt dán đều được
+  // ghép với lời đáp của một lệnh khác — hỏng âm thầm, kiểu tệ nhất.
+  //
+  // `cb` không bắt buộc: phần lớn lệnh (gõ phím, resize) không có gì để mất
+  // nếu tmux từ chối, nhưng chúng VẪN phải chiếm chỗ trong hàng.
+  const choLoiDap = [];
+  function ctlCmd(cmd, cb) {
+    choLoiDap.push(cb || null);
+    ctl.stdin.write(cmd.endsWith('\n') ? cmd : cmd + '\n');
+  }
+
   // send-keys -H takes hex, which sidesteps every quoting question about
   // control characters, newlines and UTF-8 the shell would otherwise raise.
-  function sendKeysHex(bytes) {
+  function sendKeysHex(bytes, cb) {
     const hex = Buffer.from(bytes).toString('hex').match(/../g) || [];
     if (hex.length === 0) return;
-    ctl.stdin.write(`send-keys -t ${PANE} -H ${hex.join(' ')}\n`);
+    ctlCmd(`send-keys -t ${PANE} -H ${hex.join(' ')}`, cb);
   }
 
   // Gõ một khối byte của người dùng vào pane, theo hai kỷ luật mà một lệnh
@@ -588,11 +627,11 @@ wss.on('connection', (ws, mintKey) => {
   // Nối tiếp, không song song, và DÙNG CHUNG với typeIntoPane: một cú Enter
   // của thanh phím chen vào giữa đoạn dán sẽ gửi đi nửa tin nhắn.
   let typeQueue = Promise.resolve();
-  function pasteIntoPane(text) {
+  function pasteIntoPane(text, seq) {
     const bytes = Buffer.from(text, 'utf8');
     if (bytes.length === 0) return;
     if (bytes.length > MAX_PASTE_BYTES) {
-      try { ws.send(JSON.stringify({ type: 'ccrc_loi', message: `tin nhắn quá dài (${bytes.length} byte)` })); } catch {}
+      sendCtl({ type: 'ccrc_loi', seq, message: `tin nhắn quá dài (${bytes.length} byte)` });
       return;
     }
     // Tên buffer riêng cho từng lượt dán: hai client dán cùng lúc mà dùng
@@ -615,7 +654,7 @@ wss.on('connection', (ws, mintKey) => {
         // gửi, còn tin nhắn thì chưa từng tồn tại — đúng lỗi mà bản vá tin
         // nhắn dài trước đây đã phải đi sửa.
         if (!finish()) return;
-        try { ws.send(JSON.stringify({ type: 'ccrc_loi', message: `không dán được: ${why}` })); } catch {}
+        sendCtl({ type: 'ccrc_loi', seq, message: `không dán được: ${why}` });
       };
       treo = setTimeout(() => {
         try { loader.kill('SIGKILL'); } catch {}
@@ -625,9 +664,25 @@ wss.on('connection', (ws, mintKey) => {
       loader.on('close', (code) => {
         if (done) return;
         if (code !== 0) return fail(`load-buffer trả mã ${code}`);
-        ctl.stdin.write(`paste-buffer -d -p -r -b ${name} -t ${PANE}\n`);
-        // Enter đi riêng sau một nhịp nghỉ, cùng lý do như typeIntoPane.
-        setTimeout(() => { sendKeysHex(Buffer.from([0x0d])); finish(); }, COMMIT_DELAY_MS);
+        // `load-buffer` xong mới chỉ chứng minh cái BUFFER đã có. Nó không nói
+        // gì về việc pane có nhận được hay không — pane có thể vừa chết trong
+        // đúng khoảnh khắc này. Nên chờ tmux trả lời từng lệnh một, và chỉ xác
+        // nhận với điện thoại khi cả hai lệnh đều được nhận.
+        ctlCmd(`paste-buffer -d -p -r -b ${name} -t ${PANE}`, (ok, message) => {
+          if (!ok) return fail(message || 'tmux từ chối paste-buffer');
+          // Enter đi riêng sau một nhịp nghỉ, cùng lý do như typeIntoPane.
+          setTimeout(() => {
+            sendKeysHex(Buffer.from([0x0d]), (okEnter, loiEnter) => {
+              if (!okEnter) return fail(loiEnter || 'tmux từ chối cú Enter');
+              // ĐÃ dán VÀ đã chốt bằng Enter, cả hai đều được tmux xác nhận —
+              // chỉ tới đây điện thoại mới được phép quên chữ đó đi. Trước bản
+              // này nó quên ngay lúc bấm Gửi; rồi sau đó quên khi mới hết 30ms,
+              // tức vẫn là đoán chứ chưa phải biết.
+              sendCtl({ type: 'ccrc_ack', seq });
+              finish();
+            });
+          }, COMMIT_DELAY_MS);
+        });
       });
       loader.stdin.on('error', () => { /* tiến trình chết trước khi ghi xong — 'close' ở trên lo nốt */ });
       loader.stdin.end(bytes);
@@ -676,7 +731,10 @@ wss.on('connection', (ws, mintKey) => {
         // đứng im ở đoạn lịch sử đang đọc: người dùng bấm Gửi và không thấy
         // gì xảy ra cả.
         if (historyOffset > 0) showHistory(0);
-        pasteIntoPane(msg.text);
+        // `seq` do trang tự đánh số, chỉ để nó ghép lời xác nhận với đúng
+        // lượt gửi. Không kiểm kiểu ở đây: nó không bao giờ chạm tới tmux,
+        // chỉ đi ngược lại nguyên vẹn trong ccrc_ack/ccrc_loi.
+        pasteIntoPane(msg.text, msg.seq);
       }
       return;
     }
@@ -701,7 +759,7 @@ wss.on('connection', (ws, mintKey) => {
 
       const clickHex = Buffer.from(clickBytes({ sgr: clickMode.sgr, col, row }), 'binary')
         .toString('hex').match(/../g) || [];
-      ctl.stdin.write(`send-keys -t ${PANE} -H ${clickHex.join(' ')}\n`);
+      ctlCmd(`send-keys -t ${PANE} -H ${clickHex.join(' ')}`);
       return;
     }
     if (msg.type === 'ccrc_scroll') {
@@ -741,7 +799,7 @@ wss.on('connection', (ws, mintKey) => {
           notches: notchesForLines(n),
         });
         const hex = Buffer.from(bytes, 'binary').toString('hex').match(/../g) || [];
-        ctl.stdin.write(`send-keys -t ${PANE} -H ${hex.join(' ')}\n`);
+        ctlCmd(`send-keys -t ${PANE} -H ${hex.join(' ')}`);
         return;
       }
 
@@ -760,7 +818,7 @@ wss.on('connection', (ws, mintKey) => {
     // tall as the browser's grid.
     clientRows = rows;
     clientCols = cols;
-    ctl.stdin.write(`refresh-client -C ${cols}x${rows}\n`);
+    ctlCmd(`refresh-client -C ${cols}x${rows}`);
   }
 
   // Guards against running twice: onCtlGone can call this directly (the

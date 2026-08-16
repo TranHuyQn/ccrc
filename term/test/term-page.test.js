@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loadTermPage, ThrowingTerminal, GetThrowsStorage, SetThrowsStorage } from './dom-harness.mjs';
+import { loadTermPage, decodeWrite, ThrowingTerminal, GetThrowsStorage, SetThrowsStorage } from './dom-harness.mjs';
 
 // ---------------------------------------------------------------------------
 
@@ -116,11 +116,11 @@ test('khung ccrc_session KHÔNG được vẽ ra terminal như dữ liệu', () 
   ws.receive(JSON.stringify({ type: 'ccrc_session', key: 'khoa-2' }));
   assert.equal(page.term.writes.length, 0, 'khung điều khiển không được ghi ra màn hình');
 
-  // A LATER frame that also happens to start with '{' (e.g. real pane
-  // output from a JSON-heavy CLI) must still reach the screen — only the
-  // very first message on a ticket connection is the control frame.
-  ws.receive('{"khong phai": "khung dieu khien"}');
-  assert.deepEqual(page.term.writes, ['{"khong phai": "khung dieu khien"}']);
+  // Dữ liệu pane bắt đầu bằng '{' (một CLI in JSON, `cat` một file log) vẫn
+  // phải lên màn hình nguyên vẹn. Nó tới bằng khung NHỊ PHÂN, nên không có
+  // câu hỏi nào để trả lời sai — trang không cần nhìn vào nội dung.
+  ws.receiveData('{"khong phai": "khung dieu khien"}');
+  assert.deepEqual(page.term.writes.map(decodeWrite), ['{"khong phai": "khung dieu khien"}']);
 });
 
 test('kết nối bằng key: dữ liệu bắt đầu bằng { vẫn lên màn hình nguyên vẹn ngay từ byte đầu', () => {
@@ -132,8 +132,8 @@ test('kết nối bằng key: dữ liệu bắt đầu bằng { vẫn lên màn 
   ws.open();
 
   const paneOutput = '{"đây là": "dữ liệu pane thật, không phải điều khiển"}';
-  ws.receive(paneOutput);
-  assert.deepEqual(page.term.writes, [paneOutput]);
+  ws.receiveData(paneOutput);
+  assert.deepEqual(page.term.writes.map(decodeWrite), [paneOutput]);
 });
 
 test('kết nối bằng key: dữ liệu pane TRÙNG HÌNH DẠNG khung ccrc_session vẫn không bị nuốt — không được sniff nội dung', () => {
@@ -149,8 +149,8 @@ test('kết nối bằng key: dữ liệu pane TRÙNG HÌNH DẠNG khung ccrc_se
   ws.open();
 
   const lookalike = JSON.stringify({ type: 'ccrc_session', key: 'khong-phai-that' });
-  ws.receive(lookalike);
-  assert.deepEqual(page.term.writes, [lookalike], 'dữ liệu giống khung điều khiển vẫn phải lên màn hình nguyên vẹn');
+  ws.receiveData(lookalike);
+  assert.deepEqual(page.term.writes.map(decodeWrite), [lookalike], 'dữ liệu giống khung điều khiển vẫn phải lên màn hình nguyên vẹn');
   // And it must NOT have been mistaken for a real session key.
   assert.notEqual(page.sessionStorage.getItem('ccrc_session_key'), 'khong-phai-that');
 });

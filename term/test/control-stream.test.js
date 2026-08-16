@@ -66,3 +66,51 @@ test('attachControlOutput bỏ qua dòng của pane khác', async () => {
     try { child.kill('SIGKILL'); } catch {}
   }
 });
+
+// --- ghép lời đáp của tmux với đúng lệnh đã gửi ----------------------------
+//
+// tmux control mode trả lời MỖI lệnh bằng đúng một khối `%begin`…`%end` (xuôi)
+// hoặc `%begin`…`%error` (bị từ chối), theo đúng thứ tự lệnh được gửi đi. Đó
+// là thứ duy nhất cho phép daemon biết `paste-buffer` có thật sự được nhận hay
+// không — trước đây nó chỉ đợi 30ms rồi tự tuyên bố là xong, tức là lại để một
+// tín hiệu rẻ đứng thay thứ cần biết.
+
+import { Readable } from 'node:stream';
+
+// Các sự kiện 'data' tới bất đồng bộ, nên phải đợi stream cạn mới đọc được
+// kết quả — đọc ngay sau push() thì lúc nào cũng thấy mảng rỗng.
+function feed(chunks, paneId = '%1') {
+  const replies = [];
+  const output = [];
+  const stream = new Readable({ read() {} });
+  attachControlOutput(stream, paneId, (d) => output.push(d),
+    (ok, message) => replies.push({ ok, message }));
+  for (const c of chunks) stream.push(c);
+  stream.push(null);
+  return new Promise((resolve) => stream.on('end', () => resolve({ replies, output })));
+}
+
+test('mỗi khối trả lời gọi callback đúng một lần, theo đúng thứ tự lệnh', async () => {
+  const { replies } = await feed([
+    '%begin 1 100 1\n%end 1 100 1\n',
+    '%begin 1 101 1\nno buffer ccrc-9\n%error 1 101 1\n',
+    '%begin 1 102 1\n%end 1 102 1\n',
+  ]);
+
+  assert.deepEqual(replies.map((r) => r.ok), [true, false, true]);
+  assert.match(replies[1].message, /no buffer/);
+});
+
+test('%output xen giữa các khối không làm lệch thứ tự trả lời', async () => {
+  // Đây là hình dạng thật: pane vẫn đang in ra trong lúc daemon chờ tmux trả
+  // lời. Một byte output bị đếm nhầm thành lời đáp là lệch cả hàng đợi, và từ
+  // đó mọi lượt dán sau đều được ghép với lời đáp của lệnh khác.
+  const { replies, output } = await feed([
+    '%begin 1 100 1\n%end 1 100 1\n',
+    '%output %1 xin chao\n',
+    '%begin 1 101 1\nkhong dan duoc\n%error 1 101 1\n',
+  ]);
+
+  assert.deepEqual(replies.map((r) => r.ok), [true, false]);
+  assert.deepEqual(output, ['xin chao']);
+});

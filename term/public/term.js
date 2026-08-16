@@ -9,15 +9,16 @@
 // `disableStdin: true` plus explicitly neutralizing that textarea. It must
 // never take focus and never raise the on-screen keyboard.
 //
-// Core rule (overrides the plan text, not a detail): the two connection
-// kinds are told apart by WHICH query param the client itself chose to send,
-// never by sniffing the first byte of a message. A `?token=` connection
-// (Task 9: was `?ticket=` — the phone signs its own attach token now, the
-// hub never mints one) reads exactly one message as the `ccrc_session`
-// control frame, then every later message is terminal data, unconditionally.
-// A `?key=` connection never gets a control frame — every message is
-// terminal data from byte one. Sniffing "does this start with `{`" would
-// swallow real pane output that happens to start with a brace.
+// Core rule: dữ liệu pane và khung điều khiển phân biệt bằng KIỂU KHUNG
+// WebSocket, theo cả hai chiều. Nhị phân = byte của pane; text = JSON điều
+// khiển. Không bao giờ sniff nội dung — một pane có toàn quyền in ra thứ
+// parse được thành một khung điều khiển hợp lệ.
+//
+// Quy tắc này thay cho quy tắc cũ "khung đầu tiên là điều khiển, mọi khung
+// sau là dữ liệu". Quy tắc cũ nghe hợp lý nhưng chỉ đủ cho MỘT khung điều
+// khiển duy nhất mỗi kết nối (`ccrc_session`); mọi khung điều khiển daemon
+// gửi sau đó — `ccrc_loi`, `ccrc_ack` — bị vẽ ra lưới dưới dạng cục JSON.
+// Đo được 2026-08-16, khi đi tìm chuyện "bấm Gửi xong mất trắng prompt".
 'use strict';
 
 (function () {
@@ -53,7 +54,13 @@
   var trangthaiEl = document.getElementById('trangthai');
   var termEl = document.getElementById('term');
 
+  // Mọi lời nhắn đi qua đây, nên đây cũng là chỗ duy nhất đúng để huỷ cái hẹn
+  // giờ tự-xoá của lời nhắn TRƯỚC. Thiếu bước này thì một `ccrc_loi` cũ (hẹn 8
+  // giây rồi tự trả về "đã nối") có thể bắn đúng lúc người dùng vừa được báo
+  // "chữ của bạn vẫn còn trong ô" — xoá mất lời cảnh báo, để lại một thanh
+  // trạng thái trông như đang bình thường trong khi câu chưa gửi vẫn nằm đó.
   function setStatus(text, cls) {
+    if (loiTimer) { clearTimeout(loiTimer); loiTimer = null; }
     trangthaiEl.textContent = text;
     trangthaiEl.className = cls || '';
   }
@@ -197,7 +204,6 @@
 
     var key = safeStorageGet(STORAGE_KEY);
     var url;
-    var expectControlFrame;
     var usingTicket = false;
     var usingKey = false;
     if (ticket) {
@@ -215,11 +221,9 @@
       // url.searchParams.get('token') — xem bin/ccrc-term.js. Biến cục bộ
       // vẫn tên `ticket` để đỡ phải đổi cả file, chỉ tham số trên dây đổi.
       url = wsUrl('token=' + encodeURIComponent(ticket));
-      expectControlFrame = true;
       usingTicket = true;
     } else if (key) {
       url = wsUrl('key=' + encodeURIComponent(key));
-      expectControlFrame = false;
       usingKey = true;
     } else {
       // No stored key, and no ticket left either. Two ways to get here: the
@@ -243,11 +247,12 @@
     setStatus(storageBroken
       ? 'đang nối… (bộ nhớ phiên trình duyệt bị chặn — nối lại sau có thể cần vé mới)'
       : 'đang nối…', 'dim');
-    // True until the first message on THIS socket arrives; consumed exactly
-    // once, then never consulted again for the lifetime of this socket.
-    var controlFramePending = expectControlFrame;
 
     var socket = new WebSocket(url);
+    // Dữ liệu pane tới bằng khung nhị phân (xem onmessage). Không đặt cái này
+    // thì trình duyệt giao chúng dưới dạng Blob — bất đồng bộ, và xterm không
+    // nhận Blob — nên màn hình sẽ trống trơn mà không có lỗi nào.
+    socket.binaryType = 'arraybuffer';
     ws = socket;
     // True once THIS socket's upgrade actually completes. Distinguishes a
     // key that the daemon flat-out refused (never opened at all — the 401
@@ -279,12 +284,26 @@
     };
 
     socket.onmessage = function (ev) {
-      if (controlFramePending) {
-        controlFramePending = false;
-        handleControlFrame(ev.data);
-        return;
-      }
-      term.write(ev.data);
+      // KIỂU KHUNG quyết định, không bao giờ là nội dung — cùng kỷ luật mà
+      // chiều ngược lại (sendInput nhị phân / sendControl text) đã theo từ
+      // đầu, giờ áp cho cả chiều về.
+      //
+      // Trước bản này, chỉ khung ĐẦU TIÊN của mỗi socket được coi là điều
+      // khiển. Hệ quả đo được ngày 2026-08-16: mọi lời báo lỗi `ccrc_loi`
+      // daemon gửi sau đó — thứ mà bản vá 2026-08-15 thêm vào chính vì
+      // "mất tin nhắn mà không ai biết" — đều rơi vào nhánh dưới và bị VẼ RA
+      // LƯỚI dưới dạng một cục JSON. Kênh báo lỗi ấy chưa từng hoạt động
+      // ngày nào.
+      //
+      // Vẫn không sniff nội dung: một pane có toàn quyền in ra thứ parse
+      // được thành {"type":"ccrc_session"} (cat một file log, Claude Code in
+      // lại một tool call). Cái phân biệt là bên gửi đã chọn khung nào.
+      if (typeof ev.data === 'string') { handleControlFrame(ev.data); return; }
+      // Giao thẳng byte cho xterm thay vì tự giải mã: bộ giải mã bên trong nó
+      // có trạng thái, nên một ký tự UTF-8 bị cắt ngang giữa hai khung vẫn
+      // ghép lại đúng. Tự `TextDecoder().decode()` từng khung một sẽ biến
+      // phần đầu dang dở ấy thành U+FFFD.
+      term.write(new Uint8Array(ev.data));
     };
 
     socket.onclose = function (ev) {
@@ -342,10 +361,30 @@
     if (msg && msg.type === 'ccrc_session' && typeof msg.key === 'string') {
       safeStorageSet(STORAGE_KEY, msg.key);
     }
+    // Daemon xác nhận đã dán xong vào pane. ĐÂY mới là lúc chữ thật sự an
+    // toàn — trước đó nó chỉ mới rời khỏi điện thoại.
+    if (msg && msg.type === 'ccrc_ack') {
+      if (ketThucLuotGui(msg.seq) !== null) {
+        setStatus('đã nối', 'ok');
+        return;
+      }
+      // Xác nhận về SAU khi đồng hồ chờ đã hết giờ và chữ đã được trả về ô.
+      // Im lặng ở đây là đẩy người dùng vào chỗ gửi lần hai một câu Claude đã
+      // nhận rồi — với một câu lệnh có tác dụng phụ thì đó là thiệt hại thật.
+      setStatus('Câu vừa rồi thật ra ĐÃ gửi được — xoá bớt nếu bạn không muốn gửi lại.', 'loi');
+      return;
+    }
     // tmux từ chối một lệnh của daemon. Nói ra chỗ người dùng nhìn thấy: cái
     // hỏng ở đây là chữ họ vừa bấm Gửi KHÔNG tới nơi, và trước bản này nó
     // hỏng hoàn toàn im lặng — ô soạn vẫn trống đi như đã gửi.
     if (msg && msg.type === 'ccrc_loi' && typeof msg.message === 'string') {
+      // Lỗi có seq là lỗi CỦA MỘT LƯỢT GỬI cụ thể: trả chữ về ô kèm lý do,
+      // đừng chỉ báo rồi để chữ chết theo.
+      var traVe = ketThucLuotGui(msg.seq);
+      if (traVe !== null) {
+        traLaiOto(traVe, 'Không gửi được: ' + msg.message + ' — chữ của bạn đã được trả lại.');
+        return;
+      }
       setStatus('Không gửi được: ' + msg.message, 'loi');
       if (loiTimer) clearTimeout(loiTimer);
       loiTimer = setTimeout(function () { setStatus('đã nối', 'dim'); loiTimer = null; }, 8000);
@@ -442,8 +481,15 @@
   }
 
   // Control messages — always a TEXT frame, always JSON, never typed.
+  //
+  // Trả về CÓ GỬI ĐƯỢC HAY KHÔNG. Trước bản này nó trả về undefined và im
+  // lặng bỏ qua khi socket chưa mở — mà ô soạn thì vẫn trống đi ngay sau đó,
+  // nên chữ người dùng vừa soạn bốc hơi không dấu vết. Người gọi nào có gì
+  // để mất thì phải đọc giá trị này.
   function sendControl(obj) {
-    if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
+    if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+    ws.send(JSON.stringify(obj));
+    return true;
   }
 
   // --- Đường 1: ô soạn kiểu chat (spec §5.2) --------------------------------
@@ -469,14 +515,128 @@
   // does not implicitly submit its form on Enter the way a text <input>
   // does, so this needs NO keydown handling at all. Only the Gửi button
   // (the form's submit) ever sends.
+  // --- chữ của người dùng không được biến mất trừ khi nó đã tới pane -------
+  //
+  // Ô soạn TỪNG trống đi ngay khi bấm Gửi, không đợi biết chữ có đi được hay
+  // không. "Đã gọi hàm gửi" đứng thay cho "chữ đã tới pane" — đúng cái bẫy
+  // ghi trong bài học của dự án này. Ba đường mất chữ, cả ba đều im lặng:
+  //
+  //   1. Socket đang nối lại (backoff tới 30 giây): sendControl không gửi gì.
+  //   2. Socket chết kiểu half-open — readyState vẫn OPEN, send() không hề
+  //      báo lỗi, byte đi vào hư không. Rất thường gặp khi điện thoại đổi
+  //      WiFi↔4G, và không đầu nào phát hiện được từ bên trong.
+  //   3. Daemon nhận rồi từ chối (dài quá, load-buffer hỏng, tmux câm).
+  //
+  // Đường 1 chặn bằng giá trị trả về của sendControl. Đường 2 và 3 chỉ chặn
+  // được bằng một lời XÁC NHẬN từ đầu kia: chữ ở lại trong ô cho tới khi
+  // daemon nói đã dán xong. Không có xác nhận trong NHAP_CHO_XAC_NHAN_MS thì
+  // chữ được trả về nguyên vẹn — thà bắt người dùng bấm Gửi lần nữa còn hơn
+  // nuốt mất câu họ vừa viết.
+  var CHO_XAC_NHAN_MS = 8000;
+  var NHAP_KEY = 'ccrc_nhap';
+  // Chữ ĐÃ bấm Gửi nhưng chưa được xác nhận. Phải là khoá RIÊNG, không dùng
+  // chung với nháp: ô trống đi ngay khi bấm Gửi, nên người dùng gõ câu tiếp
+  // theo là nháp bị ghi đè — và cùng lúc đó lượt đang bay vẫn cần một bản
+  // trên đĩa. Suốt 8 giây chờ, RAM là chỗ duy nhất giữ nó nếu thiếu khoá này,
+  // mà iOS thu hồi tab giữa chừng là chuyện thường ngày.
+  var DANG_GUI_KEY = 'ccrc_dang_gui';
+  var pasteSeq = 0;
+  // Các lượt gửi đang chờ xác nhận: seq → { text, timer }.
+  var dangCho = {};
+
+  function safeLocalGet(key) {
+    try { return localStorage.getItem(key); } catch (e) { return null; }
+  }
+  function safeLocalSet(key, value) {
+    try { localStorage.setItem(key, value); } catch (e) { /* hết chỗ, hoặc bị chặn */ }
+  }
+  function safeLocalRemove(key) {
+    try { localStorage.removeItem(key); } catch (e) { /* như trên */ }
+  }
+
+  // Lưới an toàn cuối: kể cả khi trang bị tải lại, iOS thu hồi bộ nhớ, hay
+  // người dùng lỡ đóng tab giữa chừng, chữ đang soạn vẫn còn đó lần sau.
+  // sessionStorage không đủ — nó chết theo tab.
+  function traLaiOto(text, message) {
+    // Không đè lên thứ người dùng đã gõ tiếp trong lúc chờ: nối vào trước.
+    otoEl.value = otoEl.value ? text + otoEl.value : text;
+    luuNhap();
+    setStatus(message, 'loi');
+  }
+
+  function luuNhap() {
+    if (otoEl.value) safeLocalSet(NHAP_KEY, otoEl.value);
+    else safeLocalRemove(NHAP_KEY);
+  }
+
+  if (otoEl) {
+    // Hai thứ có thể còn sót lại từ lần mở trang trước, và chúng khác nhau:
+    // `dangGuiCu` là câu đã bấm Gửi mà trang chết trước khi biết kết quả —
+    // nó đứng TRƯỚC, đúng thứ tự người dùng đã viết ra.
+    var dangGuiCu = safeLocalGet(DANG_GUI_KEY);
+    var nhapCu = safeLocalGet(NHAP_KEY);
+    var khoiPhuc = (dangGuiCu || '') + (nhapCu || '');
+    if (khoiPhuc && !otoEl.value) {
+      otoEl.value = khoiPhuc;
+      // Gộp về một khoá: từ giờ nó lại chỉ là nháp đang gõ dở, không còn là
+      // một lượt gửi đang bay.
+      safeLocalRemove(DANG_GUI_KEY);
+      luuNhap();
+    }
+    otoEl.addEventListener('input', luuNhap);
+  }
+
   if (soanEl && otoEl) {
     soanEl.addEventListener('submit', function (e) {
       e.preventDefault();
       var text = otoEl.value;
       if (text.length === 0) return; // nothing typed — nothing to send
-      sendControl({ type: 'ccrc_paste', text: text });
+      var seq = (pasteSeq += 1);
+      if (!sendControl({ type: 'ccrc_paste', text: text, seq: seq })) {
+        // Ghi nháp NGAY, đừng đợi lần gõ tiếp theo: người dùng thường soạn
+        // xong rồi mới bấm Gửi, nên nháp lúc này còn là bản cũ hơn. Đóng tab
+        // ở đúng nhịp đó là mất trắng câu vừa soạn — mà đây lại chính là nhịp
+        // dễ đóng tab nhất, vì máy đang mất kết nối.
+        luuNhap();
+        setStatus('Chưa gửi được — mất kết nối, chữ của bạn vẫn còn trong ô.', 'loi');
+        return;
+      }
+      // Ô trống đi để gõ tiếp được, nhưng chữ vẫn nằm trong `dangCho` cho tới
+      // khi daemon xác nhận — hỏng ở đâu thì nó quay lại ô, không mất.
       otoEl.value = '';
+      luuNhap();
+      // Bản trên đĩa của lượt đang bay. Chỉ được dọn khi biết kết quả — xem
+      // ketThucLuotGui().
+      safeLocalSet(DANG_GUI_KEY, text);
+      setStatus('đang gửi…', 'dim');
+      dangCho[seq] = {
+        text: text,
+        timer: setTimeout(function () {
+          delete dangCho[seq];
+          // KHÔNG nói "chưa gửi": hết giờ chỉ chứng minh lời xác nhận không
+          // về tới đây, mà ca thường gặp nhất (đổi WiFi↔4G) làm mất đúng lời
+          // xác nhận trong khi tin nhắn vẫn tới pane. Nói sai ở đây là đẩy
+          // người dùng gửi lần hai một câu Claude đã nhận rồi.
+          traLaiOto(text, 'Không nhận được xác nhận — CÓ THỂ ĐÃ GỬI rồi. Nhìn màn hình trên trước khi bấm Gửi lại.');
+        }, CHO_XAC_NHAN_MS),
+      };
     });
+  }
+
+  // Một lượt gửi đã có kết luận — dù xuôi hay ngược. Trả về nội dung đang
+  // chờ, hoặc null nếu seq này không phải của mình (khung hỏng, hoặc lượt đã
+  // hết giờ từ trước).
+  function ketThucLuotGui(seq) {
+    if (typeof seq !== 'number') return null;
+    var cho = dangCho[seq];
+    if (!cho) return null;
+    clearTimeout(cho.timer);
+    delete dangCho[seq];
+    // Lượt này đã có kết luận, dù xuôi hay ngược: bản trên đĩa của nó hết
+    // nhiệm vụ. Nhánh ngược gọi traLaiOto() ngay sau đây, và chính nó ghi
+    // chữ trở lại khoá nháp.
+    safeLocalRemove(DANG_GUI_KEY);
+    return cho.text;
   }
 
   // --- Đường 2: thanh phím điều khiển (spec §5.3) ---------------------------
