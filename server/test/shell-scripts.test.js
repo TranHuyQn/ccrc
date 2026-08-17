@@ -116,7 +116,11 @@ test('script chạy bằng `sh` phải khai shebang /bin/sh', () => {
   let found = 0;
   for (const caller of callers) {
     const src = read(caller);
-    for (const m of src.matchAll(/\bsh\s+"\$\{?DEST\}?\/([A-Za-z0-9._-]+)"/g)) {
+    // `/` belongs in the character class: a script one directory down
+    // (`sh "$DEST/term/foo.sh"`) is the same mistake, and leaving it out made
+    // this guard report green while quietly matching nothing — the `found >= 2`
+    // floor below is met by the two existing top-level call sites either way.
+    for (const m of src.matchAll(/\bsh\s+"\$\{?DEST\}?\/([A-Za-z0-9._/-]+)"/g)) {
       found += 1;
       const target = m[1];
       const first = read(target).split('\n')[0];
@@ -165,6 +169,18 @@ test('script POSIX không được dùng bashism', () => {
 // test runner can produce without a pty — which makes it the right one to
 // automate. It exercises ask() too (CCRC_MACHINE_NAME is deliberately NOT
 // passed), so the printf -v line is reached rather than skipped.
+//
+// `detached: true` is what makes "no tty" true rather than merely hoped for.
+// The controlling terminal is a property of the SESSION, not of the file
+// descriptors, so `stdio: ['ignore', …]` does not remove it: run the suite from
+// an interactive shell and the child opens /dev/tty happily, `ask` prompts, and
+// `read < /dev/tty` blocks — the prompt lands in the developer's terminal,
+// keystrokes are taken from the test runner, and the test dies at its timeout.
+// Reproduced in a tmux pane; it passed everywhere else only because those
+// runners had no controlling terminal, i.e. for the wrong reason. detached
+// calls setsid(2), which is portable to macOS as well — unlike the `setsid`
+// command, which macOS does not ship.
+const DETACH = { detached: true };
 const sandboxEnv = (home) => {
   // A PATH with node but WITHOUT `claude`: setup-notify.sh installs the `ccrc`
   // command next to whatever `claude` it finds, and on a dev machine that is a
@@ -184,7 +200,7 @@ test('setup-notify.sh chạy trọn dưới dash khi KHÔNG có terminal', (t) =
   if (!HAS_DASH) { t.skip('máy này không có dash — bỏ qua, không giả bằng sh vì sh trên macOS là bash'); return; }
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccrc-home-'));
   const r = spawnSync('dash', [path.join(root, 'setup-notify.sh')], {
-    env: sandboxEnv(home), encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 60_000,
+    env: sandboxEnv(home), encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 60_000, ...DETACH,
   });
   assert.equal(r.status, 0,
     `setup-notify.sh chết dưới dash (exit ${r.status}).\nstdout:\n${r.stdout}\nstderr:\n${r.stderr}`);
@@ -199,7 +215,7 @@ test('remove-notify.sh dưới dash, không terminal và không -y: từ chối 
   if (!HAS_DASH) { t.skip('máy này không có dash'); return; }
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccrc-home-'));
   const r = spawnSync('dash', [path.join(root, 'remove-notify.sh')], {
-    env: sandboxEnv(home), encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 60_000,
+    env: sandboxEnv(home), encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 60_000, ...DETACH,
   });
   // Exit 1 with the sentence, not exit 2 with nothing: the user must learn
   // that -y is what they need, instead of watching a command return in silence
