@@ -125,55 +125,23 @@ async function showMain() {
   $('login').classList.add('hidden');
   $('main').classList.remove('hidden');
   await refreshPushState();
-  await refreshList();
   await refreshTerminal();
-}
-
-async function refreshList() {
-  const { items } = await (await api('/api/notifications')).json();
-  // Giữ lại cho phần tính chấm "chưa đọc" bên dưới. Danh sách terminal được
-  // dựng từ một fetch KHÁC, nên đây là nơi duy nhất nó biết được phiên nào
-  // đang có việc chờ.
-  recentNotes = items || [];
-  const list = $('list');
-  list.textContent = '';
-  if (!items.length) {
-    const p = document.createElement('p');
-    p.className = 'dim';
-    p.textContent = 'Chưa có thông báo nào.';
-    list.appendChild(p);
-    return;
-  }
-  for (const it of items) {
-    const el = document.createElement('div');
-    el.className = 'note';
-    const t = document.createElement('div');
-    t.className = 'note-title';
-    t.textContent = it.title;
-    const b = document.createElement('div');
-    b.className = 'note-body';
-    b.textContent = it.body;
-    const w = document.createElement('div');
-    w.className = 'note-when dim';
-    w.textContent = new Date(it.at).toLocaleString('vi-VN');
-    el.append(t, b, w);
-    list.appendChild(el);
-  }
 }
 
 // --- Phiên nào đang có thông báo chưa đọc -----------------------------------
 //
-// Hub gắn `sessionId` vào mỗi thông báo nó ghi lại (server/src/index.js), nên
-// "phiên này có việc chờ mình" rút gọn thành: có thông báo nào của phiên đó
-// mới hơn lần cuối mình xem nó không.
+// Hub trả `lastNotifiedAt` kèm mỗi phiên (server/src/terminal-sessions.js) —
+// lúc thông báo gần nhất của phiên đó tới. Nên "phiên này có việc chờ mình"
+// rút gọn thành: mốc ấy có mới hơn lần cuối mình xem không.
+//
+// Trước đây câu hỏi này được trả lời bằng cách tải về 50 thông báo gần nhất
+// rồi soi xem cái nào thuộc phiên nào — tức là hub phải giữ tiêu đề và nội
+// dung thật của mọi thông báo chỉ để trang này vẽ được một cái chấm. Một con
+// số cho mỗi phiên nói đúng chừng ấy và không nói gì thêm.
 //
 // Mốc "lần cuối xem" nằm trong localStorage của CHÍNH máy này, không phải trên
 // hub: không endpoint mới, không state mới ở server, và hai thiết bị thì mỗi
-// thiết bị tự đếm — vốn đúng hơn là dùng chung. Lịch sử thông báo trên hub
-// cũng chỉ nằm trong RAM (HISTORY_MAX = 50), nên mốc đọc không cần bền hơn nó.
-
-// Thông báo của lần refreshList() gần nhất.
-let recentNotes = [];
+// thiết bị tự đếm — vốn đúng hơn là dùng chung.
 
 const READ_PREFIX = 'ccrc_read_';
 
@@ -196,23 +164,26 @@ function markRead(sessionId) {
   localStorage.setItem(readMarkKey(sessionId), String(Date.now()));
 }
 
-function hasUnread(sessionId) {
-  if (!sessionId) return false;
-  const since = lastReadAt(sessionId);
+function hasUnread(session) {
+  if (!session || !session.sessionId) return false;
+  // Một daemon/hub cũ không gửi trường này. `Number(undefined)` là NaN và mọi
+  // so sánh với NaN là false, nên `|| 0` giữ cho nhánh ấy nghĩa là "chưa có
+  // thông báo nào" — chấm không sáng — thay vì một so sánh im lặng không bao
+  // giờ đúng.
+  const at = Number(session.lastNotifiedAt) || 0;
   // `>` chứ không `>=`: markRead() ghi Date.now(), và một thông báo đến đúng
   // cùng mili-giây với lúc mở phải tính là đã đọc.
-  return recentNotes.some((n) => n && n.sessionId === sessionId && n.at > since);
+  return at > lastReadAt(session.sessionId);
 }
 
 // Mỗi `/remote on` sinh một sessionId mới, nên không dọn thì localStorage tích
-// một khoá vĩnh viễn cho mỗi phiên từng chạy. Chỉ xoá khoá mà CẢ danh sách
-// phiên hiện tại LẪN lịch sử thông báo đều không nhắc tới — khi cả hai đều
-// không nhắc thì mốc đã đọc đó không còn ảnh hưởng tới bất cứ thứ gì hiển thị
-// được, nên xoá là an toàn.
+// một khoá vĩnh viễn cho mỗi phiên từng chạy. Danh sách phiên hiện tại là
+// nguồn duy nhất quyết định: một mốc đã đọc chỉ ảnh hưởng tới cái chấm trên
+// một cái thẻ, và thẻ thì đến từ đúng danh sách này — không còn thẻ thì mốc
+// không còn tác dụng gì để mà giữ.
 function pruneReadMarks(sessions) {
   const keep = new Set();
   for (const s of sessions) if (s && s.sessionId) keep.add(s.sessionId);
-  for (const n of recentNotes) if (n && n.sessionId) keep.add(n.sessionId);
   const doomed = [];
   for (let i = 0; i < localStorage.length; i++) {
     const k = localStorage.key(i);
@@ -441,7 +412,7 @@ function buildTerminalCard(session) {
 
   const title = document.createElement('div');
   title.className = 'row terminal-title';
-  const unread = hasUnread(session.sessionId);
+  const unread = hasUnread(session);
   if (unread) {
     const dot = document.createElement('span');
     dot.className = 'unread-dot';
@@ -926,15 +897,14 @@ $('enable-push').onclick = async () => {
 // without ever leaving the page) — a stale "Đang mở…" would be just as
 // misleading there.
 //
-// Cả hai danh sách được nạp lại, không riêng terminal: chấm "chưa đọc" trên
-// thẻ được tính từ giao của /api/terminal và /api/notifications (xem
-// hasUnread()), nên chỉ nạp lại một cái thì chấm hoặc không bao giờ sáng, hoặc
-// không bao giờ tắt.
+// Một lần nạp là đủ cho cả hai việc: `lastNotifiedAt` đi kèm từng phiên trong
+// chính phản hồi /api/terminal, nên chấm "chưa đọc" và danh sách thẻ không còn
+// là hai nguồn phải giữ đồng bộ với nhau nữa.
 //
-// Coalescing nằm ở ĐÂY chứ không mượn của refreshTerminal(): một cụm
-// 'pageshow' + 'visibilitychange' bắn sát nhau phải quy về đúng một lượt nạp
-// CẢ ĐÔI, không phải một lượt mỗi sự kiện. refreshTerminal() vẫn giữ
-// coalescing riêng của nó cho các lối gọi khác (nhánh lỗi của openTerminal()).
+// Coalescing vẫn nằm ở ĐÂY chứ không mượn của refreshTerminal(): một cụm
+// 'pageshow' + 'visibilitychange' bắn sát nhau phải quy về đúng một lượt nạp.
+// refreshTerminal() vẫn giữ coalescing riêng của nó cho các lối gọi khác
+// (nhánh lỗi của openTerminal()).
 let returnRefreshInFlight = null;
 
 function refreshOnReturn() {
@@ -943,11 +913,6 @@ function refreshOnReturn() {
   if ($('main').classList.contains('hidden')) return;
   if (returnRefreshInFlight) return returnRefreshInFlight;
   returnRefreshInFlight = (async () => {
-    // refreshList() không tự bắt lỗi như refreshTerminal(). Một lần 401 ở đây
-    // đã logout() rồi ném tiếp, và không được để nó thành unhandled rejection
-    // trên một promise mà listener của trình duyệt vứt đi. Nuốt lỗi ở đây chỉ
-    // làm chấm được tính trên dữ liệu cũ; danh sách terminal vẫn phải dựng.
-    await refreshList().catch(() => {});
     await refreshTerminal();
   })().finally(() => { returnRefreshInFlight = null; });
   // Returning the promise is a no-op for a real addEventListener callback

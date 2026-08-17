@@ -191,9 +191,16 @@ Mỗi người một token riêng — thông báo chỉ tới đúng chủ token
   lại PWA là mất khoá, phải ghép lại từng máy.
 - **TLS bắt buộc khi ra Internet**: Cloudflare Tunnel (khuyến nghị, không mở port) hoặc
   Caddy (`--profile tls`). Web Push chỉ chạy trên HTTPS.
-- Hub không lưu nội dung phiên Claude Code — chỉ lưu tiêu đề/nội dung thông báo ngắn
-  (tối đa 200 ký tự mỗi trường) trong RAM, cộng danh sách user và push subscription trên
-  đĩa. Nó cũng không giữ khoá nào mở được terminal của ai — xem mục ghép cặp ở trên.
+- Hub không lưu nội dung phiên Claude Code, và **không lưu cả nội dung thông báo**: tiêu
+  đề/nội dung đi qua nó để đẩy sang Web Push rồi bị quên ngay. Thứ duy nhất còn lại là một
+  mốc thời gian cho mỗi phiên — đủ để điện thoại vẽ chấm "chưa đọc", không đủ để ai đọc ra
+  Claude đã hỏi gì. Trên đĩa chỉ có danh sách user và push subscription. Nó cũng không giữ
+  khoá nào mở được terminal của ai — xem mục ghép cặp ở trên.
+- **Daemon chỉ bắt tay WebSocket với trang do chính nó phục vụ** (`Origin`). Token mở phiên
+  do trang PWA ký, mà trang PWA thì do hub phục vụ — nên một hub bị chiếm có thể ký một
+  token thật rồi đẩy điện thoại sang trang của kẻ tấn công, và trang đó mở WebSocket từ
+  chính điện thoại đang ở trong tailnet. Trình duyệt không cho một trang tự đặt `Origin`
+  của mình, nên phép kiểm này đóng đúng đường đó.
 
 ## Cấu trúc thư mục
 

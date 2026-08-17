@@ -38,10 +38,6 @@ input { width: 100%; padding: 12px; margin: 12px 0; background: var(--bg); color
 button { width: 100%; padding: 12px; background: var(--accent); color: #fff; border: 0;
   border-radius: 8px; font-size: 15px; cursor: pointer; }
 button.ghost { width: auto; background: transparent; color: var(--dim); border: 1px solid var(--border); padding: 6px 12px; font-size: 13px; }
-.note { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 12px; margin-bottom: 8px; }
-.note-title { font-family: var(--mono); font-size: 14px; }
-.note-body { margin-top: 2px; }
-.note-when { font-size: 12px; margin-top: 6px; }
 code { font-family: var(--mono); background: var(--bg); padding: 1px 5px; border-radius: 4px; }
 .terminal-card button { margin-top: 4px; }
 .terminal-card button:disabled { opacity: .6; cursor: default; }

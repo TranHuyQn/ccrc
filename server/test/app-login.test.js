@@ -63,7 +63,6 @@ test('claim mã thành công: lưu token thật, đưa thẳng vào màn hình c
   const fetchImpl = makeFetch(async (url) => {
     if (url === '/api/auth/claim') return { status: 200, body: { ok: true, token: 'tok-slack', displayName: 'huy' } };
     if (url === '/api/me') return { status: 200, body: { user: 'huy', pushDevices: 0 } };
-    if (url === '/api/notifications') return { status: 200, body: { items: [] } };
     if (url === '/api/terminal') return { status: 200, body: { sessions: [] } };
     return { status: 404, body: {} };
   });
@@ -96,7 +95,6 @@ test('claim mã: displayName được vẽ ngay lên header, không bị vứt �
       await mePending;
       return { status: 200, body: { user: 'huy', pushDevices: 0 } };
     }
-    if (url === '/api/notifications') return { status: 200, body: { items: [] } };
     if (url === '/api/terminal') return { status: 200, body: { sessions: [] } };
     return { status: 404, body: {} };
   });
@@ -112,7 +110,7 @@ test('claim mã: displayName được vẽ ngay lên header, không bị vứt �
 
 // --- 3. claim thất bại (410 / ok:false) -------------------------------------
 
-// `/api/me`, `/api/notifications`, `/api/terminal` trả lời TỐT (không phải
+// `/api/me` và `/api/terminal` trả lời TỐT (không phải
 // 404 trần) dù bài kiểm này mong showMain() không hề được gọi tới. Lý do:
 // nếu bootstrap có bug gọi showMain() bất chấp consumeLoginCode() thất bại,
 // và ba endpoint này vẫn trả 404/{} như macro cũ, refreshList() sẽ ném
@@ -128,7 +126,6 @@ test('claim mã: displayName được vẽ ngay lên header, không bị vứt �
 // đúng như kỳ vọng.
 function mocksForUnreachedShowMain(url) {
   if (url === '/api/me') return { status: 200, body: { user: 'huy', pushDevices: 0 } };
-  if (url === '/api/notifications') return { status: 200, body: { items: [] } };
   if (url === '/api/terminal') return { status: 200, body: { sessions: [] } };
   return null;
 }
@@ -348,7 +345,6 @@ test('GET /api/auth/config lỗi mạng → im lặng, ẩn "hoặc" và để n
 test('/link + dán token tay: đăng nhập xong quay lại ĐÚNG thẻ duyệt, không phải màn hình chính', async () => {
   const fetchImpl = makeFetch(async (url) => {
     if (url === '/api/me') return { status: 200, body: { user: 'huy', pushDevices: 0 } };
-    if (url === '/api/notifications') return { status: 200, body: { items: [] } };
     if (url === '/api/terminal') return { status: 200, body: { sessions: [] } };
     return { status: 404, body: {} };
   });
@@ -392,7 +388,6 @@ test('/link kèm ?login=<claimCode>: đổi mã rồi ở lại thẻ duyệt', 
   const fetchImpl = makeFetch(async (url) => {
     if (url === '/api/auth/claim') return { status: 200, body: { ok: true, token: 'tok-slack', displayName: 'huy' } };
     if (url === '/api/me') return { status: 200, body: { user: 'huy', pushDevices: 0 } };
-    if (url === '/api/notifications') return { status: 200, body: { items: [] } };
     if (url === '/api/terminal') return { status: 200, body: { sessions: [] } };
     return { status: 404, body: {} };
   });

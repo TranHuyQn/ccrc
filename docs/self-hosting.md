@@ -16,8 +16,10 @@ need to protect:
 - Receives a notification title and body (200 characters each, maximum) from
   the dev machine and forwards it to your phone as Web Push.
 - Stores the user list, push subscriptions and the VAPID keypair on disk.
-- Keeps the last 50 notifications per user **in memory only** — a restart drops
-  them, by design.
+- Keeps **no notification content at all**. Titles and bodies pass through on
+  their way to Web Push and are not retained; the only thing kept per session is
+  the timestamp of its most recent notification, which is what draws the unread
+  dot on the phone.
 - Holds **no** terminal traffic and **no** key that can open anyone's terminal.
   Shell bytes go directly from the dev machine to the phone over your tailnet;
   the hub never sees them.

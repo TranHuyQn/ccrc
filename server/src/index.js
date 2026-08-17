@@ -10,7 +10,6 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import webpush from 'web-push';
 import { createTerminalSessions } from './terminal-sessions.js';
-import { createNotificationHistory } from './notification-history.js';
 import { deviceId, labelFromUserAgent, listDevices } from './push-devices.js';
 import { isSessionUrlAllowed } from './session-url.js';
 import { listenAddr } from './listen-addr.js';
@@ -254,11 +253,6 @@ async function notifyUser(userName, payload) {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Notification history — logic đầy đủ (TTL 24h + cap 50) nằm trong
-// notification-history.js, cùng khuôn mẫu với createTerminalSessions().
-const notificationHistory = createNotificationHistory();
-
 // Bearer token -> user, or null. Every authenticated route goes through here.
 function userFromRequest(req) {
   const h = req.headers.authorization || '';
@@ -423,11 +417,21 @@ app.post('/notify', express.json({ limit: '16kb' }), (req, res) => {
       ? { sessionId: n.sessionId.slice(0, 200) }
       : {}),
   };
-  // Always recorded, even when the push is held back below: "Gần đây" is the
-  // record of what happened, and dropping entries from it would mean the one
-  // notification the user missed while looking away is also the one they can
-  // never go back and find.
-  notificationHistory.remember(user.name, note);
+  // Hub KHÔNG giữ thông báo. Nó ghi đúng một con số — lúc thông báo này tới —
+  // lên phiên mà thông báo thuộc về, và quên phần còn lại ngay khi push đã đi.
+  //
+  // Con số đó là tất cả những gì chấm "chưa đọc" trên điện thoại cần: PWA so
+  // nó với mốc "đã xem" nằm trong localStorage của chính máy đó. Trước bản này
+  // hub nhớ 50 thông báo gần nhất mỗi người — tiêu đề và nội dung thật, tức là
+  // câu Claude Code đang hỏi, tên lệnh nó xin chạy — chỉ để vẽ được cái chấm
+  // ấy. Ai đọc được dữ liệu của hub thì đọc được cả chúng.
+  //
+  // Ghi kể cả khi push bị nén lại vì người dùng đang xem: mốc là "có việc xảy
+  // ra lúc này", không phải "đã buzz lúc này". app.js đánh dấu đã đọc lại khi
+  // người dùng quay ra khỏi terminal, nên hai thứ khớp nhau ở đó.
+  if (typeof note.sessionId === 'string' && note.sessionId) {
+    terminals.noteArrived(user.name, note.sessionId);
+  }
   // The user is already looking at this session's terminal on their phone —
   // buzzing them about it is noise. `sessionId` only arrives when a terminal
   // daemon is registered for the directory Claude is running in (the hook
@@ -447,12 +451,6 @@ app.get('/api/me', (req, res) => {
   // parseUsers() đảm bảo displayName luôn có (mặc định bằng name cho entry cũ
   // do `deploy.sh adduser` tạo), nên đây không bao giờ là undefined.
   res.json({ user: user.displayName, pushDevices: (pushSubs[user.name] || []).length });
-});
-
-app.get('/api/notifications', (req, res) => {
-  const user = requireUser(req, res);
-  if (!user) return;
-  res.json({ items: notificationHistory.list(user.name) });
 });
 
 app.get('/api/vapid-key', (_req, res) => res.json({ publicKey: vapidKeys.publicKey }));

@@ -234,9 +234,16 @@ defended against, is in [`SECURITY.md`](SECURITY.md).
 - **TLS is mandatory on the public internet**: Cloudflare Tunnel (recommended, opens no
   port) or Caddy (`--profile tls`). Web Push requires HTTPS. The terminal daemon is a
   separate case — see `SECURITY.md` for why it serves plain HTTP inside the tailnet.
-- The hub stores no Claude Code session content — only short notification titles/bodies
-  (200 chars max per field) in RAM, plus the user list and push subscriptions on disk. It
-  holds no key that can open anyone's terminal.
+- The hub stores no Claude Code session content, and **no notification content either**:
+  titles and bodies pass through on their way to Web Push and are not retained. All that
+  survives is one timestamp per session — enough for the phone to draw an unread dot, not
+  enough for anyone to read what Claude asked. On disk there is only the user list and the
+  push subscriptions. It holds no key that can open anyone's terminal.
+- **The terminal daemon only completes a WebSocket handshake with the page it served
+  itself** (`Origin`). The attach token is signed by the PWA and the PWA is served by the
+  hub, so a compromised hub could sign a real token and send the phone to an attacker's
+  page, which would then open a WebSocket from the phone already inside the tailnet. A
+  browser will not let a page forge its own `Origin`, which is what closes that path.
 
 ## Layout
 

@@ -66,6 +66,13 @@ export function createTerminalSessions({ now = () => Date.now() } = {}) {
       // what a session is CALLED is the daemon's job (term/src/session-name.js):
       // an opaque id unless the user named it with `/remote on <tên>`.
       label: s.label,
+      // Lúc thông báo gần nhất của phiên này tới hub — 0 khi chưa có cái nào.
+      // Đây là TẤT CẢ những gì hub còn giữ về thông báo: một con số, đủ để PWA
+      // so với mốc "đã xem" của chính nó và vẽ chấm chưa đọc, không đủ để ai
+      // đọc ra Claude đã nói gì. Trước bản này chấm ấy được tính bằng cách
+      // giao danh sách phiên với 50 thông báo hub nhớ hộ — tức là để vẽ một
+      // cái chấm, hub phải giữ nội dung của mọi thông báo.
+      lastNotifiedAt: s.lastNotifiedAt,
       alive: now() - s.seenAt <= HEARTBEAT_DEAD_MS,
     };
   }
@@ -105,8 +112,16 @@ export function createTerminalSessions({ now = () => Date.now() } = {}) {
       // '' when omitted (an older daemon, or a test fixture that predates
       // Task 3) rather than undefined, so toPublic() always hands the PWA a
       // string to render, never `undefined`.
+      //
+      // PHẢI đọc mốc cũ ra trước: `set` bên dưới thay cả entry, còn hàm này
+      // chạy lại ở MỖI nhịp heartbeat (20 giây). Không mang mốc theo thì chấm
+      // chưa đọc bị xoá sạch mỗi 20 giây — một thông báo tới lúc người dùng
+      // không cầm máy sẽ tắt trước khi họ kịp nhìn, và triệu chứng là "chấm
+      // thỉnh thoảng mới hiện", thứ gần như không ai lần ra được.
+      const truoc = sessions.get(sessionId);
       sessions.set(sessionId, {
         sessionId, machine, url,
+        lastNotifiedAt: truoc ? truoc.lastNotifiedAt : 0,
         label: typeof label === 'string' ? label : '',
         // Whether somebody currently has this terminal ON SCREEN — used to
         // hold back a push for a session the user is already watching.
@@ -115,6 +130,27 @@ export function createTerminalSessions({ now = () => Date.now() } = {}) {
         viewing: viewing === true,
         seenAt: now(),
       });
+    },
+
+    /**
+     * Một thông báo vừa tới cho phiên này. Ghi lại ĐÚNG một con số: lúc nó tới.
+     *
+     * Không tạo entry mới khi phiên không tồn tại, và đó là chủ ý: một thông
+     * báo có thể mang sessionId của một phiên vừa đóng, hoặc của một máy chưa
+     * bao giờ chạy `/remote on`. Tạo entry cho nó nghĩa là đẻ ra một thẻ phiên
+     * ma trên điện thoại — không có URL, không mở được, không tự biến mất cho
+     * tới hết hạn eviction. Không có phiên thì không có chấm nào để vẽ, và im
+     * lặng ở đây là câu trả lời đúng.
+     *
+     * Khoá theo NGƯỜI trước, id sau — cùng kỷ luật với mọi hàm khác ở đây: hai
+     * người có thể có cùng một sessionId, và thông báo của người này không
+     * được làm sáng chấm trên thẻ của người kia.
+     */
+    noteArrived(userName, sessionId) {
+      const sessions = byUser.get(userName);
+      const s = sessions && sessions.get(sessionId);
+      if (!s) return;
+      s.lastNotifiedAt = now();
     },
 
     /**

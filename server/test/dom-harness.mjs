@@ -122,7 +122,7 @@ export class FakeWindow {
 // Xuất ra để app-markup.test.js đối chiếu được với id thật trong index.html —
 // danh sách này chép tay, và không có gì khác bắt nó khớp với markup.
 export const REQUIRED_IDS = [
-  'login', 'main', 'who', 'list',
+  'login', 'main', 'who',
   'push-state', 'enable-push',
   'token', 'login-btn', 'login-err', 'logout',
   'slack-login', 'login-or',

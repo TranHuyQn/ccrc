@@ -83,21 +83,34 @@ against the real daemon (`term/src/ticket.js`).
 Stated plainly so you can decide, rather than discovering them yourself:
 
 - **An authenticated caller can spam `/notify`.** Nothing throttles a request that carries a
-  valid token, and the notification history is an in-RAM list per user. Bounded per entry
-  (200 characters for title and body, 50 entries per user) and lost on restart, so this
-  costs memory and phone battery rather than anything durable.
+  valid token. Since the hub no longer keeps notification content, this costs phone battery
+  rather than memory or anything durable.
 - **No CORS policy, no security headers.** No `helmet`, no CSP on the hub's own pages.
 - **Push subscriptions and the user list are stored unencrypted on disk** — see below.
 - **Push subscriptions and the user list are stored unencrypted on disk** in
   `CCRC_DATA_DIR`. Anyone with that directory can send push to those devices and read every
   token. Back it up accordingly — or rather, do not back it up carelessly.
-- **Notification history is per-user in RAM with no persistence and no size limit per
-  field beyond 200 chars.** A hub restart loses it, by design.
 
 ## Addressed since this file was first written
 
 Kept here rather than deleted: if you read an older copy, this says what changed.
 
+- **The hub no longer stores notification content.** It used to keep the last 50
+  notifications per user in RAM — real titles and bodies, meaning the question Claude Code
+  was waiting on and the command it asked permission to run — and the only consumer was the
+  unread dot on a session card. That dot asks one question ("has anything happened here
+  since I last looked"), which one number per session answers, so the hub now keeps that
+  number and forgets the rest. Whoever can read the hub's data can no longer read what
+  Claude asked.
+- **The terminal daemon refuses a WebSocket handshake from a page it did not serve.** The
+  attach token is signed by the PWA, and the PWA is served by the hub — so a hub that has
+  been taken over could sign a genuinely valid token and send the phone to an attacker's
+  `http://` page, which would open a WebSocket to the daemon from inside the victim's own
+  tailnet and relay the shell out. Every check in `ticket.js` passes there, because the
+  token is real. `Origin` is what separates the two pages: a browser sets it on every
+  WebSocket connection and a page cannot forge its own. A request with no `Origin` at all
+  still passes, deliberately — a browser always sends one, so rejecting that case would
+  stop nobody and only break clients that are not browsers.
 - **Token probing is throttled.** Requests that fail to authenticate are counted per client
   IP — 20 per 10 minutes, then `429` with `Retry-After`. Only failures count, so a valid
   token is never delayed or blocked. That asymmetry is deliberate: behind a proxy with

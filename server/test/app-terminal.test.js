@@ -249,7 +249,6 @@ test('bfcache restore (pageshow) đưa nút về "Mở terminal", bấm lại đ
   let terminalCalls = 0;
   const fetchImpl = makeFetch(async (url) => {
     if (url === '/api/terminal') { terminalCalls++; return { status: 200, body: { sessions: [SESSION_ALIVE] } }; }
-    if (url === '/api/notifications') return { status: 200, body: { items: [] } };
     throw new Error('unexpected url ' + url);
   });
   const { context, byId, window } = loadAppPage({ fetchImpl });
@@ -280,7 +279,6 @@ test('phiên đã đóng trong lúc rời đi → pageshow làm danh sách phả
       // from the brief.
       return { status: 200, body: { sessions: terminalCalls === 1 ? [SESSION_ALIVE] : [] } };
     }
-    if (url === '/api/notifications') return { status: 200, body: { items: [] } };
     throw new Error('unexpected url ' + url);
   });
   const { context, byId, window } = loadAppPage({ fetchImpl });
@@ -296,12 +294,10 @@ test('phiên đã đóng trong lúc rời đi → pageshow làm danh sách phả
   assert.equal(byId['terminal-empty'].classList.contains('hidden'), false);
 });
 
-test('pageshow và visibilitychange dồn dập → mỗi endpoint đúng một lần gọi, dù đang có nhiều thẻ', async () => {
+test('pageshow và visibilitychange dồn dập → đúng một lần gọi hub, dù đang có nhiều thẻ', async () => {
   let terminalCalls = 0;
-  let noteCalls = 0;
   const fetchImpl = makeFetch(async (url) => {
     if (url === '/api/terminal') { terminalCalls++; return { status: 200, body: { sessions: [SESSION_ALIVE, SESSION_ALIVE_2] } }; }
-    if (url === '/api/notifications') { noteCalls++; return { status: 200, body: { items: [] } }; }
     throw new Error('unexpected url ' + url);
   });
   const { byId, window, document } = loadAppPage({ fetchImpl });
@@ -319,14 +315,12 @@ test('pageshow và visibilitychange dồn dập → mỗi endpoint đúng một 
   await Promise.all(results);
 
   assert.equal(terminalCalls, 1, 'nhiều sự kiện dồn dập chỉ được gọi hub đúng một lần');
-  assert.equal(noteCalls, 1, 'coalescing phải bọc cả hai lần nạp, không riêng /api/terminal');
 });
 
 test('chưa đăng nhập (màn hình main còn ẩn) → pageshow không gọi hub', async () => {
   let terminalCalls = 0;
   const fetchImpl = makeFetch(async (url) => {
     if (url === '/api/terminal') { terminalCalls++; return { status: 200, body: { sessions: [] } }; }
-    if (url === '/api/notifications') return { status: 200, body: { items: [] } };
     throw new Error('unexpected url ' + url);
   });
   const { byId, window } = loadAppPage({ fetchImpl });
@@ -481,7 +475,6 @@ test('ghép cặp trọn vẹn (máy dev báo done) → thẻ đổi từ "Ghép
 test('IndexedDB lỗi khi vẽ danh sách terminal → KHÔNG đăng xuất người dùng, thẻ hiện "Ghép máy này"', async () => {
   const fetchImpl = makeFetch(async (url) => {
     if (url === '/api/me') return { status: 200, body: { user: 'huy', pushDevices: 0 } };
-    if (url === '/api/notifications') return { status: 200, body: { items: [] } };
     if (url === '/api/terminal') return { status: 200, body: { sessions: [SESSION_ALIVE] } };
     throw new Error('unexpected url ' + url);
   });
@@ -565,10 +558,16 @@ test('url tailnet hợp lệ vẫn điều hướng bình thường', async () =
 
 // --- Chấm "chưa đọc" trên thẻ ----------------------------------------------
 //
-// Badge được tính từ GIAO của hai nguồn: /api/terminal (có phiên nào) và
-// /api/notifications (phiên nào có việc). Nên mọi test dưới đây phải phục vụ
-// cả hai URL, và phải gọi refreshList() trước refreshTerminal() — đúng thứ tự
-// trang thật chạy.
+// Badge được tính từ MỘT nguồn: `lastNotifiedAt` mà /api/terminal trả về cho
+// mỗi phiên. Trước đây nó là giao của /api/terminal với /api/notifications —
+// tức là để vẽ được cái chấm này, hub phải nhớ hộ 50 thông báo gần nhất của
+// mỗi người, tiêu đề và nội dung thật. Nó không cần: câu hỏi duy nhất cái chấm
+// đặt ra là "phiên này có việc gì sau lần tôi xem cuối không", và một con số
+// cho mỗi phiên trả lời được trọn vẹn.
+//
+// `box.notes` được giữ nguyên trong các test bên dưới vì nó diễn tả đúng thứ
+// đang được mô phỏng — "những thông báo đã tới" — nhưng helper dịch nó thành
+// mốc trên chính phiên, đúng hình dạng hub thật trả về.
 const NOTE_BASE = {
   type: 'idle_prompt',
   title: '🔔 may-dev · cc-remote-control',
@@ -580,14 +579,23 @@ const NOTE_BASE = {
 // "trong lúc mình đi vắng thì có thông báo mới về".
 function makeFetchBoth(box) {
   return makeFetch(async (url) => {
-    if (url === '/api/notifications') return { status: 200, body: { items: box.notes } };
-    if (url === '/api/terminal') return { status: 200, body: { sessions: box.sessions } };
+    if (url === '/api/terminal') {
+      // Đúng thứ hub thật làm: mỗi phiên mang mốc của thông báo GẦN NHẤT thuộc
+      // về nó, 0 khi chưa có cái nào. `Math.max(0, ...[])` là 0, nên phiên
+      // không có thông báo nào ra đúng hình dạng ấy mà không cần nhánh riêng.
+      const sessions = box.sessions.map((s) => ({
+        ...s,
+        lastNotifiedAt: Math.max(0, ...box.notes
+          .filter((n) => n && n.sessionId === s.sessionId)
+          .map((n) => n.at)),
+      }));
+      return { status: 200, body: { sessions } };
+    }
     throw new Error('unexpected url ' + url);
   });
 }
 
 async function refreshBoth(context) {
-  await context.refreshList();
   await context.refreshTerminal();
 }
 
@@ -759,7 +767,7 @@ test('thẻ không có chấm thì không gắn onclick — không có gì để
 
 // --- Quay lại trang phải nạp lại CẢ HAI danh sách ---------------------------
 
-test('pageshow nạp lại cả thông báo lẫn terminal → chấm sáng lên mà không phải gọi tay', async () => {
+test('pageshow nạp lại danh sách → chấm sáng lên mà không phải gọi tay', async () => {
   const box = { sessions: [SESSION_ALIVE], notes: [] };
   const { context, byId, window } = loadAppPage({ fetchImpl: makeFetchBoth(box) });
   await pairMachine(context, SESSION_ALIVE.machine);
@@ -772,22 +780,7 @@ test('pageshow nạp lại cả thông báo lẫn terminal → chấm sáng lên
   await Promise.all(window.dispatch('pageshow', { persisted: true }));
 
   assert.ok(dotOf(byId['terminal-list'].children[0]),
-    'chỉ nạp lại /api/terminal thì chấm không bao giờ sáng — phải nạp cả /api/notifications');
-});
-
-test('/api/notifications lỗi khi quay lại → danh sách terminal vẫn được dựng', async () => {
-  const fetchImpl = makeFetch(async (url) => {
-    if (url === '/api/terminal') return { status: 200, body: { sessions: [SESSION_ALIVE] } };
-    throw new Error('notifications down');
-  });
-  const { context, byId, window } = loadAppPage({ fetchImpl });
-  await pairMachine(context, SESSION_ALIVE.machine);
-  byId['main'].classList.remove('hidden');
-
-  await Promise.all(window.dispatch('pageshow', { persisted: true }));
-
-  assert.equal(byId['terminal-list'].children.length, 1,
-    'một endpoint hỏng không được kéo theo endpoint kia');
+    'mốc đi kèm phiên, nên một lần nạp /api/terminal phải đủ để chấm sáng');
 });
 
 // --- Dọn mốc đã đọc của những phiên không còn nữa ---------------------------
@@ -795,11 +788,10 @@ test('/api/notifications lỗi khi quay lại → danh sách terminal vẫn đư
 // Mỗi lần `/remote on` sinh một sessionId mới, nên không dọn thì localStorage
 // tích một khoá vĩnh viễn cho mỗi phiên từng chạy trong đời máy này.
 
-test('mốc đã đọc của phiên không còn trong danh sách lẫn lịch sử bị xoá', async () => {
-  const box = { sessions: [SESSION_ALIVE], notes: [{ ...NOTE_BASE, sessionId: 's-co-note', at: 1 }] };
+test('mốc đã đọc của phiên không còn trong danh sách bị xoá', async () => {
+  const box = { sessions: [SESSION_ALIVE], notes: [] };
   const { context, byId, localStorage } = loadAppPage({ fetchImpl: makeFetchBoth(box) });
   localStorage.setItem('ccrc_read_s-1', '1');        // phiên đang chạy
-  localStorage.setItem('ccrc_read_s-co-note', '1');  // không còn chạy nhưng còn thông báo
   localStorage.setItem('ccrc_read_s-cu', '1');       // không ai nhắc tới nữa
   localStorage.setItem('ccrc_token', 'giu-nguyen');  // không thuộc tiền tố này
 
@@ -807,8 +799,11 @@ test('mốc đã đọc của phiên không còn trong danh sách lẫn lịch s
   await refreshBoth(context);
 
   assert.equal(localStorage.getItem('ccrc_read_s-1'), '1', 'phiên đang chạy phải giữ mốc');
-  assert.equal(localStorage.getItem('ccrc_read_s-co-note'), '1',
-    'còn thông báo trong lịch sử thì mốc vẫn có tác dụng');
+  // Danh sách phiên giờ là nguồn DUY NHẤT quyết định giữ hay xoá. Trước đây
+  // lịch sử thông báo trên hub cũng bỏ phiếu — một phiên đã đóng mà còn thông
+  // báo trong lịch sử thì mốc của nó vẫn được giữ. Không còn lịch sử thì cũng
+  // không còn ai bỏ phiếu ấy, và điều đó đúng: mốc chỉ ảnh hưởng tới cái chấm
+  // trên một cái thẻ, mà thẻ thì đến từ đúng danh sách này.
   assert.equal(localStorage.getItem('ccrc_read_s-cu'), null, 'khoá mồ côi phải bị xoá');
   assert.equal(localStorage.getItem('ccrc_token'), 'giu-nguyen', 'không được đụng khoá khác');
   assert.equal(byId['terminal-list'].children.length, 1, 'danh sách vẫn dựng bình thường');

@@ -6,7 +6,6 @@ import path from 'node:path';
 import net from 'node:net';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { createNotificationHistory, HISTORY_MAX, HISTORY_TTL_MS } from '../src/notification-history.js';
 
 const SRV = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'src', 'index.js');
 
@@ -113,14 +112,15 @@ test('đang xem terminal của phiên đó → KHÔNG đẩy thông báo', async
   } finally { h.stop(); }
 });
 
-test('vẫn lưu vào "Gần đây" dù không đẩy — không được mất dấu', async () => {
+test('vẫn ghi mốc dù không đẩy — nén một cú buzz không phải là quên', async () => {
   const h = await startHub();
   try {
     await registerTerminal(h, { sessionId: 's-dang-xem', viewing: true });
     await notify(h, { sessionId: 's-dang-xem' });
-    const list = await (await fetch(h.base + '/api/notifications',
+    const { sessions } = await (await fetch(h.base + '/api/terminal',
       { headers: { authorization: 'Bearer tok-huy' } })).json();
-    assert.equal(list.items.length, 1, 'thông báo bị nuốt mất, không tra lại được');
+    assert.ok(sessions[0].lastNotifiedAt > 0,
+      'mốc là "có việc xảy ra lúc này", không phải "đã buzz lúc này"');
   } finally { h.stop(); }
 });
 
@@ -173,71 +173,6 @@ test('sessionId không tồn tại / sai kiểu → vẫn đẩy, không nổ', 
   } finally { h.stop(); }
 });
 
-// --- sessionId trong lịch sử ------------------------------------------------
-//
-// Hook đã gửi sessionId từ trước (hook/src/notify-payload.js) và hub đã dùng
-// nó ngay trên kia để nén push cho phiên đang được xem. Nó phải đi tiếp vào
-// lịch sử nữa, vì đó là thứ duy nhất cho PWA biết thông báo này thuộc thẻ
-// terminal nào — nếu không, "Gần đây" có nội dung mà không nối được về phiên.
-async function historyOf(h, token = 'tok-huy') {
-  const r = await fetch(h.base + '/api/notifications',
-    { headers: { authorization: 'Bearer ' + token } });
-  assert.equal(r.status, 200);
-  const { items } = await r.json();
-  return items;
-}
-
-test('/notify kèm sessionId → lịch sử giữ lại để PWA biết thông báo của phiên nào', async () => {
-  const h = await startHub();
-  try {
-    await notify(h, { sessionId: 's-abc' });
-    const items = await historyOf(h);
-    assert.equal(items.length, 1);
-    assert.equal(items[0].sessionId, 's-abc');
-  } finally { h.stop(); }
-});
-
-test('/notify không kèm sessionId → note KHÔNG có trường đó, không phải chuỗi rỗng', async () => {
-  const h = await startHub();
-  try {
-    await notify(h, {});
-    const items = await historyOf(h);
-    assert.equal('sessionId' in items[0], false,
-      'trường rỗng bắt PWA phải phân biệt hai loại "không có"');
-  } finally { h.stop(); }
-});
-
-test('/notify với sessionId sai kiểu → lịch sử bỏ qua trường đó, không nổ', async () => {
-  const h = await startHub();
-  try {
-    await notify(h, { sessionId: 12345 });
-    const items = await historyOf(h);
-    assert.equal('sessionId' in items[0], false);
-  } finally { h.stop(); }
-});
-
-test('sessionId dài bất thường bị cắt như title/body — không nhận chuỗi tuỳ ý vào RAM', async () => {
-  const h = await startHub();
-  try {
-    await notify(h, { sessionId: 'x'.repeat(5000) });
-    const items = await historyOf(h);
-    assert.equal(items[0].sessionId.length, 200);
-  } finally { h.stop(); }
-});
-
-test('gửi hơn 50 thông báo → "Gần đây" chỉ giữ đúng 50 mục mới nhất', async () => {
-  const h = await startHub();
-  try {
-    for (let i = 1; i <= HISTORY_MAX + 5; i++) {
-      await notify(h, { title: `t-${i}` });
-    }
-    const items = await historyOf(h);
-    assert.equal(items.length, HISTORY_MAX, 'phải cắt đúng ở HISTORY_MAX, không phình vô hạn');
-    assert.equal(items[0].title, `t-${HISTORY_MAX + 5}`, 'mới nhất phải đứng đầu');
-    assert.equal(items[HISTORY_MAX - 1].title, 't-6', 'năm mục cũ nhất (t-1..t-5) phải bị đẩy ra');
-  } finally { h.stop(); }
-});
-
 test('token sai bị từ chối 401', async () => {
   const h = await startHub();
   const r = await fetch(h.base + '/notify', {
@@ -277,35 +212,6 @@ test('/api/me trả về tên người dùng và số thiết bị đã đăng k
   const me = await r.json();
   assert.equal(me.user, 'huy');
   assert.equal(me.pushDevices, 0);
-  h.stop();
-});
-
-test('/api/notifications chỉ trả về thông báo của chính mình', async () => {
-  const h = await startHub();
-  await fetch(h.base + '/notify', { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer tok-huy' }, body: JSON.stringify({ ...NOTE, body: 'của huy' }) });
-  await fetch(h.base + '/notify', { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer tok-kien' }, body: JSON.stringify({ ...NOTE, body: 'của kien' }) });
-
-  const mine = await (await fetch(h.base + '/api/notifications', { headers: { authorization: 'Bearer tok-huy' } })).json();
-  assert.equal(mine.items.length, 1);
-  assert.equal(mine.items[0].body, 'của huy');
-
-  const theirs = await (await fetch(h.base + '/api/notifications', { headers: { authorization: 'Bearer tok-kien' } })).json();
-  assert.equal(theirs.items.length, 1);
-  assert.equal(theirs.items[0].body, 'của kien');
-  h.stop();
-});
-
-test('lịch sử cắt ở 50 mục, mới nhất lên đầu', async () => {
-  const h = await startHub();
-  for (let i = 0; i < 55; i++) {
-    await fetch(h.base + '/notify', {
-      method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer tok-huy' },
-      body: JSON.stringify({ ...NOTE, body: 'số ' + i }),
-    });
-  }
-  const j = await (await fetch(h.base + '/api/notifications', { headers: { authorization: 'Bearer tok-huy' } })).json();
-  assert.equal(j.items.length, 50);
-  assert.equal(j.items[0].body, 'số 54', 'mới nhất phải lên đầu');
   h.stop();
 });
 
@@ -698,25 +604,28 @@ test('install.sh KHÔNG chứa token hay bí mật nào', async () => {
 //
 // Phần bên terminal của lỗi này (xin vé vào phiên của chủ hub) nằm ở
 // terminal-api.test.js. Đây là phần còn lại, và nó không được tailnet nào che
-// cho cả: lịch sử thông báo và danh sách thiết bị đẩy chỉ khoá theo tên người
+// cho cả: danh sách phiên và danh sách thiết bị đẩy chỉ khoá theo tên người
 // dùng, nên một danh tính 'admin' thứ hai đọc thẳng được — và xoá được.
 const USERS_WITH_IMPOSTOR = [
   { name: 'huy', token: 'tok-huy' },
   { name: 'admin', token: 'tok-gia-mao' },
 ];
 
-test('user tên "admin" KHÔNG đọc được lịch sử thông báo của chủ hub', async () => {
+test('user tên "admin" KHÔNG đọc được danh sách phiên của chủ hub', async () => {
   const h = await startHub(USERS_WITH_IMPOSTOR);
   try {
-    // Chủ hub nhận một thông báo. Tiêu đề mang tên máy và tên phiên.
+    // Chủ hub nhận một thông báo. Hub không còn giữ nội dung của nó, nhưng
+    // danh sách phiên thì vẫn khoá theo tên người dùng — và nó mang tên máy,
+    // nhãn phiên, địa chỉ tailnet, cùng mốc thông báo gần nhất. Gộp lại vẫn là
+    // dấu vết giờ giấc làm việc của người ta.
     await fetch(h.base + '/notify', {
       method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer admin-tok' },
       body: JSON.stringify(NOTE),
     });
 
-    const r = await fetch(h.base + '/api/notifications',
+    const r = await fetch(h.base + '/api/terminal',
       { headers: { authorization: 'Bearer tok-gia-mao' } });
-    assert.equal(r.status, 401, 'lịch sử thông báo là dấu vết giờ giấc làm việc của người ta');
+    assert.equal(r.status, 401);
   } finally { h.stop(); }
 });
 
@@ -737,76 +646,4 @@ test('/api/me của user tên "admin" bị từ chối, không trả về danh t
     const r = await fetch(h.base + '/api/me', { headers: { authorization: 'Bearer tok-gia-mao' } });
     assert.equal(r.status, 401);
   } finally { h.stop(); }
-});
-
-// --- Unit-level tests against createNotificationHistory() directly --------
-//
-// TTL 24 giờ không thể kiểm ở tầng HTTP mà không đợi thật hoặc thêm một cổng
-// cấu hình chỉ để phục vụ test — spec cố tình không làm vậy (spec §2). Import
-// thẳng module, tiêm đồng hồ giả, là cách duy nhất kiểm được biên của nó.
-
-test('[unit] thông báo mới ghi thì list() trả về ngay, có trường "at"', () => {
-  let t = 1_000;
-  const history = createNotificationHistory({ now: () => t });
-  history.remember('huy', { title: 't-1' });
-  const items = history.list('huy');
-  assert.equal(items.length, 1);
-  assert.equal(items[0].title, 't-1');
-  assert.equal(items[0].at, 1_000);
-});
-
-test('[unit] đúng ngưỡng HISTORY_TTL_MS (chưa vượt) → vẫn còn', () => {
-  let t = 0;
-  const history = createNotificationHistory({ now: () => t });
-  history.remember('huy', { title: 't-1' });
-  t = HISTORY_TTL_MS;
-  assert.equal(history.list('huy').length, 1, 'đúng bằng ngưỡng thì chưa bị prune');
-});
-
-test('[unit] vượt HISTORY_TTL_MS → bị prune, list() trả rỗng', () => {
-  let t = 0;
-  const history = createNotificationHistory({ now: () => t });
-  history.remember('huy', { title: 't-1' });
-  t = HISTORY_TTL_MS + 1;
-  assert.deepEqual(history.list('huy'), []);
-});
-
-test('[unit] mục còn hạn không bị kéo theo khi mục cũ hơn cùng user đã hết hạn', () => {
-  let t = 0;
-  const history = createNotificationHistory({ now: () => t });
-  history.remember('huy', { title: 't-cu' }); // at = 0
-  t = HISTORY_TTL_MS - 1;
-  history.remember('huy', { title: 't-moi' }); // at = HISTORY_TTL_MS - 1, còn hạn ở bước sau
-  t = HISTORY_TTL_MS + 1; // t-cu tuổi HISTORY_TTL_MS+1 (hết hạn); t-moi tuổi 2 (còn hạn)
-  const items = history.list('huy');
-  assert.equal(items.length, 1, 'chỉ mục hết hạn bị dọn');
-  assert.equal(items[0].title, 't-moi');
-});
-
-test('[unit] hết hạn ở user này không đụng lịch sử của user khác', () => {
-  let t = 0;
-  const history = createNotificationHistory({ now: () => t });
-  history.remember('huy', { title: 't-huy' }); // at = 0
-  t = 100;
-  history.remember('kien', { title: 't-kien' }); // at = 100
-  t = HISTORY_TTL_MS + 50; // huy tuổi TTL+50 (hết hạn); kien tuổi TTL-50 (còn hạn)
-  assert.deepEqual(history.list('huy'), []);
-  assert.equal(history.list('kien').length, 1);
-});
-
-test('[unit] vẫn cắt đúng HISTORY_MAX dù chưa hết hạn', () => {
-  let t = 0;
-  const history = createNotificationHistory({ now: () => t });
-  for (let i = 1; i <= HISTORY_MAX + 5; i++) {
-    t = i; // mỗi mục cách nhau 1ms — tất cả còn rất mới so với HISTORY_TTL_MS
-    history.remember('huy', { title: `t-${i}` });
-  }
-  const items = history.list('huy');
-  assert.equal(items.length, HISTORY_MAX);
-  assert.equal(items[0].title, `t-${HISTORY_MAX + 5}`, 'mới nhất phải đứng đầu');
-});
-
-test('[unit] list() trả mảy rỗng cho user chưa từng có thông báo', () => {
-  const history = createNotificationHistory();
-  assert.deepEqual(history.list('ai-do-chua-tung'), []);
 });

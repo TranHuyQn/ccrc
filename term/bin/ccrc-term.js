@@ -292,9 +292,54 @@ const VENDOR_DIR = path.resolve(TERM_ROOT, 'vendor');
 const server = http.createServer((req, res) => handleStatic(req, res, { publicDir: PUBLIC_DIR, vendorDir: VENDOR_DIR }));
 const wss = new WebSocketServer({ noServer: true });
 
+// Origin nào được phép bắt tay WebSocket với daemon này.
+//
+// Chốt này KHÔNG thay thế phép kiểm token — nó đứng trước một đường mà token
+// không đóng được. Token do trang PWA ký, và trang PWA do HUB phục vụ: một hub
+// bị chiếm sửa `app.js` để ký một token hoàn toàn hợp lệ (đúng `sid`, đúng
+// `h`, chưa hết hạn) rồi đẩy điện thoại sang một trang `http://` của kẻ tấn
+// công. Trang đó mở WebSocket tới đây TỪ CHÍNH ĐIỆN THOẠI NẠN NHÂN — cái máy
+// đang ở trong tailnet — và tiếp sức shell ra ngoài. Mọi phép kiểm trong
+// ticket.js đều qua, vì cái token ấy thật.
+//
+// `Origin` là thứ duy nhất phân biệt được hai trang: trình duyệt tự đặt nó cho
+// mọi kết nối WebSocket và một trang web không sửa được nó cho chính mình.
+//
+// So `host`, không so cả URL — cùng quy ước `data.h` của ticket.js dùng, và vì
+// scheme không mang thông tin gì ở đây (daemon chỉ phục vụ http).
+//
+// VẮNG MẶT thì cho qua, và đây là chỗ dễ siết nhầm theo phản xạ "chặt hơn thì
+// an toàn hơn". Kẻ tấn công mà chốt này nhắm tới là một TRANG WEB chạy trong
+// trình duyệt nạn nhân, và trình duyệt LUÔN gửi Origin — trang đó không có
+// cách nào bỏ header ấy đi. Nên chặn thêm ca vắng mặt không chặn thêm được ai;
+// nó chỉ giết những client không phải trình duyệt (script, công cụ gỡ rối, bộ
+// test này) để đổi lấy đúng không gì cả.
+//
+// Chuỗi `"null"` thì NGƯỢC LẠI: đó là thứ trình duyệt thật gửi từ một ngữ cảnh
+// đã bị tước nguồn gốc (iframe sandbox, `file://`) — có Origin, và Origin đó
+// không phải daemon này. `new URL('null')` ném, nên nó rơi vào nhánh từ chối
+// mà không cần một phép kiểm riêng.
+function originDuocPhep(origin, host) {
+  if (origin === undefined || origin === '') return true;
+  if (typeof origin !== 'string') return false;
+  try {
+    return new URL(origin).host === host;
+  } catch {
+    return false;
+  }
+}
+
 server.on('upgrade', (req, socket, head) => {
   const url = new URL(req.url, 'http://localhost');
   if (url.pathname !== '/attach') return socket.destroy();
+
+  // Trước cả token: một trang lạ không được phép tiến thêm bước nào, kể cả
+  // bước đốt nonce của một token thật mà nó vừa được đưa cho.
+  if (!originDuocPhep(req.headers.origin, ownHost)) {
+    console.log(`[term] bắt tay bị từ chối: Origin "${req.headers.origin}" không phải daemon này (${ownHost})`);
+    socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
+    return socket.destroy();
+  }
 
   // `?token=` thay cho `?ticket=`: token do CHÍNH ĐIỆN THOẠI ký, không phải
   // do hub ký hộ. Hub không còn giữ gì ký được nó. Vẫn đúng luật cũ: kiểm

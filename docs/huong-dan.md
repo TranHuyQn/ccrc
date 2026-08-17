@@ -417,8 +417,8 @@ nhìn rồi, rung nữa là ồn). Khoá màn hình hoặc chuyển sang app kh�
 
 ### Người khác dùng chung hub có thấy gì của bạn không
 
-Không. Hub tách theo người dùng: danh sách phiên, cuộc ghép cặp đang mở dở, lịch sử thông báo —
-mỗi thứ đều gắn với token của bạn, và token người khác không hỏi ra được.
+Không. Hub tách theo người dùng: danh sách phiên, cuộc ghép cặp đang mở dở, thiết bị nhận thông
+báo — mỗi thứ đều gắn với token của bạn, và token người khác không hỏi ra được.
 
 ### Người vận hành hub có xem được phiên của bạn không
 
@@ -636,7 +636,13 @@ Tailscale lên máy họ và điện thoại họ là xong.
 | Danh sách người dùng và token | Nội dung terminal (không một byte) |
 | Phiên nào đang mở, tên máy, tên phiên | Tên thư mục, đường dẫn |
 | Khoá công khai của điện thoại — đúng 5 phút lúc ghép cặp, rồi xoá (không phải bí mật) | Khoá riêng của bất kỳ điện thoại nào — thứ duy nhất mở được phiên |
-| Thông báo gần đây (trong RAM) | Nội dung câu hỏi của Claude |
+| Mốc thời gian thông báo gần nhất của mỗi phiên — một con số | **Nội dung thông báo.** Tiêu đề và nội dung đi qua hub để đẩy đi rồi bị quên ngay, không lưu lại ở đâu |
 
-Hub chạy ở chế độ **ephemeral** — khởi động lại là mất danh sách phiên và lịch sử thông báo.
-Đúng thiết kế, không phải lỗi: mỗi người chỉ cần `/remote on` lại.
+Dòng cuối từng ngược lại: hub nhớ 50 thông báo gần nhất của mỗi người, tiêu đề và nội dung
+thật, để PWA vẽ được chấm "chưa đọc" trên thẻ phiên. Cái chấm ấy chỉ hỏi đúng một câu — "phiên
+này có việc gì sau lần tôi xem cuối không" — nên giờ hub giữ đúng câu trả lời đó, một con số
+cho mỗi phiên, và quên phần còn lại. Ai đọc được dữ liệu của hub cũng không đọc ra được Claude
+đã hỏi gì.
+
+Hub chạy ở chế độ **ephemeral** — khởi động lại là mất danh sách phiên. Đúng thiết kế, không
+phải lỗi: mỗi người chỉ cần `/remote on` lại.
