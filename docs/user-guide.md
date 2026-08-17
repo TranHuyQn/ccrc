@@ -429,8 +429,8 @@ they resume immediately.
 
 ### Can other people on the same hub see your stuff?
 
-No. The hub partitions by user: session lists, in-progress pairings, notification history —
-each is tied to your token, and someone else's token cannot ask for yours.
+No. The hub partitions by user: session lists, in-progress pairings, the devices that receive
+notifications — each is tied to your token, and someone else's token cannot ask for yours.
 
 ### Can whoever runs the hub watch your session?
 
@@ -689,7 +689,13 @@ installs Tailscale on their machine and their phone, and that is the whole setup
 | The user list and their tokens | Terminal content (not one byte) |
 | Which sessions are open, machine names, session names | Directory names, paths |
 | A phone's public key — for exactly 5 minutes during pairing, then deleted (not a secret) | Any phone's private key — the only thing that opens a session |
-| Recent notifications (in RAM) | The content of Claude's questions |
+| The time of each session's most recent notification — one number | **What the notification said.** Title and body pass through the hub on their way out and are forgotten immediately; they are not stored anywhere |
 
-The hub runs **ephemeral** — restart it and the session list and notification history are gone.
-That is the design, not a fault: everyone just runs `/remote on` again.
+That last row used to read the other way round: the hub kept your 50 most recent
+notifications, real titles and bodies, so the PWA could draw the "unread" dot on a session
+card. That dot asks exactly one question — "has anything happened in this session since I last
+looked?" — so the hub now keeps just that answer, one number per session, and forgets the rest.
+Whoever can read the hub's data still cannot read what Claude asked.
+
+The hub runs **ephemeral** — restart it and the session list is gone. That is the design, not a
+fault: everyone just runs `/remote on` again.

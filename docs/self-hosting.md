@@ -348,7 +348,7 @@ shared tailnet takes that switch away from them.
 If the name matches more than one entry the command **removes nothing** and
 lists the candidates, so you can retype using the unambiguous id. This runs
 during a personnel incident, and deleting the wrong person costs them their
-push subscriptions, notification history and open sessions.
+push subscriptions and open sessions.
 
 **The hub never re-checks with the identity provider.** It asks once, at first
 sign-in, and issues its own token. Disabling somebody's Slack account blocks
