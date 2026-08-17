@@ -1420,15 +1420,46 @@ test('pane vừa chết thì vé còn hợp lệ cũng bị từ chối, không 
 
 // --- Task 9: bind thẳng vào IP Tailscale, không qua tailscale serve --------
 
-test('daemon KHÔNG nghe trên 0.0.0.0 — cổng không được hở ra wifi/LAN', async () => {
+// Measured with two addresses instead of parsing a tool's output. The old
+// version shelled out to `lsof` and looked for `*:` in the line — which reads
+// the answer off macOS's default toolbox and finds nothing on a clean
+// Debian/Ubuntu, where lsof is not installed (spawnSync ENOENT, test red for a
+// reason that has nothing to do with the daemon).
+//
+// The property itself needs no tool: the daemon binds 127.0.0.1 in tests, so a
+// connect to loopback must SUCCEED and a connect to this machine's own LAN
+// address must FAIL. Were it listening on 0.0.0.0, the second one would
+// succeed — which is the leak this test exists to catch. Same technique, and
+// the same honest skip when there is no second address, as the bind tests on
+// the hub side.
+const nonLoopbackIpv4 = () => {
+  for (const addrs of Object.values(os.networkInterfaces())) {
+    for (const a of addrs || []) {
+      if (a.family === 'IPv4' && !a.internal) return a.address;
+    }
+  }
+  return null;
+};
+
+test('daemon KHÔNG nghe trên 0.0.0.0 — cổng không được hở ra wifi/LAN', async (t) => {
+  const lan = nonLoopbackIpv4();
+  if (!lan) {
+    t.skip('máy này chỉ có loopback — không có địa chỉ thứ hai để chứng minh cổng không hở, bỏ qua thay vì pass vì lý do sai');
+    return;
+  }
   const d = await startDaemon();
   try {
-    const out = execFileSync('lsof', ['-nP', '-iTCP', '-sTCP:LISTEN'], { encoding: 'utf8' });
-    const dong = out.split('\n').filter((l) => l.includes(`:${d.port}`));
-    assert.ok(dong.length > 0, 'phải có tiến trình nghe cổng này');
-    for (const l of dong) {
-      assert.ok(!l.includes('*:'), `nghe trên mọi giao diện là hở ra LAN: ${l}`);
-    }
+    const reach = (host) => new Promise((resolve) => {
+      const s = net.connect({ port: d.port, host });
+      const done = (ok) => { s.destroy(); resolve(ok); };
+      s.setTimeout(2000, () => done(false));
+      s.once('connect', () => done(true));
+      s.once('error', () => done(false));
+    });
+    assert.equal(await reach('127.0.0.1'), true,
+      'phép đo phải tự chứng minh được là nó đo đúng cổng: loopback bắt buộc nối được');
+    assert.equal(await reach(lan), false,
+      `nối được qua ${lan} nghĩa là daemon đang nghe mọi giao diện — cổng hở ra wifi/LAN`);
   } finally { d.stop(); }
 });
 
@@ -2843,10 +2874,29 @@ test('token wrong_host: daemon ghi log lý do kèm CẢ HAI host, không phải 
 // Kiểm bằng vị trí trong chuỗi chứ không bằng thời gian: hai dòng cạnh nhau
 // trong cùng một lần ghi thì không có "khoảnh khắc" nào để đo, còn thứ tự thì
 // luôn xác định.
+// startDaemon() với cổng ghim chỉ chờ `waitListening(port)` — tức "cổng đã
+// nhận kết nối". Cổng mở KHÔNG chứng minh stdout của daemon đã bay qua pipe và
+// được tiến trình test cộng vào `log`, nên đọc `d.log()` ngay sau đó có lúc trả
+// về chuỗi RỖNG và bài này đỏ với thông báo "daemon phải in tên phiên. Nó nói:"
+// bỏ trống — đo được 1/3 lượt full-suite trên máy này, và pty còn thừa (44/511)
+// nên không phải cạn pty. Đúng họ lỗi mà chú thích trên đang nói tới, chỉ lần
+// này nằm trong TEST: chờ điều kiện A rồi giả định B cũng xong.
+//
+// Chờ đúng thứ mình sắp đo. Bất biến được canh vẫn nguyên vẹn là THỨ TỰ — chờ
+// cả hai dòng có mặt rồi mới so vị trí, nên một daemon in ngược lại vẫn đỏ.
+const doiLog = async (d, ...moc) => {
+  for (let i = 0; i < 100; i++) {
+    const out = d.log();
+    if (moc.every((m) => out.includes(m))) return out;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  return d.log(); // hết giờ: trả về nguyên trạng để assert dưới in ra log thật
+};
+
 test('dòng `nghe` in SAU `tên` — thứ tự mà /remote on dựa vào để in tên phiên', async () => {
   const d = await startDaemon();
   try {
-    const out = d.log();
+    const out = await doiLog(d, '[term] tên:', '[term] nghe ');
     const iTen = out.indexOf('[term] tên:');
     const iNghe = out.indexOf('[term] nghe ');
     assert.notEqual(iTen, -1, `daemon phải in tên phiên. Nó nói:\n${out}`);

@@ -1,7 +1,18 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Cài phần máy dev: cấu hình, slash command /notify, hook Notification.
 # KHÔNG cài service, KHÔNG đụng tmux — hệ thống này chỉ gửi thông báo.
-set -euo pipefail
+#
+# POSIX sh, KHÔNG phải bash — và không phải vì thích chuẩn. install.sh gọi file
+# này bằng `sh "$DEST/setup-notify.sh"`, nên shebang ở trên không có tiếng nói:
+# thứ thật sự chạy nó là /bin/sh. Trên macOS /bin/sh là bash nên bashism sống
+# sót; trên Debian/Ubuntu là dash và nó chết. Đo được trên Ubuntu 26.04: bản
+# bash của file này thoát 2, không in một chữ, để lại máy có code nhưng không
+# có ~/.ccrc/config, không hook, không slash command — người dùng thấy dòng
+# "Cấu hình…" rồi về prompt và tưởng đã cài xong.
+#
+# `set -eu`, không `pipefail`: dash cũ không có nó, và chỗ duy nhất trong file
+# này có pipeline (grep|cut ở dưới) đã tự đóng bằng `|| true`.
+set -eu
 cd "$(dirname "$0")"
 REPO_DIR=$(pwd)
 CFG_DIR="$HOME/.ccrc"
@@ -26,16 +37,32 @@ OLD_TOK=$(grep -s '^CCRC_TOKEN=' "$CFG_DIR/config" | cut -d= -f2- || true)
 # even for a process with no controlling terminal, and the failure only shows
 # up on use, as "Device not configured" — which is how the first run of the
 # installer died. Actually opening it is the only honest check.
-have_tty() { { : < /dev/tty; } 2>/dev/null; }
+#
+# The open happens inside a SUBSHELL, and that parenthesis is the whole point.
+# `:` is a POSIX *special* built-in, and POSIX says a redirection error on one
+# of those shall terminate a non-interactive shell — so the previous
+# `{ : < /dev/tty; } 2>/dev/null` did not return false when there was no
+# terminal, it killed the entire installer, with its own `2>/dev/null` eating
+# the reason. bash declines to enforce that rule, which is why macOS never saw
+# it and dash did. In a subshell the failure can only take the subshell down,
+# and its non-zero status is exactly the answer this function is asked for.
+have_tty() { ( : < /dev/tty ) 2>/dev/null; }
 
+# `local` is avoided on purpose (it is not POSIX), so these names are global:
+# each one is assigned before use on every call, and `__`-prefixed to stay out
+# of the way of the script's own variables.
 ask() { # ask VAR "câu hỏi" "mặc định"
-  local __var="$1" __q="$2" __def="${3:-}" __ans=""
+  __var="$1"; __q="$2"; __def="${3:-}"; __ans=""
   if have_tty; then
     printf '%s' "$__q" > /dev/tty
     IFS= read -r __ans < /dev/tty || true
   fi
   __ans="${__ans:-$__def}"
-  printf -v "$__var" '%s' "$__ans"
+  # POSIX has no `printf -v`. `eval` with the value left as `\$__ans` assigns it
+  # verbatim — the shell doing the assignment expands the variable itself, so a
+  # token containing spaces, quotes or `$` is stored as-is rather than re-parsed.
+  # $__var is a name this script chooses (HUB_URL/TOKEN/MACHINE), never input.
+  eval "$__var=\$__ans"
 }
 
 # Đọc một trường của JSON bằng node (script này đã đòi node ở trên).
@@ -58,7 +85,9 @@ json_field() {
 # này giữ. Không in deviceCode ra màn hình.
 DEVICE_TOKEN=""
 device_code_login() {
-  local start dcode ucode ttl interval body code deadline dname
+  # Không `local` (xem ask): mọi biến dưới đây được gán trước khi dùng, và hàm
+  # này chỉ được gọi đúng một lần.
+  start=''; dcode=''; ucode=''; ttl=''; interval=''; body=''; code=''; deadline=''; dname=''
   start=$(curl -fsS -X POST "$HUB_URL/api/device/start" \
             -H 'content-type: application/json' -d '{}' 2>/dev/null) || return 1
   dcode=$(printf '%s' "$start" | json_field deviceCode)

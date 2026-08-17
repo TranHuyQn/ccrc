@@ -18,8 +18,19 @@ import { fileURLToPath } from 'node:url';
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
-const SH_SCRIPTS = ['server/public/install.sh', 'server/public/uninstall.sh', 'deploy/ccrc'];
-const BASH_SCRIPTS = ['setup-notify.sh', 'remove-notify.sh', 'deploy.sh'];
+// setup-notify.sh and remove-notify.sh live here and NOT in BASH_SCRIPTS
+// because install.sh and uninstall.sh invoke them as `sh <file>`, which
+// overrides their shebang. Whatever they declare at the top, the shell that
+// actually runs them is /bin/sh — dash on Debian/Ubuntu. Measured on Ubuntu
+// 26.04: with them written as bash, the one-command install died at exit 2 and
+// left a machine with the code unpacked but no ~/.ccrc/config, no hook and no
+// slash commands. See "script chạy bằng `sh` phải là script POSIX" below,
+// which is the rule that keeps this list honest.
+const SH_SCRIPTS = ['server/public/install.sh', 'server/public/uninstall.sh', 'deploy/ccrc',
+  'setup-notify.sh', 'remove-notify.sh'];
+// deploy.sh is run by hand on the server, by name, from a checkout — its own
+// shebang decides, so bash is a real choice there rather than a mistake.
+const BASH_SCRIPTS = ['deploy.sh'];
 const ALL = [...SH_SCRIPTS, ...BASH_SCRIPTS];
 
 const read = (rel) => fs.readFileSync(path.join(root, rel), 'utf8');
@@ -89,6 +100,112 @@ test('installer dừng ngay khi lỗi — set -eu', () => {
     assert.match(read(rel), /^set -eu$/m,
       `${rel} thiếu "set -eu" — một bước hỏng sẽ chạy tiếp và để lại máy cài dở`);
   }
+});
+
+// --- Chạy bằng `sh` thì shebang không có tiếng nói ------------------------
+//
+// `sh foo.sh` runs foo.sh under /bin/sh no matter what its first line says.
+// The installer does exactly that, so a `#!/usr/bin/env bash` at the top of
+// the invoked file is not a declaration — it is a lie that only macOS keeps,
+// because there /bin/sh IS bash. On Debian/Ubuntu it is dash and the script
+// dies. Derived from the CALLER rather than from a hand-kept list, so a new
+// `sh "$DEST/whatever.sh"` added later is covered without anyone remembering
+// this rule exists.
+test('script chạy bằng `sh` phải khai shebang /bin/sh', () => {
+  const callers = ['server/public/install.sh', 'server/public/uninstall.sh'];
+  let found = 0;
+  for (const caller of callers) {
+    const src = read(caller);
+    for (const m of src.matchAll(/\bsh\s+"\$\{?DEST\}?\/([A-Za-z0-9._-]+)"/g)) {
+      found += 1;
+      const target = m[1];
+      const first = read(target).split('\n')[0];
+      assert.equal(first, '#!/bin/sh',
+        `${caller} chạy ${target} bằng \`sh\`, nhưng ${target} khai "${first}". `
+        + `Shebang bị bỏ qua khi gọi kiểu đó — file PHẢI là POSIX thật, không phải bash.`);
+    }
+  }
+  assert.ok(found >= 2, 'không tìm thấy lời gọi `sh "$DEST/..."` nào — regex đã lạc hậu so với installer');
+});
+
+// The bashisms that actually bit, plus the neighbours in the same family.
+// `local` is not POSIX either but every shell in reach (dash, bash, ash,
+// busybox, ksh93) implements it, so it is left alone deliberately — this list
+// is the things that genuinely BREAK, not everything the standard omits.
+const BASHISMS = [
+  [/\bprintf\s+-v\b/, 'printf -v (bash-only; dash: "Illegal option -v") — gán bằng eval "$var=\\$val"'],
+  [/\bset\s+-[a-z]*o\s+pipefail\b/, 'set -o pipefail (dash cũ không có) — dùng set -eu'],
+  [/\[\[/, '[[ ... ]] (bash-only) — dùng [ ... ]'],
+  [/<<</, '<<< here-string (bash-only) — dùng printf | ...'],
+  [/^\s*[A-Za-z_][A-Za-z0-9_]*=\(/m, 'mảng =( ... ) (bash-only)'],
+];
+
+test('script POSIX không được dùng bashism', () => {
+  for (const rel of SH_SCRIPTS) {
+    const src = read(rel);
+    src.split('\n').forEach((line, i) => {
+      if (/^\s*#/.test(line)) return;
+      for (const [re, why] of BASHISMS) {
+        assert.ok(!re.test(line), `${rel}:${i + 1} — ${why}\n  ${line.trim()}`);
+      }
+    });
+  }
+});
+
+// --- Đo THẬT dưới dash, không chỉ đọc chữ ---------------------------------
+//
+// The static rules above catch the two bashisms we know about. They cannot
+// catch the third: `have_tty` used `{ : < /dev/tty; }`, and `:` is a POSIX
+// SPECIAL built-in, so a failed redirection on it must terminate a
+// non-interactive shell outright. Nothing in the text looks wrong; only
+// running it with no terminal shows the script exiting 2 with the reason
+// swallowed by its own `2>/dev/null`. So these two run the real scripts.
+//
+// No tty is the case that used to die silently, and it is also the only case a
+// test runner can produce without a pty — which makes it the right one to
+// automate. It exercises ask() too (CCRC_MACHINE_NAME is deliberately NOT
+// passed), so the printf -v line is reached rather than skipped.
+const sandboxEnv = (home) => {
+  // A PATH with node but WITHOUT `claude`: setup-notify.sh installs the `ccrc`
+  // command next to whatever `claude` it finds, and on a dev machine that is a
+  // real directory outside the sandbox. Cutting `claude` out of PATH is what
+  // keeps this test from writing into the user's own bin.
+  const nodeBin = fs.mkdtempSync(path.join(os.tmpdir(), 'ccrc-path-'));
+  fs.symlinkSync(process.execPath, path.join(nodeBin, 'node'));
+  return {
+    PATH: `${nodeBin}:/usr/bin:/bin`,
+    HOME: home,
+    CCRC_HUB_URL: 'https://hub.example.com',
+    CCRC_TOKEN: 'tok-test',
+  };
+};
+
+test('setup-notify.sh chạy trọn dưới dash khi KHÔNG có terminal', (t) => {
+  if (!HAS_DASH) { t.skip('máy này không có dash — bỏ qua, không giả bằng sh vì sh trên macOS là bash'); return; }
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccrc-home-'));
+  const r = spawnSync('dash', [path.join(root, 'setup-notify.sh')], {
+    env: sandboxEnv(home), encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 60_000,
+  });
+  assert.equal(r.status, 0,
+    `setup-notify.sh chết dưới dash (exit ${r.status}).\nstdout:\n${r.stdout}\nstderr:\n${r.stderr}`);
+  const cfg = path.join(home, '.ccrc', 'config');
+  assert.ok(fs.existsSync(cfg), 'không ghi ra ~/.ccrc/config — máy cài dở mà không ai biết');
+  assert.match(fs.readFileSync(cfg, 'utf8'), /^CCRC_TOKEN=tok-test$/m);
+  assert.ok(fs.existsSync(path.join(home, '.claude', 'commands', 'remote.md')), 'thiếu slash command /remote');
+  assert.ok(fs.existsSync(path.join(home, '.claude', 'settings.json')), 'thiếu hook trong settings.json');
+});
+
+test('remove-notify.sh dưới dash, không terminal và không -y: từ chối tử tế chứ không chết câm', (t) => {
+  if (!HAS_DASH) { t.skip('máy này không có dash'); return; }
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccrc-home-'));
+  const r = spawnSync('dash', [path.join(root, 'remove-notify.sh')], {
+    env: sandboxEnv(home), encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 60_000,
+  });
+  // Exit 1 with the sentence, not exit 2 with nothing: the user must learn
+  // that -y is what they need, instead of watching a command return in silence
+  // and assuming it worked.
+  assert.equal(r.status, 1, `mong exit 1 kèm lời giải thích, nhận exit ${r.status}\nstdout:\n${r.stdout}\nstderr:\n${r.stderr}`);
+  assert.match(r.stdout, /Không có terminal để hỏi/);
 });
 
 // The installer is served to anyone who asks for it.

@@ -672,6 +672,71 @@ test('daemon thật khởi động bằng đường dẫn TƯƠNG ĐỐI vẫn �
   }
 });
 
+// --- lsof không có trên mọi máy -------------------------------------------
+//
+// `lsof` đi kèm macOS, nên phụ thuộc này vô hình ở đây. Debian/Ubuntu KHÔNG cài
+// sẵn nó — đo trên Ubuntu 26.04 sạch: `command -v lsof` không thấy gì. Thiếu nó,
+// processCwd() không trả lời được, người gọi lùi về cwd của CHÍNH lệnh off, và
+// một daemon chạy từ thư mục khác bằng đường dẫn tương đối thôi không còn được
+// nhận diện: `off` in "vốn đã tắt" trong khi daemon vẫn sống và vẫn phục vụ một
+// shell trên tailnet. Đúng hướng-hỏng mà chú thích "Round 3" trong
+// ccrc-term-cli.js nói là tệ hơn cái false positive nó thay thế.
+//
+// Linux trả lời được câu này mà không cần công cụ nào: /proc/<pid>/cwd là
+// symlink do kernel giữ.
+
+// PATH chỉ chứa đúng thứ đường `off` cần, và CỐ Ý không có lsof. Trung thực với
+// máy thật: lsof VẮNG MẶT nên execFileSync ném ENOENT, chứ không phải một stub
+// chỉ thoát khác 0.
+function pathWithoutLsof() {
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'ccrc-nolsof-'));
+  for (const name of ['node', 'ps', 'tmux']) {
+    let real;
+    try {
+      real = name === 'node' ? process.execPath
+        : execFileSync('command', ['-v', name], { encoding: 'utf8', shell: true }).trim();
+    } catch { return null; }
+    if (!real) return null;
+    fs.symlinkSync(real, path.join(bin, name));
+  }
+  return bin;
+}
+
+test('không có lsof: daemon thật khởi động bằng đường dẫn TƯƠNG ĐỐI vẫn được nhận diện', async (t) => {
+  // /proc là thứ duy nhất trả lời được câu này mà không cần lsof. macOS không có
+  // nó, nên ở đó lsof vẫn là đường duy nhất và bài test này không nói được gì —
+  // bỏ qua rõ ràng thay vì đỏ vì một lý do không liên quan.
+  if (!fs.existsSync('/proc/self/cwd')) {
+    t.skip('máy này không có /proc (macOS) — ở đó lsof vẫn là đường duy nhất, không có gì để canh');
+    return;
+  }
+  const bin = pathWithoutLsof();
+  if (!bin) { t.skip('không dựng được PATH tối giản (thiếu ps hoặc tmux)'); return; }
+
+  const tp = newTmuxPane('ccrc-cli-nolsof');
+  const home = tmpHome('CCRC_HUB_URL=http://127.0.0.1:9\nCCRC_TOKEN=t\nCCRC_MACHINE_NAME=m\n');
+  const pidfile = pidFilePath(home, tp.pane);
+  const proc = spawn(process.execPath, ['ccrc-term.js'], {
+    cwd: path.dirname(DAEMON_PATH),
+    env: daemonEnv(tp.pane, 8796),
+    stdio: 'ignore',
+  });
+  try {
+    await sleep(500);
+    fs.writeFileSync(pidfile, JSON.stringify({ pid: proc.pid, sessionId: 's-test' }));
+
+    const r = await run(['off'], { HOME: home, TMUX_PANE: tp.pane, PATH: bin });
+
+    assert.match(r.stdout, /ĐÃ TẮT/,
+      'thiếu lsof vẫn phải nhận ra daemon của mình — báo "vốn đã tắt" là để lại một shell mở trên tailnet mà người dùng không còn cách nào tìm ra');
+    await sleep(300);
+    assert.equal(isAlive(proc.pid), false, 'daemon phải thực sự bị dừng');
+  } finally {
+    try { process.kill(proc.pid, 'SIGKILL'); } catch { /* already gone */ }
+    tp.kill();
+  }
+});
+
 // --- Review finding: neither shelled-out identification call had a timeout. --
 // --- `off` runs on the shutdown path: a hung `ps`/`lsof` there blocks the ----
 // --- one command that stops the daemon, forever, with no way out. -----------
@@ -713,7 +778,21 @@ test('ps treo: off vẫn trả về trong thời gian có hạn, không nhận v
 // in fact learned nothing about — so this test fails if the timeout is
 // missing (unbounded) AND if the timeout is handled by guessing (kills the
 // daemon it never identified).
+// Kể từ khi processCwd() đọc /proc/<pid>/cwd trước, câu hỏi này có HAI câu trả
+// lời đúng, tuỳ máy — và cả hai đều phải được canh:
+//
+//   • Không có procfs (macOS): lsof là đường DUY NHẤT, nên lsof treo nghĩa là
+//     không biết gì → fail closed, không gửi tín hiệu cho ai. Đúng như cũ.
+//   • Có procfs (Linux): kernel đã trả lời trước khi lsof được gọi tới, nên
+//     lsof treo KHÔNG được ảnh hưởng gì tới kết quả. Đây là bảo đảm MẠNH HƠN,
+//     không phải nới lỏng: daemon vẫn phải được nhận diện đúng và tắt được,
+//     trong thời gian có hạn.
+//
+// Điểm chung, và là thứ thật sự được canh ở cả hai nhánh: off phải trả về theo
+// hạn của chính nó, và không bao giờ được vừa "không xác minh được danh tính"
+// vừa gửi SIGTERM.
 test('lsof treo: off vẫn trả về trong thời gian có hạn và fail closed (không giết daemon)', async () => {
+  const HAS_PROCFS = fs.existsSync('/proc/self/cwd');
   const tp = newTmuxPane('ccrc-cli-lsofhang');
   const home = tmpHome('CCRC_HUB_URL=http://127.0.0.1:9\nCCRC_TOKEN=t\nCCRC_MACHINE_NAME=m\n');
   const pidfile = pidFilePath(home, tp.pane);
@@ -735,10 +814,20 @@ test('lsof treo: off vẫn trả về trong thời gian có hạn và fail close
 
     assert.ok(elapsed < BOUNDED_MS,
       `off phải bỏ cuộc theo hạn của chính nó chứ không chờ lsof mãi (mất ${elapsed}ms)`);
-    assert.doesNotMatch(r.stdout, /ĐÃ TẮT/, 'không xác minh được thì không được báo như thể vừa tắt');
-    assert.match(r.stdout, /vốn đã tắt/i);
-    await sleep(300);
-    assert.equal(isAlive(proc.pid), true, 'không xác minh được danh tính thì tuyệt đối không gửi tín hiệu');
+    if (HAS_PROCFS) {
+      // /proc đã trả lời, nên lsof treo là chuyện của lsof. Nhận diện đúng và
+      // tắt được là câu trả lời ĐÚNG ở đây — nếu ngày nào nhánh này quay về
+      // "vốn đã tắt", tức procfs đã bị bỏ và Linux lại phụ thuộc lsof.
+      assert.match(r.stdout, /ĐÃ TẮT/,
+        'có /proc thì lsof treo không được ảnh hưởng gì — daemon vẫn phải nhận diện được');
+      await sleep(300);
+      assert.equal(isAlive(proc.pid), false, 'daemon đã nhận diện được thì phải thực sự bị dừng');
+    } else {
+      assert.doesNotMatch(r.stdout, /ĐÃ TẮT/, 'không xác minh được thì không được báo như thể vừa tắt');
+      assert.match(r.stdout, /vốn đã tắt/i);
+      await sleep(300);
+      assert.equal(isAlive(proc.pid), true, 'không xác minh được danh tính thì tuyệt đối không gửi tín hiệu');
+    }
     assert.equal(fs.existsSync(pidfile), false);
   } finally {
     try { process.kill(proc.pid, 'SIGKILL'); } catch { /* already gone */ }

@@ -1,6 +1,10 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Gỡ sạch phần máy dev. Repo giữ nguyên.
-set -euo pipefail
+#
+# POSIX sh, không phải bash, cho cùng lý do setup-notify.sh nêu ở đầu file nó:
+# uninstall.sh gọi file này bằng `sh "$DEST/remove-notify.sh" -y`, nên shebang
+# bị bỏ qua và /bin/sh mới là thứ chạy nó — dash trên Debian/Ubuntu.
+set -eu
 cd "$(dirname "$0")"
 REPO_DIR=$(pwd)
 CFG_DIR="$HOME/.ccrc"
@@ -33,9 +37,16 @@ say "  • mọi phiên /remote đang chạy trên máy này"
 # Same reason as setup-notify.sh: under `curl … | bash` stdin is the script
 # itself, so the confirmation is read from the terminal directly. With no
 # terminal and no -y, refuse rather than assume yes — this deletes things.
+# Phải khởi tạo trước: nếu lệnh đọc phía dưới thất bại thì `case "$a"` gặp một
+# biến chưa đặt, và dưới `set -u` đó là lỗi thoát chứ không phải chuỗi rỗng.
+a=''
 if [ "${1:-}" != "-y" ] && [ "${CCRC_YES:-}" != "1" ]; then
-  # Opened rather than tested: see setup-notify.sh's have_tty for why `-r` lies.
-  if { : < /dev/tty; } 2>/dev/null; then
+  # Opened rather than tested: see setup-notify.sh's have_tty for why `-r` lies,
+  # and why the open must sit inside a SUBSHELL — `:` is a special built-in, so
+  # a failed redirect on it takes a POSIX shell down instead of answering "no".
+  # Without the parentheses this branch never runs on dash: the script exits 2
+  # and the sentence below, the one telling the user to pass -y, never prints.
+  if ( : < /dev/tty ) 2>/dev/null; then
     printf 'Tiếp tục? [y/N] ' > /dev/tty
     IFS= read -r a < /dev/tty || true
   else

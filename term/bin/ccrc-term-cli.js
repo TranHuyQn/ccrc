@@ -120,6 +120,24 @@ const DAEMON_REAL = realpathOrSelf(DAEMON);
 // and we gave up" is not the same as "lsof answered": we know nothing about
 // this process, so the identification must fail closed rather than guess.
 function processCwd(pid) {
+  // procfs first, and not as an optimisation: `lsof` is the only other way to
+  // ask, and it is NOT installed by default on Debian or Ubuntu — measured on a
+  // clean Ubuntu 26.04, where `command -v lsof` finds nothing. Every one of
+  // those machines used to land in the catch below and answer "don't know",
+  // which the caller turns into a guess (its own cwd) and, for a daemon started
+  // with a relative path, into `off` reporting "vốn đã tắt" about a daemon still
+  // serving a shell. On Linux the kernel already holds the answer as a symlink,
+  // no tool involved.
+  //
+  // readlink, not realpath: /proc/<pid>/cwd resolves to the real directory
+  // already, and realpath on it would follow a second time for nothing. Reading
+  // it needs the same privilege lsof would (same uid), so EACCES — like a system
+  // with no /proc at all — simply falls through to lsof rather than being
+  // treated as an answer.
+  try {
+    const viaProc = fs.readlinkSync(`/proc/${pid}/cwd`);
+    if (viaProc) return { cwd: viaProc };
+  } catch { /* không có procfs (macOS), hoặc không đọc được — hỏi lsof */ }
   try {
     const out = execFileSync('lsof', ['-a', '-p', String(pid), '-d', 'cwd', '-Fn'],
       { encoding: 'utf8', timeout: PROBE_TIMEOUT_MS });
