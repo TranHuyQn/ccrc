@@ -23,7 +23,7 @@ giao diện của nó, không ai phải parse gì. Toàn bộ họ lỗi cũ kh�
 |---|---|---|
 | `tmux ls` | không có server nào | Claude Code hiện KHÔNG chạy trong tmux → điều kiện tiên quyết chưa có |
 | `Tailscale.app` | đã cài, v1.98.8, **đang dừng** | **Là đường vào của thiết kế này** (D2). Phải bật trước khi dùng |
-| `tailscale status --json` | `Self.TailscaleIPs` = `100.86.78.80`, `BackendState`, `Self.DNSName` | IP là đường vào; `BackendState` là điều kiện tiên quyết kiểm được (§4.4) |
+| `tailscale status --json` | `Self.TailscaleIPs` = ví dụ `100.101.102.103`, `BackendState`, `Self.DNSName` | IP là đường vào; `BackendState` là điều kiện tiên quyết kiểm được (§4.4) |
 | `tailscale cert <tên máy>` | `500: your Tailscale account does not support getting TLS certs` | Tailnet chưa bật HTTPS Certificates. Huy **từ chối bật** (D2c) ⇒ mọi phương án cần chứng chỉ bị loại |
 | Tailnet | 10 máy, suffix `tailnet-example.ts.net`, cấu hình serve = `{}` | Bật chứng chỉ sẽ đưa tên máy vào CT log **vĩnh viễn** — đó là lý do D2c |
 | `pmset -g` | `standby 1`, `powernap 1`, `sleep 0` (do caffeinate/Chrome giữ) | Máy đang thức nhờ ăn may; ngủ là mất kết nối |
@@ -115,7 +115,7 @@ dung hỗn hợp. Cái giá là nó không nhúng được vào PWA (https), và
 | Tên | Là gì |
 |---|---|
 | `sessionId` | Chuỗi ngẫu nhiên do daemon sinh **mỗi lần `/remote on`**. **Không** phải tên phiên tmux — tên thật không rời khỏi máy dev |
-| Đường vào | Daemon `listen()` trên `Self.TailscaleIPs[0]` (đo thật trên máy Huy: `100.86.78.80`), **cổng 0 — để OS cấp** (đảo 2026-07-28 theo D5c: cổng cố định 8730 làm daemon thứ hai chết EADDRINUSE). Cổng thật chỉ biết được sau khi `listen` xong (`server.address().port`), và URL báo lên hub được dựng từ đó. `CCRC_TERM_PORT` vẫn ghim được, chỉ dùng cho test. **Chỉ** bind địa chỉ Tailscale — không `0.0.0.0`, để cổng không hở ra wifi/LAN |
+| Đường vào | Daemon `listen()` trên `Self.TailscaleIPs[0]` (ví dụ `100.101.102.103`), **cổng 0 — để OS cấp** (đảo 2026-07-28 theo D5c: cổng cố định 8730 làm daemon thứ hai chết EADDRINUSE). Cổng thật chỉ biết được sau khi `listen` xong (`server.address().port`), và URL báo lên hub được dựng từ đó. `CCRC_TERM_PORT` vẫn ghim được, chỉ dùng cho test. **Chỉ** bind địa chỉ Tailscale — không `0.0.0.0`, để cổng không hở ra wifi/LAN |
 | Nhịp tim | Daemon POST lên hub mỗi **20 giây**. Hub coi thẻ là "không phản hồi" sau **60 giây** không nhịp |
 | Kho nonce | Daemon giữ trong RAM, xoá mục quá hạn. Daemon khởi động lại ⇒ vé cũ vô hiệu (đúng ý muốn — xem thêm hàng "Bí mật HMAC" ngay dưới, thứ thực sự làm điều này đúng) |
 | Cấu hình daemon | Dùng lại `~/.ccrc/config` sẵn có (`CCRC_HUB_URL`, `CCRC_TOKEN`, `CCRC_MACHINE_NAME`) |

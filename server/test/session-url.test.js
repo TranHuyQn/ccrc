@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import { isSessionUrlAllowed } from '../src/session-url.js';
 
 test('địa chỉ IPv4 Tailscale bình thường được chấp nhận', () => {
-  assert.equal(isSessionUrlAllowed('http://100.86.78.80:62539/'), true);
+  assert.equal(isSessionUrlAllowed('http://100.101.102.103:62539/'), true);
   assert.equal(isSessionUrlAllowed('http://100.64.0.1/'), true, 'đầu dải 100.64.0.0/10');
   assert.equal(isSessionUrlAllowed('http://100.127.255.254:8730/'), true, 'cuối dải 100.64.0.0/10');
 });

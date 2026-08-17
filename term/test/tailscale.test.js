@@ -59,20 +59,20 @@ exit 0
 
 const RUNNING = {
   BackendState: 'Running',
-  Self: { DNSName: 'may-dev.tailnet-example.ts.net.', TailscaleIPs: ['100.86.78.80', 'fd7a:115c:a1e0::1'] },
+  Self: { DNSName: 'may-dev.tailnet-example.ts.net.', TailscaleIPs: ['100.101.102.103', 'fd7a:115c:a1e0::1'] },
 };
 
 test('đủ điều kiện: trả về IPv4 Tailscale', () => {
   const { bin } = fakeTailscale(RUNNING);
   const r = checkPrereqs(bin);
   assert.equal(r.ok, true);
-  assert.equal(r.ip, '100.86.78.80');
+  assert.equal(r.ip, '100.101.102.103');
 });
 
 test('bỏ qua IPv6, lấy đúng IPv4', () => {
   const { bin } = fakeTailscale({ ...RUNNING,
-    Self: { TailscaleIPs: ['fd7a:115c:a1e0::1', '100.86.78.80'] } });
-  assert.equal(checkPrereqs(bin).ip, '100.86.78.80');
+    Self: { TailscaleIPs: ['fd7a:115c:a1e0::1', '100.101.102.103'] } });
+  assert.equal(checkPrereqs(bin).ip, '100.101.102.103');
 });
 
 test('chưa có IP nào: báo stopped, không ném', () => {
@@ -83,14 +83,14 @@ test('chưa có IP nào: báo stopped, không ném', () => {
 });
 
 test('TailscaleIPs là string thay vì mảng: báo stopped, không ném', () => {
-  const { bin } = fakeTailscale({ ...RUNNING, Self: { TailscaleIPs: '100.86.78.80' } });
+  const { bin } = fakeTailscale({ ...RUNNING, Self: { TailscaleIPs: '100.101.102.103' } });
   const r = checkPrereqs(bin);
   assert.equal(r.ok, false);
   assert.equal(r.reason, 'stopped', 'hình dạng sai không được làm ips.find() ném ra ngoài');
 });
 
 test('TailscaleIPs là object thay vì mảng: báo stopped, không ném', () => {
-  const { bin } = fakeTailscale({ ...RUNNING, Self: { TailscaleIPs: { 0: '100.86.78.80' } } });
+  const { bin } = fakeTailscale({ ...RUNNING, Self: { TailscaleIPs: { 0: '100.101.102.103' } } });
   const r = checkPrereqs(bin);
   assert.equal(r.ok, false);
   assert.equal(r.reason, 'stopped');
@@ -181,7 +181,7 @@ test('IP không thuộc dải CGNAT (100.64.0.0/10): từ chối, không bind', 
 });
 
 test('IP ở biên của dải CGNAT (100.64.0.0 và 100.127.255.255) được chấp nhận', () => {
-  for (const ip of ['100.64.0.0', '100.127.255.255', '100.86.78.80']) {
+  for (const ip of ['100.64.0.0', '100.127.255.255', '100.101.102.103']) {
     const { bin } = fakeTailscale({ ...RUNNING, Self: { TailscaleIPs: [ip] } });
     const r = checkPrereqs(bin);
     assert.equal(r.ok, true, `${ip} thuộc 100.64.0.0/10, phải được chấp nhận`);

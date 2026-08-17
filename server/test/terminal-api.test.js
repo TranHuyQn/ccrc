@@ -461,7 +461,7 @@ test('url trỏ về loopback bị từ chối 400 — daemon thật không bao 
 
 test('url là IPv4 Tailscale được chấp nhận và trả lại nguyên văn', async () => {
   await withHub(async (h) => {
-    const url = 'http://100.86.78.80:62539/';
+    const url = 'http://100.101.102.103:62539/';
     assert.equal((await post(h, '/api/terminal/register', 'tok-huy', { ...REG, url })).status, 200);
     const j = await (await get(h, '/api/terminal', 'tok-huy')).json();
     assert.equal(j.sessions[0].url, url);

@@ -24,7 +24,7 @@
 - Nhịp tim: daemon POST mỗi **20 giây**; hub coi là "không phản hồi" sau **60 giây**.
 - Cổng daemon cục bộ: **8730** (`CCRC_TERM_PORT`), chỉ nghe `127.0.0.1`.
 - Mặc định **TẮT**. Không gõ `/remote on` thì không có serve, không có cửa nào mở.
-- Đường vào là **IP Tailscale**, mỗi người một tailnet riêng. Lấy từ `tailscale status --json` → `Self.TailscaleIPs[0]`. Đo thật trên máy này: `100.86.78.80`. **Không** `tailscale serve`, **không** chứng chỉ TLS (D2c — xem Task 9).
+- Đường vào là **IP Tailscale**, mỗi người một tailnet riêng. Lấy từ `tailscale status --json` → `Self.TailscaleIPs[0]`. Ví dụ (địa chỉ minh hoạ, không phải máy nào có thật): `100.101.102.103`. **Không** `tailscale serve`, **không** chứng chỉ TLS (D2c — xem Task 9).
 - Hai điều kiện tiên quyết, thiếu cái nào cũng phải **báo lỗi rõ và không bật gì**: (1) đang trong tmux, (2) Tailscale đang chạy và có IP.
 - Daemon bind **đúng IP Tailscale**, tuyệt đối không `0.0.0.0` — bind mọi giao diện là hở cổng ra wifi/LAN.
 - **Không** dùng `caffeinate` hay bất cứ lệnh riêng hệ điều hành nào.
@@ -2153,20 +2153,20 @@ Xoá mọi test của `serveStart`/`serveStop` và của `no_certs`. Sửa fixtu
 ```js
 const RUNNING = {
   BackendState: 'Running',
-  Self: { DNSName: 'may-dev.tailnet-example.ts.net.', TailscaleIPs: ['100.86.78.80', 'fd7a:115c:a1e0::1'] },
+  Self: { DNSName: 'may-dev.tailnet-example.ts.net.', TailscaleIPs: ['100.101.102.103', 'fd7a:115c:a1e0::1'] },
 };
 
 test('đủ điều kiện: trả về IPv4 Tailscale', () => {
   const { bin } = fakeTailscale(RUNNING);
   const r = checkPrereqs(bin);
   assert.equal(r.ok, true);
-  assert.equal(r.ip, '100.86.78.80');
+  assert.equal(r.ip, '100.101.102.103');
 });
 
 test('bỏ qua IPv6, lấy đúng IPv4', () => {
   const { bin } = fakeTailscale({ ...RUNNING,
-    Self: { TailscaleIPs: ['fd7a:115c:a1e0::1', '100.86.78.80'] } });
-  assert.equal(checkPrereqs(bin).ip, '100.86.78.80');
+    Self: { TailscaleIPs: ['fd7a:115c:a1e0::1', '100.101.102.103'] } });
+  assert.equal(checkPrereqs(bin).ip, '100.101.102.103');
 });
 
 test('chưa có IP nào: báo stopped, không ném', () => {

@@ -549,7 +549,7 @@ for (const [ten, url] of URL_XAU) {
 }
 
 test('url tailnet hợp lệ vẫn điều hướng bình thường', async () => {
-  const session = makeSessionWithUrl('http://100.86.78.80:62539/');
+  const session = makeSessionWithUrl('http://100.101.102.103:62539/');
   const fetchImpl = makeFetch(async (u) => {
     if (u === '/api/terminal') return { status: 200, body: { sessions: [session] } };
     throw new Error('unexpected url ' + u);
@@ -559,7 +559,7 @@ test('url tailnet hợp lệ vẫn điều hướng bình thường', async () =
   await context.refreshTerminal();
   await openButtonOf(byId['terminal-list'].children[0]).onclick();
 
-  assert.ok(location.href.startsWith('http://100.86.78.80:62539/#t=v2.'),
+  assert.ok(location.href.startsWith('http://100.101.102.103:62539/#t=v2.'),
     `lớp chặn không được chặn nhầm đường đi thật — đó là toàn bộ tính năng; thấy: ${location.href}`);
 });
 
