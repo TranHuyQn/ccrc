@@ -31,6 +31,10 @@ import { checkPrereqs } from '../src/tailscale.js';
 import { parsePositiveMs, requestedPortLabel } from '../src/env.js';
 import { DEFAULT_MAX_TICKET_LIFETIME_MS } from '../src/ticket-policy.js';
 import { handleStatic } from '../src/static.js';
+import { PROTOCOL_VERSION } from '../../shared/protocol-version.js';
+import { phienBanTrenDia } from '../src/disk-version.js';
+import { docPhienBanHub, docDauVanTayHub } from '../src/hub-version.js';
+import { dauVanTay } from '../../shared/bundle-fingerprint.js';
 
 // Default 0 asks the OS for any free port, which is what lets more than one
 // daemon run at once (each on its own pane) — a fixed port meant the second
@@ -207,15 +211,39 @@ function watchingChanged() {
 // group leaked by a crashed daemon is not an anonymous mystery session.
 const RUN_ID = makeRunId();
 
+// Gốc của bản cài này: term/bin/ → term/ → gốc. Cùng cây mà install.sh bung ra,
+// nên dấu vân tay tính ở đây so được thẳng với dấu vân tay hub khai.
+const GOC_BAN_CAI = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+// Dấu vân tay của code ĐANG CHẠY: chụp một lần lúc khởi động, không bao giờ
+// tính lại. Đem so với dấu vân tay đọc từ đĩa lúc có người nối vào là biết
+// ngay bản cài đã bị thay dưới chân daemon hay chưa — tình trạng đã âm thầm
+// kéo dài hai ngày trước 2026-08-17.
+const VT_RAM = dauVanTay(GOC_BAN_CAI);
+
+// Phiên bản hợp đồng của gói cài hub đang phục vụ, học được từ nhịp heartbeat.
+// null nghĩa là chưa biết: chưa nhịp nào thành công, hoặc hub cũ không khai.
+// "Chưa biết" phải khác "bằng 0", nếu không thì lời nhắc cài lại sẽ hiện mãi.
+let phienBanHub = null;
+// Dấu vân tay gói cài hub đang phục vụ. Khác với dấu vân tay trên đĩa nghĩa là
+// có bản mới để CÀI (chạy lại install.sh), khác với chuyện nạp lại daemon.
+let vanTayHub = null;
+
 async function tellHub(pathname, body) {
   if (NO_HUB || !cfg) return;
   try {
-    await fetch(new URL(pathname, cfg.hubUrl), {
+    const res = await fetch(new URL(pathname, cfg.hubUrl), {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: `Bearer ${cfg.token}` },
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(5000),
     });
+    // Nhân tiện: hub khai phiên bản gói cài nó đang phục vụ. Không tự cập nhật
+    // gì cả — chỉ để nói được với người dùng là có bản mới.
+    const than = await res.json().catch(() => null);
+    const v = docPhienBanHub(than);
+    if (v !== null) phienBanHub = v;
+    const vt = docDauVanTayHub(than);
+    if (vt !== null) vanTayHub = vt;
   } catch { /* the hub being unreachable must never take the terminal down */ }
 }
 
@@ -711,6 +739,32 @@ wss.on('connection', (ws, mintKey) => {
     let msg;
     try { msg = JSON.parse(raw.toString()); } catch (e) { return; } // not JSON — drop
     if (!msg || typeof msg !== 'object') return;
+    // Trang hỏi "tôi đang nói chuyện với ai". Daemon CŨ không biết khung này
+    // nên nó rơi vào nhánh drop cuối hàm và im lặng — chính sự im lặng đó là
+    // cách trang nhận ra một bản quá cũ, nên đừng bao giờ biến khung lạ thành
+    // một lời đáp chung chung.
+    if (msg.type === 'ccrc_chao') {
+      sendCtl({
+        type: 'ccrc_chao_lai',
+        // Phiên bản của code ĐANG CHẠY trong RAM tiến trình này...
+        v: PROTOCOL_VERSION,
+        // ...và phiên bản đang nằm trên đĩa lúc này. Hai số khác nhau nghĩa là
+        // bản cài đã được cập nhật sau khi daemon khởi động, và daemon vẫn
+        // đang chạy code cũ cho tới lần `/remote on` kế tiếp. Đúng tình trạng
+        // đã âm thầm kéo dài hai ngày trước 2026-08-17.
+        dia: phienBanTrenDia(),
+        // ...và phiên bản gói cài hub đang phục vụ, nếu đã học được. Lớn hơn
+        // hai số trên nghĩa là có bản mới để cài, không phải chỉ để nạp lại.
+        hub: phienBanHub,
+        // Ba dấu vân tay, đọc theo cùng một lối như ba số phiên bản trên.
+        // Chúng bắt được cả bản chỉ sửa lỗi — thứ mà số phiên bản hợp đồng cố
+        // ý không đổi theo, và vì thế bỏ sót.
+        vtRam: VT_RAM,
+        vtDia: dauVanTay(GOC_BAN_CAI),
+        vtHub: vanTayHub,
+      });
+      return;
+    }
     if (msg.type === 'ccrc_visibility') {
       // Only an explicit boolean counts. A malformed frame must not be able
       // to flip this either way — silently turning notifications off is the

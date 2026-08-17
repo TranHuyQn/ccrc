@@ -42,6 +42,24 @@ DEST="${CCRC_APP_DIR:-$HOME/.local/share/ccrc}"
 say() { printf '%s\n' "$*"; }
 die() { printf '✗ %s\n' "$*" >&2; exit 1; }
 
+# --- đọc lại thứ máy này đã lưu từ lần cài trước ---------------------------
+#
+# install.sh tự ghi ra file này và KHÔNG xoá nó khi cài lại (`rm -rf "$DEST"`
+# chỉ đụng thư mục code), nhưng trước 2026-08-17 nó cũng không đọc lại — nên
+# máy đã cài vẫn bị hỏi mã ngắn từ đầu, và người dùng còn phải gõ tay cả địa
+# chỉ hub mà chính file này đang giữ. Ghép nối chỉ nên cần ở lần đầu.
+#
+# Đọc SAU khi $1/$CCRC_TOKEN đã được xét, và chỉ dùng để LẤP CHỖ TRỐNG: người
+# quản trị truyền token tay vẫn phải thắng.
+CFG_FILE="$HOME/.ccrc/config"
+CFG_HUB=""
+CFG_TOKEN=""
+if [ -r "$CFG_FILE" ]; then
+  CFG_HUB=$(sed -n 's/^CCRC_HUB_URL=//p' "$CFG_FILE" | head -1)
+  CFG_TOKEN=$(sed -n 's/^CCRC_TOKEN=//p' "$CFG_FILE" | head -1)
+fi
+[ -n "$HUB" ] || HUB="$CFG_HUB"
+
 command -v curl >/dev/null 2>&1 || die "Cần curl."
 command -v tar  >/dev/null 2>&1 || die "Cần tar."
 command -v node >/dev/null 2>&1 || die "Cần Node.js. Cài rồi chạy lại."
@@ -54,6 +72,28 @@ command -v node >/dev/null 2>&1 || die "Cần Node.js. Cài rồi chạy lại."
   Dùng: curl -fsSL https://<hub-cua-ban>/install.sh | sh -s -- <token-cua-ban> https://<hub-cua-ban>
   Hoặc: CCRC_HUB_URL=https://<hub-cua-ban> sh install.sh
   Chưa có hub? Xem README — mỗi người tự dựng hub riêng của mình."
+
+# Token đã lưu có còn dùng được không.
+#
+# Bắt buộc phải hỏi: token có thể đã bị thu hồi từ lâu, và tin bừa nghĩa là
+# cài xong mới hỏng — im lặng, ở một chỗ người dùng không nghĩ tới. `/api/me`
+# là endpoint nhẹ nhất có xác thực, và có ở mọi bản hub đủ lâu để một máy cài
+# từ trước cũng gặp được.
+token_con_dung_duoc() {
+  [ -n "$1" ] || return 1
+  code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 \
+    -H "authorization: Bearer $1" "$2/api/me" 2>/dev/null) || return 1
+  [ "$code" = "200" ]
+}
+
+if [ -n "$CFG_TOKEN" ] && [ -z "$TOKEN" ]; then
+  if token_con_dung_duoc "$CFG_TOKEN" "$HUB"; then
+    TOKEN="$CFG_TOKEN"
+    say "• Dùng lại đăng nhập đã lưu trên máy này."
+  else
+    say "• Đăng nhập đã lưu không còn dùng được — xin lại."
+  fi
+fi
 
 TMP=$(mktemp -d)
 # EXIT lo dọn dẹp trên MỌI đường ra — kể cả khi INT/TERM bên dưới tự exit.

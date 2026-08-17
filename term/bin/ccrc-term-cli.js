@@ -12,6 +12,8 @@ import path from 'node:path';
 import { spawn, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { readConfig } from '../src/config.js';
+import { docDauVanTayHub } from '../src/hub-version.js';
+import { dauVanTay } from '../../shared/bundle-fingerprint.js';
 import { requestedPortLabel } from '../src/env.js';
 import { currentPane, paneAlive, listPanes, GROUP_SESSION_SUFFIX } from '../src/tmux.js';
 import { cleanSessionName } from '../src/session-name.js';
@@ -390,6 +392,42 @@ async function cmdOn(rawName, explicitPane = null) {
   if (result.name) say(`  Tên hiện trên web: ${result.name}`);
   if (result.url) say(`  URL: ${result.url}`);
   say('⚠ Máy ngủ là mất kết nối. Hãy đặt máy không ngủ trước khi rời đi.');
+  await nhacCapNhat();
+}
+
+// Hỏi hub xem bản cài trên máy này có còn là bản mới nhất không, rồi nói ngay
+// tại đây. Đây là chỗ đúng để nói: người dùng đang ngồi trước máy, tức là đang
+// ở đúng chỗ chạy được install.sh — khác hẳn lúc họ cầm điện thoại ngoài
+// đường và chỉ đọc được một dòng trạng thái.
+//
+// Mọi thứ ở đây đều là phụ: hub chết, mạng chậm, hub cũ không khai gì — tất cả
+// đều im lặng bỏ qua. Một lời nhắc không đáng để làm hỏng `/remote on`.
+async function nhacCapNhat() {
+  try {
+    const res = await hub('/api/install/version');
+    if (!res.ok) return;
+    const vtHub = docDauVanTayHub(await res.json());
+    if (!vtHub) return; // hub cũ chưa khai — không có gì để so
+    const vtMay = dauVanTay(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..'));
+    if (!vtMay || vtMay === vtHub) return;
+    say('');
+    say('↑ Có bản mới trên hub. Cập nhật khi bạn rảnh:');
+    // Hai thứ dễ sai ở đây, cả hai đều làm lệnh chết ngay dòng đầu — và cả hai
+    // đều đã sai thật trước khi có test canh:
+    //
+    //  • KHÔNG kèm token. Từ khi có đăng nhập bằng Slack, người dùng không còn
+    //    biết token của mình; install.sh không tham số tự xin bằng device-code.
+    //  • PHẢI kèm CCRC_HUB_URL. Bản public của install.sh cố ý không có hub mặc
+    //    định (`HUB="${CCRC_HUB_URL:-${2:-}}"` — mỗi người tự dựng hub riêng),
+    //    và hub production chạy đúng bản đó, nên script không tự biết nó vừa
+    //    được tải về từ đâu. `curl … | sh` trần chết với "Thiếu URL hub".
+    // `cfg.hubUrl` — hub mà MÁY NÀY đã cài từ đầu, không phải một địa chỉ viết
+    // cứng ở đây: mỗi người tự dựng hub riêng, và đó cũng chính là lý do bản
+    // public của install.sh không có hub mặc định.
+    const h = cfg.hubUrl.replace(/\/+$/, '');
+    say(`  curl -fsSL ${h}/install.sh | CCRC_HUB_URL=${h} sh`);
+    say('  (phiên đang chạy vẫn dùng bình thường)');
+  } catch { /* nhắc được thì nhắc, không thì thôi */ }
 }
 
 // --- "is claude running in this pane?" ------------------------------------

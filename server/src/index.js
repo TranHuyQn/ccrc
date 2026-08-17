@@ -14,6 +14,8 @@ import { createNotificationHistory } from './notification-history.js';
 import { deviceId, labelFromUserAgent, listDevices } from './push-devices.js';
 import { isSessionUrlAllowed } from './session-url.js';
 import { listenAddr } from './listen-addr.js';
+import { PROTOCOL_VERSION } from '../../shared/protocol-version.js';
+import { dauVanTay } from '../../shared/bundle-fingerprint.js';
 import { HUB_USER_NAME, isValidSlackUserId, parseUsers, upsertBySlackId } from './users.js';
 import { createPairings } from './pairing.js';
 import { createIdentity } from './identity.js';
@@ -744,6 +746,32 @@ app.get('/link', (_req, res) => {
 // Built into the image (docker/Dockerfile.hub), so a container with no bundle
 // says so plainly rather than 404ing like a mistyped path.
 const BUNDLE_FILE = path.join(__dirname, '..', '..', 'ccrc-bundle.tar.gz');
+// Dấu vân tay của gói cài đang phục vụ, tính MỘT LẦN lúc khởi động.
+//
+// Trong image, cây nguồn tạo ra gói cài đã bị `rm -rf bundle` xoá đi (xem
+// docker/Dockerfile.hub), nên dấu vân tay được tính lúc BUILD, ngay trước khi
+// xoá, và ghi ra file cạnh gói cài. Chạy thẳng từ cây nguồn (lúc phát triển,
+// lúc chạy test) thì không có file đó — tính trực tiếp từ cây, ra cùng một
+// chuỗi vì cùng danh sách file.
+const BUNDLE_FP_FILE = path.join(__dirname, '..', '..', 'ccrc-bundle-fingerprint.txt');
+const BUNDLE_FINGERPRINT = (() => {
+  try {
+    const s = fs.readFileSync(BUNDLE_FP_FILE, 'utf8').trim();
+    if (/^[0-9a-f]{64}$/.test(s)) return s;
+  } catch { /* không có file — đang chạy từ cây nguồn */ }
+  return dauVanTay(path.join(__dirname, '..', '..'));
+})();
+// Cho MÁY DEV tự hỏi "bản tôi đang cài có phải bản mới nhất không". Nhắc trên
+// điện thoại là chưa đủ: lúc ngồi trước máy mới là lúc tiện chạy install.sh,
+// chứ không phải lúc đang cầm điện thoại ngoài đường.
+//
+// Sau token như mọi API khác — nó khai hình dạng bản dựng, và repo này vốn
+// private.
+app.get('/api/install/version', (req, res) => {
+  if (!requireUser(req, res)) return;
+  res.json({ protocolVersion: PROTOCOL_VERSION, bundleFingerprint: BUNDLE_FINGERPRINT });
+});
+
 app.get('/api/install/bundle.tar.gz', (req, res) => {
   const user = requireUser(req, res);
   if (!user) return;
@@ -853,7 +881,19 @@ app.post('/api/terminal/register', express.json({ limit: '16kb' }), (req, res) =
     return res.status(400).json({ ok: false, error: 'Thiếu thông tin phiên' });
   }
   terminals.register(user.name, b);
-  res.json({ ok: true });
+  // Nhân tiện nhịp heartbeat, khai luôn phiên bản hợp đồng của gói cài mà hub
+  // này đang phục vụ. Máy đã cài KHÔNG tự cập nhật (và không nên tự cập nhật —
+  // hub chạy được code tuỳ ý trên máy dev là một lỗ hổng, không phải tiện ích),
+  // nhưng nó cần biết là có bản mới để còn nói với người dùng. Trước
+  // 2026-08-17 không có đường nào biết, nên một daemon chạy code lỗi thời suốt
+  // hai ngày mà không ai nhận ra.
+  res.json({
+    ok: true,
+    protocolVersion: PROTOCOL_VERSION,
+    // Đổi theo MỌI thay đổi nội dung, kể cả bản chỉ sửa lỗi — thứ mà
+    // protocolVersion cố ý không làm.
+    bundleFingerprint: BUNDLE_FINGERPRINT,
+  });
 });
 
 app.post('/api/terminal/unregister', express.json({ limit: '16kb' }), (req, res) => {

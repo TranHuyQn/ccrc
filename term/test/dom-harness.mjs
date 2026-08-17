@@ -28,6 +28,10 @@ export class FakeElement {
     this.className = '';
     this.tabIndex = 0;
     this._blurred = false;
+    // DOM thật luôn có thuộc tính này và nó mặc định false. Bỏ trống thì một
+    // phép kiểm `=== false` sẽ thấy `undefined` và fail vì lý do không dính
+    // dáng gì tới thứ đang được kiểm.
+    this.disabled = false;
     this.value = '';
     this.style = {};
     this._listeners = {};

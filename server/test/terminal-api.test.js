@@ -467,3 +467,50 @@ test('url là IPv4 Tailscale được chấp nhận và trả lại nguyên văn
     assert.equal(j.sessions[0].url, url);
   });
 });
+
+// --- hub khai phiên bản hợp đồng của gói cài -------------------------------
+//
+// Máy đã cài chỉ nhận bản mới khi người dùng chạy lại install.sh — không có
+// đường tự cập nhật, và cũng không nên có (xem SECURITY.md). Nhưng "không tự
+// cập nhật" khác hẳn "không được biết là có bản mới": suốt hai ngày trước
+// 2026-08-17 một daemon chạy code lỗi thời mà không ai có cách nào nhận ra.
+// Nhịp heartbeat là chỗ rẻ nhất để nói điều đó, vì daemon đã gọi sẵn 20 giây
+// một lần.
+
+test('đăng ký phiên xong hub khai luôn phiên bản hợp đồng của nó', async () => {
+  await withHub(async (h) => {
+    const r = await post(h, '/api/terminal/register', 'tok-huy', REG);
+    const j = await r.json();
+    assert.equal(j.ok, true);
+    assert.equal(typeof j.protocolVersion, 'number',
+      'thiếu số này thì máy đã cài không có cách nào biết hub đã có bản mới hơn');
+    // PROTOCOL_VERSION chỉ đổi khi HỢP ĐỒNG đổi, nên một bản chỉ sửa lỗi sẽ
+    // trôi qua không ai biết. Dấu vân tay đóng đúng chỗ đó: nó đổi theo mọi
+    // thay đổi nội dung.
+    assert.match(j.bundleFingerprint, /^[0-9a-f]{64}$/,
+      'thiếu dấu vân tay thì bản sửa lỗi không bao giờ được nhắc cài');
+  });
+});
+
+// --- endpoint để MÁY DEV tự hỏi "tôi có đang cũ không" --------------------
+//
+// Nhắc trên điện thoại là chưa đủ: lúc ngồi trước máy mới là lúc tiện chạy
+// install.sh nhất, chứ không phải lúc đang cầm điện thoại ngoài đường. `/remote
+// on` hỏi endpoint này rồi tự so với bản cài của mình.
+
+test('GET /api/install/version khai phiên bản và dấu vân tay gói cài', async () => {
+  await withHub(async (h) => {
+    const r = await get(h, '/api/install/version', 'tok-huy');
+    assert.equal(r.status, 200);
+    const j = await r.json();
+    assert.equal(typeof j.protocolVersion, 'number');
+    assert.match(j.bundleFingerprint, /^[0-9a-f]{64}$/);
+  });
+});
+
+test('/api/install/version vẫn đòi token như mọi API khác', async () => {
+  await withHub(async (h) => {
+    const r = await fetch(h.base + '/api/install/version');
+    assert.equal(r.status, 401);
+  });
+});

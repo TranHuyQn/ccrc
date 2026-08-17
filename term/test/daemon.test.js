@@ -15,6 +15,7 @@ import {
   taoThietBiTest, ghiDevices,
 } from './helpers.mjs';
 import { registryDir } from '../../shared/session-registry.js';
+import { PROTOCOL_VERSION } from '../../shared/protocol-version.js';
 
 function connect(url) {
   return new Promise((resolve) => {
@@ -301,6 +302,37 @@ test('ứng dụng CÓ xin bracketed paste thì tmux vẫn bọc dấu như thư
   try {
     const got = await panePasteBytes(d, 'dòng một\ndòng hai', { bracketed: true });
     assert.equal(got, '\x1b[200~dòng một\ndòng hai\x1b[201~\r');
+  } finally { d.stop(); }
+});
+
+// --- khai phiên bản: để trang biết nó đang nói chuyện với ai ---------------
+
+test('daemon trả lời lời chào, khai phiên bản đang chạy và phiên bản trên đĩa', async () => {
+  const d = await startDaemon();
+  try {
+    const c = await connect(d.url(await d.token()));
+    const khung = [];
+    c.ws.on('message', (m, isBinary) => { if (!isBinary) khung.push(String(m)); });
+
+    c.ws.send(JSON.stringify({ type: 'ccrc_chao', v: PROTOCOL_VERSION }));
+
+    const t0 = Date.now();
+    let dap = null;
+    while (!dap && Date.now() - t0 < EVENT_TIMEOUT_MS) {
+      dap = khung.map((k) => { try { return JSON.parse(k); } catch { return null; } })
+        .find((m) => m && m.type === 'ccrc_chao_lai');
+      if (!dap) await sleep(50);
+    }
+    assert.ok(dap, 'không trả lời lời chào — trang sẽ kết luận đây là bản quá cũ');
+    assert.equal(dap.v, PROTOCOL_VERSION, 'phải khai đúng phiên bản code ĐANG CHẠY');
+    assert.equal(dap.dia, PROTOCOL_VERSION,
+      'phải khai cả phiên bản đọc từ ĐĨA — hai số này khác nhau nghĩa là bản cài đã được cập nhật mà daemon chưa nạp');
+    // Dấu vân tay bắt được cả bản chỉ sửa lỗi, thứ mà PROTOCOL_VERSION cố ý
+    // không đổi theo.
+    assert.match(dap.vtRam, /^[0-9a-f]{64}$/, 'phải khai dấu vân tay của code ĐANG CHẠY');
+    assert.match(dap.vtDia, /^[0-9a-f]{64}$/, 'phải khai dấu vân tay của cây trên ĐĨA lúc này');
+    assert.equal(dap.vtRam, dap.vtDia, 'chưa ai đụng vào đĩa thì hai dấu vân tay phải bằng nhau');
+    c.ws.close();
   } finally { d.stop(); }
 });
 

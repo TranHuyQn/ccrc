@@ -9,16 +9,19 @@ RUN cd server && npm install --omit=dev && npm cache clean --force
 COPY server/src ./server/src
 COPY server/public ./server/public
 COPY term/src/ticket.js ./term/src/ticket.js
+# `shared/` được COPY LẦN NỮA xuống ./bundle bên dưới, và bản đó bị xoá ngay
+# sau khi nén gói cài. Bản này là bản hub CHẠY BẰNG — server/src import
+# protocol-version.js và bundle-fingerprint.js từ đây. Thiếu dòng này thì hub
+# chết ở dòng import đầu tiên và restart vô hạn, trong khi mọi test chạy từ cây
+# nguồn vẫn xanh vì ở đó `shared/` luôn nằm sẵn bên cạnh. Đã xảy ra thật
+# 2026-08-17; server/test/docker-image.test.js canh để không lặp lại.
+COPY shared ./shared
 
 # --- gói cài cho máy dev ----------------------------------------------------
 #
-# The one-command installer needs the dev-machine half of the repo, and the hub
-# hands it out itself rather than pointing at a code host: a dev machine then
-# needs neither git nor an account anywhere, and the version it installs is by
-# construction the version this hub is running. Kept behind the same token
-# everything else uses (see /api/install/bundle.tar.gz) — not because the source
-# is secret (it is MIT and public), but because an unauthenticated tarball
-# endpoint is free bandwidth for anyone who finds the URL.
+# The one-command installer needs the dev-machine half of the repo, and the
+# repo is private — so the hub hands it out itself, behind the same token
+# everything else uses (see /api/install/bundle.tar.gz).
 #
 # Built at image build time rather than per request: the artefact is then
 # deterministic, and the running container needs no tar and no writable
@@ -29,8 +32,25 @@ COPY shared ./bundle/shared
 COPY deploy/commands ./bundle/deploy/commands
 COPY deploy/ccrc ./bundle/deploy/ccrc
 COPY setup-notify.sh remove-notify.sh ./bundle/
+# Dấu vân tay được tính Ở ĐÂY, trên đúng cây tạo ra gói cài và ngay trước khi
+# cây đó bị xoá — lúc chạy thì container không còn gì để tính lại. Máy dev tính
+# cùng một cách trên thư mục cài của nó, nên hai bên so được với nhau và biết
+# khi nào có bản mới. Băm nội dung chứ không băm file .tar.gz: busybox tar
+# không có --sort và gzip nhúng thời điểm nén, nên cùng một cây code vẫn ra hai
+# file khác nhau, và lấy nó làm mốc thì mỗi lần build lại là một lần giục người
+# dùng cài lại vì không có gì cả.
+#
+# `|| exit 1`: gói cài mà không có dấu vân tay thì im lặng mất khả năng nhắc
+# cập nhật — đúng kiểu hỏng mà cả cơ chế này sinh ra để chấm dứt. Thà hỏng
+# build.
 RUN cd bundle \
  && chmod +x setup-notify.sh remove-notify.sh \
+ && node --input-type=module -e "\
+import { dauVanTay } from './shared/bundle-fingerprint.js'; \
+import { writeFileSync } from 'node:fs'; \
+const v = dauVanTay('.'); \
+if (!v) { console.error('không tính được dấu vân tay gói cài'); process.exit(1); } \
+writeFileSync('/app/ccrc-bundle-fingerprint.txt', v);" \
  && tar czf /app/ccrc-bundle.tar.gz . \
  && cd /app && rm -rf bundle
 

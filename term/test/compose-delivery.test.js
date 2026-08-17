@@ -10,6 +10,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { loadTermPage } from './dom-harness.mjs';
+import { PROTOCOL_VERSION } from '../../shared/protocol-version.js';
 
 // Kết nối bằng khoá đã lưu — hình dạng thường gặp nhất khi người dùng đang
 // dùng dở. Dữ liệu pane vào bằng receiveData() (khung nhị phân), khung điều
@@ -19,6 +20,12 @@ function connected(extra) {
   const page = loadTermPage(Object.assign({ storedKey: 'khoa-test' }, extra || {}));
   const ws = page.ws()[0];
   ws.open();
+  // Đáp lời chào như một daemon bình thường. Bỏ bước này thì sau 4 giây trang
+  // kết luận đây là daemon quá cũ và khoá ô soạn — đúng như thiết kế, nhưng
+  // biến mọi test dưới đây thành test của một chuyện khác hẳn.
+  ws.receive(JSON.stringify({
+    type: 'ccrc_chao_lai', v: PROTOCOL_VERSION, dia: PROTOCOL_VERSION, hub: PROTOCOL_VERSION,
+  }));
   return { page, ws };
 }
 

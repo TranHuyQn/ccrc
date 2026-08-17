@@ -1158,3 +1158,109 @@ test('deploy.sh có deluser và nó KHÔNG đoán khi khớp nhiều người', 
   assert.match(src, /matches\.length > 1/,
     'xoá nhầm người là mất push subs, lịch sử và phiên đang mở của họ');
 });
+
+// --- cài lại trên máy ĐÃ cài: đừng bắt đăng nhập lại ------------------------
+//
+// install.sh ghi ra ~/.ccrc/config (hub + token) và KHÔNG xoá nó khi cài lại —
+// `rm -rf "$DEST"` chỉ đụng thư mục code. Nhưng nó lại không đọc lại file đó,
+// nên máy đã cài vẫn bị hỏi mã ngắn từ đầu, và người dùng còn phải gõ tay cả
+// CCRC_HUB_URL. Huy nêu 2026-08-17: ghép nối chỉ nên cần ở lần đầu.
+//
+// Lưu ý cái KHÔNG mất: ~/.ccrc/devices.json (khoá công khai của điện thoại đã
+// ghép) nằm ngoài $DEST nên vẫn nguyên — thứ phải làm lại chỉ là đăng nhập.
+
+test('install.sh đọc lại hub và token đã lưu, nhưng SAU tham số và biến môi trường', () => {
+  const src = read('server/public/install.sh');
+  assert.match(src, /TOKEN="\$\{1:-\$\{CCRC_TOKEN:-\}\}"/,
+    'thứ tự ưu tiên cũ không được đổi — admin truyền token tay vẫn phải thắng');
+  assert.match(src, /\.ccrc\/config/,
+    'phải đọc lại config đã lưu, nếu không máy đã cài vẫn bị hỏi mã ngắn mỗi lần');
+  // Token cũ có thể đã bị thu hồi. Tin bừa thì cài xong mới hỏng, im lặng —
+  // đúng kiểu hỏng mà cả nhánh này đang đi dẹp.
+  assert.match(src, /api\/me/,
+    'token lấy từ config phải được kiểm còn dùng được trước khi tin');
+  // Hub cũng lấy từ config khi thiếu — đó là thứ làm lệnh cài lại ngắn lại
+  // còn `curl … | sh`. Kiểm tĩnh vì bản private có hub mặc định viết cứng, nên
+  // nhánh này không chạy tới ở đây; bản public (không có mặc định) mới dùng.
+  assert.match(src, /\[ -n "\$HUB" \] \|\| HUB="\$CFG_HUB"/,
+    'thiếu hub thì phải lấy từ config đã lưu');
+});
+
+test('install.sh: token đã lưu còn dùng được thì KHÔNG hỏi mã ngắn, chạy dưới dash thật', async (t) => {
+  if (!HAS_DASH) { t.skip('không có dash trên máy này'); return; }
+  const goiDeviceStart = [];
+  const server = http.createServer((req, res) => {
+    if (req.url === '/api/device/start') goiDeviceStart.push(1);
+    if (req.url === '/api/me') {
+      res.writeHead(req.headers.authorization === 'Bearer token-cu-con-song' ? 200 : 401,
+        { 'content-type': 'application/json' });
+      return res.end('{}');
+    }
+    res.writeHead(404).end();
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const port = server.address().port;
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccrc-home-'));
+  fs.mkdirSync(path.join(home, '.ccrc'));
+  fs.writeFileSync(path.join(home, '.ccrc', 'config'),
+    `CCRC_HUB_URL=http://127.0.0.1:${port}\nCCRC_TOKEN=token-cu-con-song\nCCRC_MACHINE_NAME=may\n`);
+
+  const { stdout } = await chayInstallToiBuocToken(home, port);
+  server.close();
+  fs.rmSync(home, { recursive: true, force: true });
+
+  assert.match(stdout, /TOKEN=token-cu-con-song/, `phải dùng lại token đã lưu. stdout=${stdout}`);
+  assert.deepEqual(goiDeviceStart, [], 'không được hỏi mã ngắn khi token cũ còn dùng được');
+});
+
+test('install.sh: token đã lưu bị thu hồi thì QUAY VỀ mã ngắn', async (t) => {
+  if (!HAS_DASH) { t.skip('không có dash trên máy này'); return; }
+  const goiDeviceStart = [];
+  const server = http.createServer((req, res) => {
+    if (req.url === '/api/me') { res.writeHead(401).end('{}'); return; }
+    if (req.url === '/api/device/start') {
+      goiDeviceStart.push(1);
+      res.writeHead(200, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify({ ok: true, deviceCode: 'd'.repeat(32), userCode: 'AB12', ttl: 1, interval: 1 }));
+    }
+    if (req.url === '/api/device/poll') { res.writeHead(410).end('{}'); return; }
+    res.writeHead(404).end();
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const port = server.address().port;
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccrc-home-'));
+  fs.mkdirSync(path.join(home, '.ccrc'));
+  fs.writeFileSync(path.join(home, '.ccrc', 'config'),
+    `CCRC_HUB_URL=http://127.0.0.1:${port}\nCCRC_TOKEN=token-da-bi-thu-hoi\n`);
+
+  const { stdout } = await chayInstallToiBuocToken(home, port);
+  server.close();
+  fs.rmSync(home, { recursive: true, force: true });
+
+  assert.doesNotMatch(stdout, /TOKEN=token-da-bi-thu-hoi/,
+    'token chết mà vẫn dùng thì cài xong mới hỏng, và hỏng im lặng');
+  assert.equal(goiDeviceStart.length, 1, 'phải quay về hỏi mã ngắn');
+});
+
+// Chạy phần ĐẦU của install.sh — từ dòng HUB/TOKEN tới ngay trước khi nó bắt
+// đầu tải gói cài — rồi in TOKEN ra. Cắt ở đó vì phần sau `rm -rf "$DEST"` và
+// gọi setup-notify.sh, những thứ không thuộc bài này.
+function chayInstallToiBuocToken(home, port) {
+  const src = read('server/public/install.sh');
+  const end = src.indexOf('say "== CC Remote Control');
+  assert.ok(end !== -1, 'không tìm được mốc cắt trong install.sh — cấu trúc file đã đổi?');
+  const phanDau = src.slice(0, end);
+  return new Promise((resolve) => {
+    // CCRC_HUB_URL trỏ thẳng stub: bản private có hub mặc định viết cứng, nên
+    // để trống là script đi gọi hub THẬT trên internet — đo được, và nó làm
+    // bài test này xanh/đỏ vì một lý do chẳng liên quan gì tới thứ đang kiểm.
+    const env = { ...process.env, HOME: home, CCRC_HUB_URL: `http://127.0.0.1:${port}` };
+    delete env.CCRC_TOKEN;
+    const child = spawn('dash', ['-c', `${phanDau}\necho "TOKEN=$TOKEN"\necho "HUB=$HUB"`], { env });
+    let stdout = ''; let stderr = '';
+    child.stdout.on('data', (d) => { stdout += d; });
+    child.stderr.on('data', (d) => { stderr += d; });
+    const treo = setTimeout(() => child.kill('SIGKILL'), 20000);
+    child.on('close', () => { clearTimeout(treo); resolve({ stdout, stderr }); });
+  });
+}

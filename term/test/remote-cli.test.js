@@ -1376,3 +1376,99 @@ test('candidates: có claude trong subtree nhưng KHÁC tty của pane (headless
     pane.kill();
   }
 });
+
+// --- nhắc cập nhật ngay trong terminal trên máy ----------------------------
+//
+// Nhắc trên điện thoại là chưa đủ: lúc ngồi trước máy mới là lúc tiện chạy
+// install.sh, chứ không phải lúc đang cầm điện thoại ngoài đường. Nên `/remote
+// on` hỏi hub rồi tự so với bản cài của mình.
+
+test('/remote on: hub có gói cài khác thì nhắc chạy install.sh', async () => {
+  const tp = newTmuxPane('ccrc-cli-nhac');
+  const hub = await stubHub((req, res) => {
+    if (req.url === '/api/install/version') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      // Khác hẳn dấu vân tay của cây nguồn đang chạy test.
+      return res.end(JSON.stringify({ protocolVersion: 1, bundleFingerprint: 'b'.repeat(64) }));
+    }
+    res.writeHead(404).end();
+  });
+  const home = tmpHome(`CCRC_HUB_URL=${hub.base}\nCCRC_TOKEN=t\nCCRC_MACHINE_NAME=m\n`);
+  try {
+    const on = await run(['on'], {
+      HOME: home, TMUX_PANE: tp.pane, CCRC_TERM_PORT: '8791',
+      CCRC_TERM_BIND: '127.0.0.1', CCRC_TERM_NO_HUB: '1',
+    });
+    assert.match(on.stdout, /ĐÃ BẬT/);
+    assert.match(on.stdout, /install\.sh/, 'không nhắc thì người dùng chạy code cũ mà không biết');
+    // Từ khi đăng nhập bằng Slack, người dùng KHÔNG biết token của mình nữa —
+    // install.sh không tham số sẽ tự xin bằng device-code. Nhắc một lệnh đòi
+    // token là chỉ cho người ta một việc họ không làm được.
+    assert.doesNotMatch(on.stdout, /<token/,
+      'lệnh nhắc không được đòi token: người đăng nhập bằng Slack không có nó');
+    // install.sh bản PUBLIC không có hub mặc định (`HUB="${CCRC_HUB_URL:-${2:-}}"`)
+    // — mỗi người tự dựng hub riêng — và hub production chạy đúng bản đó. Nên
+    // `curl … | sh` trần chết ngay với "Thiếu URL hub". Đã đo thật.
+    assert.match(on.stdout, /CCRC_HUB_URL=/,
+      'thiếu CCRC_HUB_URL thì lệnh nhắc chết ngay ở dòng đầu');
+    // MỘT lệnh dán thẳng được. Đã chạy thật cả hai dạng trước khi chốt dạng
+    // này; hai dòng thì người ta dán dòng đầu, không thấy gì xảy ra, rồi thôi.
+    assert.match(on.stdout, /curl -fsSL \S+\/install\.sh \| CCRC_HUB_URL=\S+ sh/,
+      'phải là một lệnh liền');
+    // Địa chỉ hub lấy từ config của MÁY NÀY, không phải một hằng số nào đó:
+    // mỗi người tự dựng hub riêng, và bản public cố ý không có hub mặc định.
+    assert.match(on.stdout, new RegExp(`CCRC_HUB_URL=${hub.base.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`),
+      'phải dùng đúng hub trong config, không hard-code');
+    // MỘT lệnh dán được thẳng vào terminal. Hai dòng thì người ta dán dòng
+    // đầu, thấy không có gì xảy ra, rồi thôi.
+    assert.match(on.stdout, /curl -fsSL \S+\/install\.sh \| CCRC_HUB_URL=\S+ sh/,
+      'phải là một lệnh liền, đã chạy thật để kiểm chứng');
+  } finally {
+    await run(['off'], { HOME: home, TMUX_PANE: tp.pane });
+    hub.srv.close(); tp.kill();
+  }
+});
+
+test('/remote on: gói cài khớp thì KHÔNG nhắc gì', async () => {
+  const tp = newTmuxPane('ccrc-cli-khop');
+  // Dấu vân tay thật của chính cây nguồn đang chạy test — đúng cái CLI sẽ tính.
+  const { dauVanTay } = await import('../../shared/bundle-fingerprint.js');
+  const that = dauVanTay(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..'));
+  const hub = await stubHub((req, res) => {
+    if (req.url === '/api/install/version') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify({ protocolVersion: 1, bundleFingerprint: that }));
+    }
+    res.writeHead(404).end();
+  });
+  const home = tmpHome(`CCRC_HUB_URL=${hub.base}\nCCRC_TOKEN=t\nCCRC_MACHINE_NAME=m\n`);
+  try {
+    const on = await run(['on'], {
+      HOME: home, TMUX_PANE: tp.pane, CCRC_TERM_PORT: '8792',
+      CCRC_TERM_BIND: '127.0.0.1', CCRC_TERM_NO_HUB: '1',
+    });
+    assert.match(on.stdout, /ĐÃ BẬT/);
+    assert.doesNotMatch(on.stdout, /install\.sh/, 'nhắc khi không có gì mới là tiếng ồn');
+  } finally {
+    await run(['off'], { HOME: home, TMUX_PANE: tp.pane });
+    hub.srv.close(); tp.kill();
+  }
+});
+
+test('/remote on: hub chết thì vẫn bật bình thường, không kêu ca', async () => {
+  const tp = newTmuxPane('ccrc-cli-hubchet');
+  // Cổng 9 (discard) — không ai nghe. Lời nhắc là thứ phụ; làm hỏng `/remote
+  // on` vì nó là đổi một tiện ích lấy chức năng chính.
+  const home = tmpHome('CCRC_HUB_URL=http://127.0.0.1:9\nCCRC_TOKEN=t\nCCRC_MACHINE_NAME=m\n');
+  try {
+    const on = await run(['on'], {
+      HOME: home, TMUX_PANE: tp.pane, CCRC_TERM_PORT: '8793',
+      CCRC_TERM_BIND: '127.0.0.1', CCRC_TERM_NO_HUB: '1',
+    });
+    assert.match(on.stdout, /ĐÃ BẬT/);
+    assert.doesNotMatch(on.stdout, /install\.sh/);
+  } finally {
+    await run(['off'], { HOME: home, TMUX_PANE: tp.pane });
+    tp.kill();
+  }
+});

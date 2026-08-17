@@ -30,6 +30,14 @@
   // máy này". Xem bin/ccrc-term.js — vì sao phải bắt tay xong rồi mới đóng
   // bằng mã riêng, thay vì 401 câm mà JS không đọc được.
   var CLOSE_DEVICE_NOT_PAIRED = 4003;
+  // Phải khớp với shared/protocol-version.js — trang là script cổ điển nên
+  // không import được, và test protocol-handshake.test.js là thứ giữ hai bên
+  // bằng nhau. Xem file đó để biết vì sao con số này tồn tại.
+  var PROTOCOL_VERSION = 1;
+  // Chờ daemon khai phiên bản. Hết giờ mà im nghĩa là daemon KHÔNG BIẾT khung
+  // ccrc_chao — tức nó cũ hơn cả cái cơ chế này. Im lặng ở đây là một câu trả
+  // lời, không phải một sự cố mạng: nếu socket đứt thì onclose đã bắn rồi.
+  var CHO_CHAO_MS = 4000;
   var BACKOFF_START_MS = 1000;
   var BACKOFF_MAX_MS = 30000;
 
@@ -271,6 +279,7 @@
       if (usingTicket) ticket = null;
       backoffMs = BACKOFF_START_MS;
       setStatus('đã nối', 'ok');
+      batTayPhienBan();
       // The daemon needs SOME size before the user ever touches the
       // keyboard — waiting for the first relayout() would leave it
       // guessing at connect time. reportSize() is defined further down
@@ -307,6 +316,10 @@
     };
 
     socket.onclose = function (ev) {
+      // Hẹn giờ chào thuộc về ĐÚNG socket này. Để nó sống qua một lần đứt
+      // mạng thì nó sẽ bắn giữa lần nối lại và kết tội oan một daemon hoàn
+      // toàn bình thường.
+      if (chaoTimer) { clearTimeout(chaoTimer); chaoTimer = null; }
       // The daemon says this session is over — `/remote off`, Claude exited,
       // the pane died. Retrying cannot bring it back, and a spinner that
       // never resolves is worse than a sentence saying what happened. No
@@ -355,11 +368,88 @@
 
   var loiTimer = null;
 
+  // --- bắt tay phiên bản ----------------------------------------------------
+  //
+  // Daemon nạp code vào RAM lúc khởi động, nhưng phục vụ CHÍNH TRANG NÀY đọc
+  // thẳng từ đĩa. Cập nhật bản cài trong lúc một daemon đang chạy để lại đúng
+  // cái cảnh đã xảy ra thật ngày 2026-08-17: trang mới, daemon cũ, và ô soạn
+  // gửi `ccrc_paste` vào một daemon chỉ biết `ccrc_resize`. Nó rơi vào nhánh
+  // `return` cuối cùng của daemon — không lỗi, không log, không gì cả.
+  //
+  // Chỗ khó: daemon cũ KHÔNG THỂ khai là mình cũ, vì nó cũng không biết khung
+  // chào. Nên phải đọc IM LẶNG như một câu trả lời, bằng một cái hẹn giờ.
+  var chaoTimer = null;
+  var daKhoaVaoPhienBan = false;
+
+  function batTayPhienBan() {
+    if (chaoTimer) { clearTimeout(chaoTimer); chaoTimer = null; }
+    sendControl({ type: 'ccrc_chao', v: PROTOCOL_VERSION });
+    chaoTimer = setTimeout(function () {
+      chaoTimer = null;
+      khoaVaoPhienBan('Máy đang chạy bản cũ hơn trang này');
+    }, CHO_CHAO_MS);
+  }
+
+  // Một câu duy nhất cho cả ba kiểu lệch, vì việc phải làm y hệt nhau: bật lại
+  // daemon để nó nạp code trên đĩa.
+  function khoaVaoPhienBan(vide) {
+    daKhoaVaoPhienBan = true;
+    if (otoEl) otoEl.disabled = true;
+    setStatus(vide + ' — trên máy chạy "/remote off" rồi "/remote on" để nạp bản mới. '
+      + 'Gõ ở đây bây giờ sẽ không tới nơi.', 'loi');
+  }
+
+  function moKhoaPhienBan() {
+    if (!daKhoaVaoPhienBan) return;
+    daKhoaVaoPhienBan = false;
+    if (otoEl) otoEl.disabled = false;
+    setStatus('đã nối', 'ok');
+  }
+
   function handleControlFrame(raw) {
     var msg = null;
     try { msg = JSON.parse(raw); } catch (e) { /* malformed control frame */ }
     if (msg && msg.type === 'ccrc_session' && typeof msg.key === 'string') {
       safeStorageSet(STORAGE_KEY, msg.key);
+    }
+    // Daemon khai phiên bản của nó. Ba thứ có thể lệch, và cả ba đều dẫn tới
+    // đúng một việc phải làm, nên chỉ có một câu trả lời.
+    if (msg && msg.type === 'ccrc_chao_lai') {
+      if (chaoTimer) { clearTimeout(chaoTimer); chaoTimer = null; }
+      if (msg.v !== PROTOCOL_VERSION) {
+        khoaVaoPhienBan('Máy đang chạy bản khác với trang này');
+      } else if (typeof msg.dia === 'number' && msg.dia !== msg.v) {
+        // Daemon nói cùng hợp đồng với trang, nhưng trên đĩa đã có bản mới hơn
+        // cái nó đang chạy. Chưa hỏng gì HÔM NAY, nhưng đây đúng là hình dạng
+        // đã âm thầm kéo dài hai ngày trước khi ai đó nhận ra.
+        khoaVaoPhienBan('Máy đã cài bản mới nhưng chưa nạp');
+      } else if (typeof msg.vtDia === 'string' && typeof msg.vtRam === 'string'
+                 && msg.vtDia !== msg.vtRam) {
+        // Bản cài trên đĩa đã đổi sau khi daemon khởi động. Hợp đồng vẫn khớp
+        // nên không mất chữ — chỉ là máy đang chạy code cũ hơn cái nó có.
+        // Dấu vân tay bắt được cả bản chỉ sửa lỗi, thứ mà số phiên bản hợp
+        // đồng cố ý không đổi theo và vì vậy bỏ sót.
+        moKhoaPhienBan();
+        setStatus('Máy đã cài bản mới nhưng chưa nạp — chạy "/remote off" rồi "/remote on". '
+          + 'Phiên này vẫn dùng bình thường.', 'dim');
+      } else if (typeof msg.vtHub === 'string' && typeof msg.vtDia === 'string'
+                 && msg.vtHub !== msg.vtDia) {
+        moKhoaPhienBan();
+        setStatus('Có bản mới trên hub — chạy lại install.sh khi bạn rảnh. '
+          + 'Phiên này vẫn dùng bình thường.', 'dim');
+      } else if (typeof msg.hub === 'number' && msg.hub > msg.v) {
+        // Trang và daemon hiểu nhau, mọi thứ chạy đúng — chỉ là hub đã có bản
+        // mới hơn cái đang cài. Nói, nhưng KHÔNG cản: khoá một thứ đang chạy
+        // tốt là làm phiền, và máy đã cài chỉ nhận bản mới khi người dùng chủ
+        // động chạy lại install.sh (cố ý không có đường tự cập nhật — hub chạy
+        // được code tuỳ ý trên máy dev là lỗ hổng, không phải tiện ích).
+        moKhoaPhienBan();
+        setStatus('Có bản mới trên hub — chạy lại install.sh khi bạn rảnh. '
+          + 'Phiên này vẫn dùng bình thường.', 'dim');
+      } else {
+        moKhoaPhienBan();
+      }
+      return;
     }
     // Daemon xác nhận đã dán xong vào pane. ĐÂY mới là lúc chữ thật sự an
     // toàn — trước đó nó chỉ mới rời khỏi điện thoại.
@@ -591,6 +681,9 @@
       e.preventDefault();
       var text = otoEl.value;
       if (text.length === 0) return; // nothing typed — nothing to send
+      // Lệch phiên bản thì daemon vứt khung này không một lời. Gửi đi là lừa
+      // người dùng rằng câu của họ đang trên đường.
+      if (daKhoaVaoPhienBan) return;
       var seq = (pasteSeq += 1);
       if (!sendControl({ type: 'ccrc_paste', text: text, seq: seq })) {
         // Ghi nháp NGAY, đừng đợi lần gõ tiếp theo: người dùng thường soạn
