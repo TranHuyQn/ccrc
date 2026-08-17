@@ -513,7 +513,7 @@ better known in advance than discovered in a panic.
 | No **Đăng nhập bằng Slack** button | The hub has no Slack sign-in configured — use the paste-a-token box and tell whoever runs the hub (section 12) |
 | Slack button then **"Phiên đăng nhập hết hạn"** (sign-in expired) | The callback link was opened twice, or more than 5 minutes passed between the tap and Slack's response. Start the sign-in again |
 | `/notify` says no device is registered | Notifications were never enabled on the phone, or the iPhone opened it in Safari instead of from the home-screen icon |
-| The phone gets no notifications | `/notify` is **off**. Turn it on with `/notify on` |
+| The phone gets no notifications | First: is `/notify` **off**? Turn it on with `/notify on`. Still silent, but other machines or an Android phone do get through and **only iPhones do not** → it is the hub's side: whoever runs it has not set `CCRC_VAPID_SUBJECT` (section 12). That failure shows no sign at all — `/notify` still reports the push as sent, and the app still lists the device as subscribed — so do not uninstall and reinstall the app: it fixes nothing and loses your pairing key |
 | `/remote on` cannot find tmux | Claude Code is running outside tmux. Quit, run `tmux`, then run `claude` inside it |
 | `/remote on` reports a Tailscale error | Tailscale is not running or not signed in. Open the Tailscale app |
 | A card says the machine is not responding, possibly asleep | The computer slept or lost the network. **Stop it sleeping before you walk away** |
@@ -618,6 +618,40 @@ You can still issue tokens by hand — for automation, contractors, shared accou
 
 It prints a token — send it to them **privately**, not into a group chat. The hub picks it up
 within about 5 seconds, no restart needed. They install with the token form from section 3.
+
+### ⚠ Anyone on an iPhone: you must set `CCRC_VAPID_SUBJECT`
+
+This is the only setting that, left wrong, gives **nobody on the team anything to see** —
+including you. The hub attaches this contact to every push it sends, and Apple checks it far
+more strictly than Google: a contact it cannot route — the hub's own default
+`mailto:admin@localhost` included — gets `403 BadJwtToken` for **every** push, permanently.
+From the outside:
+
+- `/notify` still reports the notification as sent
+- the app still shows the iPhone as **subscribed to notifications**
+- Android and Firefox users on the same hub keep receiving normally — so if you test on
+  Android, you will conclude the hub is fine
+
+Put the hub's public domain in `.env`:
+
+```
+CCRC_VAPID_SUBJECT=https://<your-hub>
+```
+
+then **recreate** the container (`./deploy.sh` — `docker restart` does not pick up a new
+variable). Verify:
+
+```bash
+docker compose -p cc-remote-control exec hub printenv CCRC_VAPID_SUBJECT
+docker compose -p cc-remote-control logs --tail=50 hub | grep -i vapid
+```
+
+The first must print your domain; the second must print no warning. Changing this value does
+not affect existing subscriptions — **nobody has to reinstall the app or re-enable
+notifications.**
+
+Running the hub under systemd instead of Docker? `.env` is not read at all: set the variable
+in the unit file (`deploy/ccrc-hub.service` ships with the line to edit).
 
 ### Turning on Slack sign-in
 

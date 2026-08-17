@@ -498,7 +498,7 @@ ghép lại từng máy**. Vài phút, nhưng biết trước thì đỡ hoảng
 | Không thấy nút **Đăng nhập bằng Slack** | Hub chưa cấu hình đăng nhập Slack — dùng ô dán token, và báo người quản trị hub (mục 12) |
 | Bấm nút Slack rồi báo **"Phiên đăng nhập hết hạn"** | Link callback bị mở lại, hoặc quá 5 phút giữa lúc bấm và lúc Slack trả về. Bấm đăng nhập lại từ đầu |
 | `/notify` báo "chưa có thiết bị nào đăng ký" | Chưa bật thông báo trên điện thoại, hoặc iPhone mở bằng Safari thay vì từ icon màn hình chính |
-| Điện thoại không nhận thông báo | `/notify` đang **off**. Bật bằng `/notify on` |
+| Điện thoại không nhận thông báo | Trước hết: `/notify` đang **off**? Bật bằng `/notify on`. Vẫn im, mà máy khác hoặc điện thoại Android thì nhận được, **riêng iPhone không** → lỗi phía hub: người vận hành chưa đặt `CCRC_VAPID_SUBJECT` (mục 12). Đây là kiểu hỏng không có dấu hiệu nào cả — `/notify` vẫn báo gửi thành công, app vẫn hiện là đã đăng ký thiết bị — nên đừng gỡ app cài lại, không sửa được gì mà mất khoá ghép cặp |
 | `/remote on` báo không tìm thấy tmux | Claude Code đang chạy ngoài tmux. Thoát, chạy `tmux`, rồi chạy `claude` bên trong |
 | `/remote on` báo lỗi Tailscale | Tailscale chưa chạy hoặc chưa đăng nhập. Mở app Tailscale lên |
 | Thẻ hiện "Máy không phản hồi — có thể đã ngủ" | Máy tính ngủ hoặc mất mạng. **Đặt máy không ngủ trước khi rời đi** |
@@ -599,6 +599,37 @@ Vẫn cấp tay được — script tự động, người ngoài, tài khoản 
 
 In ra một token — gửi **riêng** cho người đó, đừng dán vào chat nhóm. Hub tự nạp trong khoảng
 5 giây, không cần khởi động lại. Họ cài bằng dạng có token ở mục 3.
+
+### ⚠ Có người dùng iPhone: phải đặt `CCRC_VAPID_SUBJECT`
+
+Đây là biến duy nhất mà đặt sai thì **không ai trong đội thấy được gì bất thường**, kể cả bạn.
+Hub gắn giá trị này làm liên hệ trên mỗi lượt đẩy. Apple kiểm nó chặt hơn hẳn Google: liên hệ
+không định vị được — kể cả mặc định `mailto:admin@localhost` của hub — bị trả `403
+BadJwtToken` cho **mọi** push, vĩnh viễn. Còn phía người dùng thì:
+
+- `/notify` vẫn báo gửi thành công
+- app vẫn hiện iPhone là **đã đăng ký nhận thông báo**
+- Android và Firefox trong cùng đội vẫn nhận bình thường — nên nếu bạn kiểm thử bằng Android,
+  bạn sẽ kết luận hub chạy tốt
+
+Đặt trong `.env`, giá trị là domain công khai của hub:
+
+```
+CCRC_VAPID_SUBJECT=https://<hub-cua-ban>
+```
+
+rồi **tạo lại** container (`./deploy.sh` — `docker restart` không nạp biến mới). Kiểm lại:
+
+```bash
+docker compose -p cc-remote-control exec hub printenv CCRC_VAPID_SUBJECT
+docker compose -p cc-remote-control logs --tail=50 hub | grep -i vapid
+```
+
+Lệnh đầu phải in đúng domain của bạn; lệnh sau không còn dòng cảnh báo nào là đạt. Đổi giá trị
+này không ảnh hưởng đăng ký cũ — **không ai phải cài lại app hay bật lại thông báo.**
+
+Chạy hub bằng systemd thay vì Docker thì `.env` không được đọc: đặt biến trong unit file
+(`deploy/ccrc-hub.service` đã có sẵn dòng để sửa).
 
 ### Bật đăng nhập Slack trên hub
 

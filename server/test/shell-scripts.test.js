@@ -364,6 +364,127 @@ test('tài liệu nói rõ CCRC_TRUST_PROXY phải đi kèm CCRC_BIND', () => {
   }
 });
 
+// --- Kiểm toán 2026-08-17: CCRC_VAPID_SUBJECT là biến DUY NHẤT hỏng âm thầm
+// theo cách người vận hành không thể tự thấy ------------------------------
+//
+// Một hub dựng đúng theo hướng dẫn — `./deploy.sh`, tunnel lên, `/notify` trả
+// { ok: true, pushed: true } — vẫn không đẩy nổi một thông báo nào tới iPhone,
+// vì compose rơi về `mailto:admin@localhost` và Apple trả 403 BadJwtToken cho
+// mọi push dưới subject đó. Hub chỉ ghi lỗi vào log của chính nó; phía gọi
+// thấy thành công. Trên một server người khác quản, log là thứ người dùng
+// KHÔNG với tới được — nên "hub tự cảnh báo trong log" không phải một lớp
+// chắn, nó chỉ là một lớp chắn cho người có ssh.
+//
+// deploy.sh đã tự đặt CCRC_TRUST_PROXY và CCRC_BIND đúng vì nó BIẾT hình dạng
+// triển khai. Nó không đoán được domain hub, nên phải hỏi — và phải nói lại
+// một lần nữa ở cuối, sau khi hub lên, cho cả những người có sẵn .env cũ và
+// không bao giờ đi qua câu hỏi đó.
+function runDeployTrongThuMucRieng({ env = '', input = '' } = {}) {
+  // deploy.sh `cd "$(dirname "$0")"` rồi ghi thẳng vào ./.env — chạy nó tại
+  // gốc repo là ghi vào .env thật của người đang dev. Chép script ra thư mục
+  // tạm: nó không đọc file nào khác trong repo, mọi thứ còn lại đi qua docker.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccrc-deploy-'));
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'ccrc-fakebin-'));
+  // Docker giả nói "có" với mọi thứ: `compose version`, `up -d --build`, và
+  // lượt `compose exec ... healthz` mà script chờ. Bài này không kiểm docker,
+  // nó kiểm những gì script ghi ra .env và nói với người vận hành.
+  fs.writeFileSync(path.join(bin, 'docker'), '#!/bin/sh\nexit 0\n');
+  fs.chmodSync(path.join(bin, 'docker'), 0o755);
+  fs.copyFileSync(path.join(root, 'deploy.sh'), path.join(dir, 'deploy.sh'));
+  fs.chmodSync(path.join(dir, 'deploy.sh'), 0o755);
+  if (env) fs.writeFileSync(path.join(dir, '.env'), env);
+  try {
+    const r = spawnSync('bash', [path.join(dir, 'deploy.sh')], {
+      cwd: dir,
+      env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
+      input,
+      encoding: 'utf8',
+    });
+    const sau = fs.existsSync(path.join(dir, '.env'))
+      ? fs.readFileSync(path.join(dir, '.env'), 'utf8') : '';
+    return { code: r.status, out: `${r.stdout || ''}${r.stderr || ''}`, env: sau };
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(bin, { recursive: true, force: true });
+  }
+}
+
+// .env đã đủ mọi thứ trừ subject — cô lập đúng một biến đang được kiểm.
+const ENV_DU_TRU_SUBJECT = 'CCRC_TOKEN=deadbeef\nCCRC_TUNNEL_TOKEN=eyJfake\n';
+
+test('deploy.sh hỏi domain hub khi .env chưa có CCRC_VAPID_SUBJECT, và ghi lại', () => {
+  const r = runDeployTrongThuMucRieng({
+    env: ENV_DU_TRU_SUBJECT,
+    input: 'https://ccrc.congty.vn\n',
+  });
+  assert.match(r.out, /iPhone/,
+    'câu hỏi phải nói rõ hậu quả (iPhone không nhận được gì) — không thì người ta Enter cho xong');
+  assert.match(r.env, /^CCRC_VAPID_SUBJECT=https:\/\/ccrc\.congty\.vn$/m,
+    'phải ghi đúng giá trị vừa nhập vào .env');
+});
+
+test('deploy.sh bỏ qua được câu hỏi subject, nhưng phải cảnh báo lại ở cuối', () => {
+  const r = runDeployTrongThuMucRieng({ env: ENV_DU_TRU_SUBJECT, input: '\n' });
+  assert.equal(r.code, 0, 'Enter bỏ qua là hợp lệ — hub chỉ phục vụ Android vẫn chạy tốt');
+  assert.ok(!/^CCRC_VAPID_SUBJECT=..*$/m.test(r.env),
+    'không nhập gì thì không được ghi một giá trị bịa vào .env');
+  assert.match(r.out, /CCRC_VAPID_SUBJECT/,
+    'phải nhắc lại TÊN biến ở cuối, sau khi hub đã lên — đó là thứ người ta copy đi sửa');
+  assert.match(r.out, /iPhone/,
+    'cảnh báo cuối phải nói ai bị ảnh hưởng, không chỉ "thiếu biến"');
+});
+
+test('deploy.sh cảnh báo cả khi .env có sẵn một subject Apple từ chối', () => {
+  // Đường mà mọi hub dựng trước bản này đều đi: .env cũ, không hề trống, nên
+  // câu hỏi ở trên không bao giờ bắn — chỉ cảnh báo cuối bắt được ca này.
+  const r = runDeployTrongThuMucRieng({
+    env: `${ENV_DU_TRU_SUBJECT}CCRC_VAPID_SUBJECT=mailto:admin@localhost\n`,
+  });
+  assert.match(r.out, /CCRC_VAPID_SUBJECT/,
+    'giá trị trỏ về localhost là giá trị Apple từ chối — im lặng ở đây là để nguyên lỗi');
+});
+
+test('deploy.sh KHÔNG hỏi lại và KHÔNG cảnh báo khi subject đã đặt đúng', () => {
+  const r = runDeployTrongThuMucRieng({
+    env: `${ENV_DU_TRU_SUBJECT}CCRC_VAPID_SUBJECT=https://ccrc.congty.vn\n`,
+  });
+  assert.ok(!/Domain công khai của hub/.test(r.out),
+    'đã có giá trị thật thì không được hỏi lại — chạy lại deploy.sh phải im lặng đi qua');
+  assert.ok(!/⚠[^\n]*CCRC_VAPID_SUBJECT/.test(r.out),
+    'cảnh báo bắn cả khi đã đặt đúng thì lần sau không ai đọc nó nữa');
+  assert.match(r.env, /^CCRC_VAPID_SUBJECT=https:\/\/ccrc\.congty\.vn$/m,
+    'không được ghi đè giá trị người vận hành đã tự đặt');
+});
+
+// `.env.example` là thứ người ta `cp` rồi điền — một dòng đã comment sẵn là
+// một dòng bị lướt qua. CCRC_TOKEN không bị comment vì thiếu nó hub không
+// chạy; subject cũng phải nằm cùng hạng đó, vì thiếu nó hub chạy nhưng iPhone
+// im lặng — hỏng nặng hơn mà lại khó thấy hơn.
+test('.env.example để CCRC_VAPID_SUBJECT ở dạng phải điền, không phải dòng comment', () => {
+  const src = read('.env.example');
+  assert.match(src, /^CCRC_VAPID_SUBJECT=/m,
+    'phải có một dòng CCRC_VAPID_SUBJECT= chưa comment để người ta thấy mà điền');
+});
+
+// Chạy hub bằng systemd là đường đi thứ hai, và nó không đọc .env — người theo
+// đường này không có gì nhắc họ về subject cả.
+test('unit systemd có sẵn dòng CCRC_VAPID_SUBJECT để sửa', () => {
+  const src = read('deploy/ccrc-hub.service');
+  assert.match(src, /Environment=CCRC_VAPID_SUBJECT=/,
+    'unit file là .env của người chạy Node trực tiếp — thiếu dòng này là họ không biết biến tồn tại');
+});
+
+// Bảng trục trặc là nơi người dùng cuối đi tới khi im lặng xảy ra. Trước bản
+// này nó quy hết cho `/notify off`, nên người đọc kiểm đúng một thứ, thấy nó
+// đang bật, rồi hết đường.
+test('bảng trục trặc nêu cả nguyên nhân phía hub cho "không nhận thông báo"', () => {
+  const src = read('docs/huong-dan.md');
+  const hang = src.split('\n').filter((l) => /không nhận (được )?thông báo/i.test(l)).join('\n');
+  assert.ok(hang, 'không tìm thấy hàng nào nói về việc không nhận được thông báo');
+  assert.match(hang, /iPhone|VAPID/,
+    'phải nêu khả năng hub thiếu CCRC_VAPID_SUBJECT — im lặng riêng với iPhone, /notify vẫn báo ok');
+});
+
 // --- Task 13: điện thoại thôi quyết định, tài liệu phải nói đúng nghi thức
 // mới -------------------------------------------------------------------
 //

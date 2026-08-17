@@ -11,8 +11,12 @@ User=ccrc
 WorkingDirectory=/opt/cc-remote-control
 Environment=CCRC_PORT=8720
 Environment=CCRC_TOKEN=thay-token-cua-ban-vao-day
-# Mặc định hub KHÔNG lưu lịch sử ra đĩa (ephemeral). Bỏ comment nếu muốn lưu:
-# Environment=CCRC_PERSIST=1
+# Liên hệ gắn vào Web Push. Đường systemd KHÔNG đọc file .env, nên đây là chỗ
+# duy nhất đặt được. Apple từ chối mọi push gửi dưới một liên hệ không định vị
+# được (403 BadJwtToken) — để nguyên giá trị mẫu bên dưới là iPhone không nhận
+# được thông báo nào, trong khi /notify vẫn trả về thành công và thiết bị vẫn
+# hiện là đã đăng ký. Android (FCM) và Firefox không bị ảnh hưởng.
+Environment=CCRC_VAPID_SUBJECT=https://thay-domain-hub-cua-ban
 ExecStart=/usr/bin/node server/src/index.js
 Restart=always
 RestartSec=3

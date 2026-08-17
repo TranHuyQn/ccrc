@@ -171,6 +171,37 @@ if ! grep -q '^CCRC_TUNNEL_TOKEN=..*' .env 2>/dev/null; then
   fi
 fi
 
+# Liên hệ gắn vào JWT của Web Push. Apple kiểm claim `sub` chặt hơn hẳn Google
+# và Mozilla: nó trả 403 BadJwtToken — âm thầm, cho MỌI push — khi subject
+# không phải một liên hệ định vị được, kể cả giá trị mặc định của compose
+# (mailto:admin@localhost). Hỏng theo cách không ai nhìn thấy từ phía người
+# dùng: /notify vẫn trả { ok: true, pushed: true }, hook vẫn xanh, thiết bị
+# vẫn nằm nguyên trong danh sách đã đăng ký (403 không phải 410 nên hub không
+# gỡ nó), chỉ có iPhone là im. Android (FCM) và Firefox nhận bình thường, nên
+# ai kiểm thử bằng Android sẽ ship thẳng lỗi này lên production — đúng chuyện
+# đã xảy ra ngày 2026-08-17.
+#
+# Vì sao phải HỎI thay vì tự suy như CCRC_TRUST_PROXY/CCRC_BIND ở dưới: script
+# không có cách nào biết domain công khai của hub. Tunnel token không mang
+# domain theo, và profile tls thì domain nằm ở CCRC_DOMAIN mà lúc này có thể
+# chưa ai đặt. Chỉ hỏi khi .env chưa có — chạy lại deploy.sh phải im lặng đi
+# qua, không hỏi lại thứ đã trả lời.
+if ! grep -q '^CCRC_VAPID_SUBJECT=..*' .env 2>/dev/null; then
+  echo ""
+  echo "Thông báo đẩy cần một liên hệ định vị được gắn vào Web Push. Apple TỪ CHỐI"
+  echo "giá trị mặc định (mailto:admin@localhost): iPhone sẽ không nhận được thông"
+  echo "báo nào, trong khi /notify vẫn báo thành công. Android không bị ảnh hưởng."
+  # `|| hub_url=""`: không có stdin (chạy qua ssh không cấp tty, hay trong CI)
+  # thì `read` trả mã lỗi và `set -e` giết script GIỮA CHỪNG — sau khi .env đã
+  # sửa dở, trước khi hub kịp lên. Bỏ qua câu hỏi là một kết cục hợp lệ; chết
+  # vì hỏi thì không.
+  read -r -p "Domain công khai của hub (vd https://ccrc.congty.vn — Enter để bỏ qua): " hub_url || hub_url=""
+  if [ -n "$hub_url" ]; then
+    echo "CCRC_VAPID_SUBJECT=$hub_url" >> .env
+    echo "• Đặt CCRC_VAPID_SUBJECT=$hub_url (liên hệ Web Push — Apple kiểm giá trị này)"
+  fi
+fi
+
 # Có tunnel token = chắc chắn có cloudflared đứng trước hub (bên dưới script tự
 # chọn --profile cloudflare). Đây là lúc duy nhất script BIẾT CHẮC hình dạng
 # triển khai, nên nó ghi luôn cặp biến đi liền nhau, thay vì để người vận hành
@@ -219,6 +250,28 @@ done
 echo ""
 echo "✅ HUB ĐANG CHẠY (chế độ ephemeral — không lưu nội dung phiên ra đĩa)"
 compose logs --tail 3 hub | grep -o '\[hub\].*' || true
+
+# Nói lại một lần nữa ở đây, sau khi hub đã lên, vì câu hỏi phía trên chỉ bắn
+# cho .env còn trống: MỌI hub dựng trước bản này đã có .env đầy đủ và sẽ đi
+# thẳng qua nó mà không thấy gì. Hub cũng tự cảnh báo chuyện này trong log của
+# chính nó, nhưng log là thứ chỉ người có shell trên server đọc được — người
+# vận hành hub cho người khác dùng thì có, người dùng thì không, và người dùng
+# mới là người phát hiện ra "điện thoại không kêu".
+#
+# Bắt cả giá trị ĐÃ đặt nhưng vô dụng (localhost, IP loopback, domain mẫu
+# copy từ README) — cùng bộ luật với server/src/vapid-subject.js, chỉ khác là
+# chỗ này in ra cho đúng người đang cầm bàn phím.
+if ! grep -q '^CCRC_VAPID_SUBJECT=..*' .env 2>/dev/null \
+  || grep -qE '^CCRC_VAPID_SUBJECT=.*(localhost|127\.0\.0\.1|example\.(com|org|net)|yourdomain|yourhub|changeme)' .env 2>/dev/null; then
+  echo ""
+  echo "⚠ CCRC_VAPID_SUBJECT chưa có giá trị dùng được trong .env."
+  echo "  iPhone sẽ KHÔNG nhận được thông báo nào — Apple trả 403 BadJwtToken cho"
+  echo "  mọi push, trong khi /notify vẫn báo thành công và thiết bị vẫn hiện là"
+  echo "  đã đăng ký. Android và Firefox không bị ảnh hưởng."
+  echo "  Sửa: thêm  CCRC_VAPID_SUBJECT=https://<domain-hub-của-bạn>  vào .env rồi"
+  echo "  chạy lại ./deploy.sh — biến mới chỉ vào container khi nó được TẠO LẠI,"
+  echo "  'docker restart' không đủ."
+fi
 echo ""
 echo "Bước tiếp theo:"
 echo "  1. Tạo token cho từng thành viên:   ./deploy.sh adduser ten-nguoi"

@@ -56,9 +56,10 @@ git clone https://github.com/TranHuyQn/ccrc && cd ccrc
 ./deploy.sh
 ```
 
-It generates `CCRC_TOKEN`, asks for the tunnel token from step 1, writes both to
-`.env`, then builds and health-checks. Run it again any time to update — it
-keeps the answers it already has.
+It generates `CCRC_TOKEN`, asks for the tunnel token from step 1 and for the
+hub's public domain (`CCRC_VAPID_SUBJECT` — see below, and answer it if anyone
+will use an iPhone), writes them to `.env`, then builds and health-checks. Run
+it again any time to update — it keeps the answers it already has.
 
 Because a tunnel token means a proxy is in front, it also writes
 `CCRC_TRUST_PROXY=1` and `CCRC_BIND=127.0.0.1`. Those two belong together: the
@@ -413,6 +414,49 @@ not put the tokens.
 Losing it is not a disaster — the hub generates a new VAPID keypair on next
 start — but every phone has to re-subscribe and every token has to be reissued.
 
+### If anyone uses an iPhone: `CCRC_VAPID_SUBJECT`
+
+This is the one setting that, left wrong, produces no visible symptom anywhere you
+would think to look.
+
+The hub attaches this contact address to every Web Push it sends. Apple checks it far
+more strictly than Google does, and refuses anything it cannot route — including the
+hub's own fallback, `mailto:admin@localhost` — with `403 BadJwtToken`, for every push,
+permanently. Meanwhile:
+
+- `POST /notify` still answers `{"ok":true,"pushed":true}`, because the rejection is
+  logged inside the hub and never reaches the caller
+- the phone stays listed as subscribed, because a `403` is not the `410` that would make
+  the hub drop a dead subscription
+- Android (FCM) and Firefox accept the same subject, so a hub tested on an Android phone
+  looks completely healthy
+
+Set it to the hub's public domain:
+
+```
+CCRC_VAPID_SUBJECT=https://<your-hub>
+```
+
+A real `mailto:` contact works too. Then **recreate** the container — a new value only
+reaches a container that is created again, so `docker restart` is not enough:
+
+```bash
+./deploy.sh
+docker compose -p cc-remote-control exec hub printenv CCRC_VAPID_SUBJECT
+docker compose -p cc-remote-control logs --tail=50 hub | grep -i vapid
+```
+
+The first command must print your domain; the second must print nothing. The hub warns
+about a bad subject on startup, but that warning lands in a log only whoever runs the
+server can read — which is why `deploy.sh` asks up front and repeats the warning at the
+end of a deploy.
+
+Changing this value does not invalidate existing subscriptions: nobody has to reinstall
+the app or re-enable notifications.
+
+Running without Docker? `.env` is not read at all — put it in the systemd unit
+(`deploy/ccrc-hub.service` ships with the line to edit).
+
 ### Environment variables
 
 | Variable | Default | Meaning |
@@ -422,7 +466,7 @@ start — but every phone has to re-subscribe and every token has to be reissued
 | `CCRC_BIND` | `0.0.0.0` | Host bind address (Compose only — a bare `node server/src/index.js` ignores it and listens on every interface). Set `127.0.0.1` once a tunnel or proxy is in front, so the port is not exposed to your LAN |
 | `CCRC_TRUST_PROXY` | (empty = off) | Set `1` when a tunnel or reverse proxy is in front, so per-IP rate limiting reads the real client IP. **Pair it with `CCRC_BIND=127.0.0.1`** — with the port still reachable directly, a client can write its own `X-Forwarded-For` and the flag buys nothing. Leaving it off *behind* a proxy fails the other way: every request looks like it comes from the proxy, so one noisy caller rate-limits everybody |
 | `CCRC_DATA_DIR` | `server/data` (Docker: volume `ccrc-data`) | Users, VAPID keys, push subscriptions |
-| `CCRC_VAPID_SUBJECT` | `mailto:admin@localhost` | Contact address embedded in Web Push |
+| `CCRC_VAPID_SUBJECT` | `mailto:admin@localhost` | Contact address embedded in Web Push. **Required in practice if anyone uses an iPhone** — Apple rejects the default with `403 BadJwtToken` and delivers nothing, while `/notify` still reports success and the device still shows as subscribed. Android and Firefox accept it, so Android-only testing never catches this. Set it to `https://<your-hub>` or a real `mailto:` contact — see the section above |
 | `CCRC_TUNNEL_TOKEN` | (empty) | Cloudflare Tunnel token — required by the `cloudflare` profile |
 | `CCRC_DOMAIN` | (empty) | Domain for Caddy — required by the `tls` profile |
 | `CCRC_TS_PUBLIC_URL` | (empty) | Identity service URL the browser is redirected to. Pairs with the next one; with only one set, sign-in stays off |
@@ -441,6 +485,7 @@ start — but every phone has to re-subscribe and every token has to be reissued
 | One noisy caller seems to rate-limit the whole team, and this deployment has no tunnel | `CCRC_TRUST_PROXY` / `CCRC_BIND` were never set — `./deploy.sh` only writes that pair when `CCRC_TUNNEL_TOKEN` exists, which a Caddy deployment never has. Set both by hand — see Option B, step 1 |
 | `/notify` on a dev machine says it cannot reach the hub | Wrong URL or token in `~/.ccrc/config` — rerun `setup-notify.sh` |
 | Browser will not enable notifications | Not on HTTPS, or (on iPhone) the page was opened in a Safari tab instead of the installed home-screen app |
+| iPhones receive nothing, Android phones are fine, `/notify` reports success | `CCRC_VAPID_SUBJECT` is unset or points at localhost — Apple rejects every push with `403 BadJwtToken`. See the section on it above; `docker compose -p cc-remote-control logs hub \| grep -i vapid` confirms it |
 | Hub exits immediately with `CCRC_TOKEN is required` | `.env` missing or the variable is empty |
 | No "sign in with Slack" button on the login page | One of `CCRC_TS_PUBLIC_URL` / `CCRC_TS_INTERNAL_URL` is unset — the pair is all-or-nothing |
 | Sign-in reaches the identity service but the hub then says the session expired | Its `CCRC_CALLBACK_URL` does not point back at this hub, or more than five minutes passed between clicking and returning |

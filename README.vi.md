@@ -62,7 +62,8 @@ mở thêm pane hay cửa sổ nào.
 
 ```bash
 git clone https://github.com/TranHuyQn/ccrc && cd ccrc
-cp .env.example .env             # sửa CCRC_TOKEN (openssl rand -hex 24)
+cp .env.example .env             # điền CCRC_TOKEN (openssl rand -hex 24)
+                                 # và CCRC_VAPID_SUBJECT nếu có người dùng iPhone
 docker compose -p cc-remote-control --profile cloudflare up -d --build
 ./deploy.sh adduser ten-nguoi     # cấp token riêng cho từng thành viên
 ```
@@ -83,8 +84,17 @@ bao giờ hỏi lại Slack**, nên người đã rời team vẫn dùng đượ
 lệnh đó. Cho nó vào checklist off-boarding — vô hiệu hoá tài khoản Slack của họ chỉ
 chặn đăng nhập mới, không đụng gì tới token đã nằm trên máy.
 
+⚠ **Có người dùng iPhone thì `CCRC_VAPID_SUBJECT` là bắt buộc**, không phải tuỳ chọn.
+Bỏ trống là hub rơi về `mailto:admin@localhost`, Apple trả `403 BadJwtToken` cho mọi
+push, và iPhone không nhận được gì — trong khi `/notify` vẫn báo thành công, thiết bị
+vẫn hiện là đã đăng ký, còn Android và Firefox vẫn chạy đúng. Nghĩa là kiểm thử bằng
+máy Android sẽ không bao giờ phát hiện ra. Đặt bằng domain công khai của hub
+(`https://<hub-của-bạn>`) rồi **tạo lại** container — `docker restart` không nạp biến
+mới. Đổi giá trị này không ảnh hưởng đăng ký cũ: không ai phải cài lại app.
+
 `deploy.sh` (dùng cùng Docker Compose ở trên) tự sinh `CCRC_TOKEN`, hỏi Cloudflare
-Tunnel token, build và kiểm tra hub. Có tunnel token thì nó ghi thêm
+Tunnel token và `CCRC_VAPID_SUBJECT` (nhắc lại ở cuối nếu còn thiếu), build và kiểm
+tra hub. Có tunnel token thì nó ghi thêm
 `CCRC_TRUST_PROXY=1` và `CCRC_BIND=127.0.0.1` — hai cái đi liền nhau, xem bảng biến
 bên dưới. Tiện ích kèm theo: `./deploy.sh status` · `down`.
 Không dùng Cloudflare Tunnel thì dùng `--profile tls` (Caddy, cần domain) hoặc chạy

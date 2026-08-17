@@ -108,8 +108,18 @@ from the internet, and Web Push (which requires public HTTPS) never works:
 ```bash
 cp .env.example .env             # set CCRC_TOKEN (openssl rand -hex 24)
                                  # AND CCRC_TUNNEL_TOKEN (from Cloudflare Zero Trust)
+                                 # AND CCRC_VAPID_SUBJECT if anyone uses an iPhone
 docker compose -p cc-remote-control --profile cloudflare up -d --build
 ```
+
+⚠ **`CCRC_VAPID_SUBJECT` is required, not optional, the moment one person uses an
+iPhone.** Leave it unset and the hub falls back to `mailto:admin@localhost`, Apple
+answers every push with `403 BadJwtToken`, and that phone receives nothing — while
+`/notify` still reports success, the device still shows as subscribed, and Android and
+Firefox keep working normally. Testing on an Android phone will never surface it. Set it
+to the hub's public domain (`https://<your-hub>`) and **recreate** the container;
+`docker restart` does not pick up a new variable. Changing the value does not invalidate
+existing subscriptions — nobody has to reinstall the app.
 
 `-p cc-remote-control` is not optional if you ever intend to use `deploy.sh` as well:
 that is the project name it uses, and Compose otherwise names the project after the
