@@ -45,6 +45,11 @@ h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; font-wei
   padding: 14px; margin-bottom: 10px; }
 .row { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
 
+/* Ghi chú: không phải lỗi, nhưng cũng không phải chữ nền — viền nhấn nhạt là
+   đủ để mắt dừng lại một nhịp mà không kêu như một cảnh báo. */
+.card.note { background: var(--accent-soft); border-color: var(--accent); }
+.card.note p { margin: 0; }
+
 /* Nút chính. 46px là chiều cao mà ngón cái bấm được mà không phải nhìn — đây là
    nút được bấm nhiều nhất trong cả app. */
 button { width: 100%; min-height: 46px; padding: 13px; background: var(--accent);

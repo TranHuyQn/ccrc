@@ -1345,6 +1345,19 @@ $('settings-open').onclick = () => openSettings();
 $('settings-close').onclick = () => history.back();
 window.addEventListener('popstate', () => closeSettings());
 
+// Một tab trình duyệt không tự biến thành PWA giữa chừng, nên hỏi một lần lúc
+// nạp trang là đủ. iOS Safari không hỗ trợ `display-mode`, nó có
+// `navigator.standalone` riêng — thiếu nhánh đó thì đúng cái máy mà ghi chú
+// này nhắm tới lại là máy vẫn bị nhắc.
+function dangChayTrongPwa() {
+  if (navigator.standalone === true) return true;
+  if (!window.matchMedia) return false;
+  try { return window.matchMedia('(display-mode: standalone)').matches; }
+  catch (e) { return false; }
+}
+
+if (dangChayTrongPwa()) $('pwa-note').classList.add('hidden');
+
 $('pair-cancel').onclick = () => cancelPairing();
 
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});

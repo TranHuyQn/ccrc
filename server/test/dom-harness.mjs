@@ -133,6 +133,7 @@ export const REQUIRED_IDS = [
   'settings', 'settings-open', 'settings-close',
   'pair-panel', 'pair-title', 'pair-step', 'pair-sas', 'pair-help',
   'pair-cancel', 'pair-err',
+  'pwa-note',
 ];
 
 // --- fake IndexedDB, minimal — just enough for one key store ---------------
@@ -210,7 +211,7 @@ export function makeFetch(impl) {
 
 export function loadAppPage({
   token = '', fetchImpl = null, navigatorImpl = null, indexedDBImpl = null, cryptoImpl = null,
-  search = '', pathname = '/',
+  search = '', pathname = '/', media = {},
 } = {}) {
   const byId = {};
   const BUTTON_IDS = new Set([
@@ -268,6 +269,23 @@ export function loadAppPage({
   };
   const window_ = new FakeWindow();
   window_.scrollY = 0;
+
+  // matchMedia thật trả về một MediaQueryList có addEventListener. app.js dùng
+  // nó cho hai việc khác hẳn nhau — dò PWA đã cài, và nghe hệ thống đổi
+  // sáng/tối — nên cái giả này phải nhận truy vấn nào cũng được, mặc định
+  // `matches: false`, chứ không cứng hoá một truy vấn cụ thể.
+  // `media: null` = trình duyệt KHÔNG có matchMedia. Cần một cách nói điều đó,
+  // vì gán undefined sau khi trang đã nạp thì muộn — dò PWA và áp theme đều
+  // chạy đúng một lần, lúc nạp.
+  window_.mediaListeners = [];
+  if (media) {
+    window_.matchMedia = (query) => ({
+      media: query,
+      matches: !!media[query],
+      addEventListener: (type, fn) => window_.mediaListeners.push({ query, type, fn }),
+      addListener: (fn) => window_.mediaListeners.push({ query, type: 'change', fn }),
+    });
+  }
 
   // app.js xoá `?open=` khỏi thanh địa chỉ ngay sau khi đọc, để một lần nạp
   // lại trang (kéo xuống để nạp lại, chẳng hạn) không được mở lại terminal
