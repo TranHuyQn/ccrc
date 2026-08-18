@@ -1034,6 +1034,31 @@ test('ccrc_open lúc còn ở màn hình đăng nhập → không gọi hub, và
     'yêu cầu mở phải sống sót qua lần đăng nhập, đã có: ' + location.href);
 });
 
+// Cùng lớp bug như refreshOnReturn(): #main cũng ẩn khi đang ở Cài đặt, không
+// chỉ khi chưa đăng nhập. Không await refreshTerminal() một cách tường minh ở
+// đây — nếu làm vậy, chính lời gọi tường minh đó (chứ không phải listener) có
+// thể là thứ tạo ra request, và test sẽ xanh dù bug còn nguyên. terminalCalls
+// tăng ĐỒNG BỘ ngay trong dispatchMessage() khi guard cho qua (fetch() gọi
+// impl() của fetchImpl đồng bộ trước await đầu tiên), nên chỉ cần kiểm tra nó
+// ngay sau dispatchMessage() là đủ để phân biệt.
+test('ccrc_open lúc đang ở Cài đặt (main ẩn vì Cài đặt, không phải vì chưa đăng nhập) → vẫn gọi hub', async () => {
+  let terminalCalls = 0;
+  const fetchImpl = makeFetch(async (url) => {
+    if (url === '/api/terminal') { terminalCalls += 1; return { status: 200, body: { sessions: [SESSION_ALIVE] } }; }
+    return { status: 404, body: {} }; // refreshDevices() do openSettings() gọi kèm — không quan trọng ở đây
+  });
+  const { navigatorImpl, dispatchMessage } = makeSwNavigator();
+  const { context, byId } = loadAppPage({ fetchImpl, navigatorImpl });
+  byId['main'].classList.remove('hidden'); // đã đăng nhập
+  context.openSettings();
+  assert.equal(byId['main'].classList.contains('hidden'), true, 'tiền đề: #main ẩn vì đang ở Cài đặt');
+
+  dispatchMessage({ type: 'ccrc_open', sessionId: SESSION_ALIVE.sessionId });
+  await Promise.resolve();
+
+  assert.equal(terminalCalls, 1, 'đang ở Cài đặt vẫn phải gọi hub khi có thông báo ccrc_open tới');
+});
+
 // app.js là script cổ điển, không `async`, nên listener 'message' được gắn
 // trước khi trình duyệt bơm hàng đợi tin nhắn — hôm nay nó chạy được là nhờ
 // đúng điều đó. Thêm `async` vào thẻ <script> sau này sẽ âm thầm làm rơi mọi

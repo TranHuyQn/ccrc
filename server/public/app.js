@@ -301,8 +301,13 @@ if (navigator.serviceWorker && typeof navigator.serviceWorker.addEventListener =
     // đang ẩn — người dùng bấm thông báo và thấy đúng không có gì xảy ra.
     // `pendingOpen` cố ý được GIỮ NGUYÊN: showMain() kết thúc bằng
     // refreshTerminal(), nên đăng nhập xong là phiên họ vừa bấm mở ra ngay.
-    // Cùng phép thử mà refreshOnReturn() dùng, vì cùng một lý do.
-    if ($('main').classList.contains('hidden')) return;
+    // #main cũng ẩn khi đang ở Cài đặt, không chỉ khi chưa đăng nhập —
+    // `!settingsOpen` phân biệt hai trường hợp đó, đúng phép thử mà
+    // refreshOnReturn() dùng, vì cùng một lý do: đang ở Cài đặt vẫn là đã
+    // đăng nhập, và consumePendingOpen() bên dưới đã biết tự đóng Cài đặt
+    // (history.back()) trước khi điều hướng, nên gọi hub ở đây là đúng, không
+    // phải chỉ riêng logout mới cần loại trừ.
+    if ($('main').classList.contains('hidden') && !settingsOpen) return;
     refreshTerminal();
   });
   // Hôm nay không có dòng này vẫn chạy, nhưng chỉ vì app.js là script CỔ ĐIỂN,
@@ -1070,7 +1075,12 @@ function ptrReset() {
 
 // At the very top of the page, and logged in. Both matter: mid-page this
 // gesture is an ordinary upward scroll and must not be stolen, and on the
-// login screen there is nothing worth reloading for.
+// login screen there is nothing worth reloading for. #main is also hidden
+// while Settings is open, and unlike the `!settingsOpen` guards elsewhere in
+// this file (refreshOnReturn() and the ccrc_open listener above both check
+// it; logout() resets it), leaving this check bare here is correct AS IS —
+// there is no terminal list under the user's finger on the Settings screen
+// for this gesture to refresh, so this isn't a spot that was missed.
 function ptrEligible() {
   if ($('main').classList.contains('hidden')) return false;
   const scrolled = (typeof window.scrollY === 'number' ? window.scrollY : 0)
