@@ -422,6 +422,49 @@ test('401 khi duyệt → logout() ẩn CẢ thẻ duyệt, không để hai th�
   assert.equal(page.localStorage.getItem('ccrc_token'), null);
 });
 
+// Cùng lớp bug, nhưng ở màn Cài đặt: nút "Đăng xuất" nằm BÊN TRONG #settings.
+// logout() vốn chỉ ẩn #main/#link-card rồi hiện #login — thiếu phần ẩn
+// #settings thì màn Cài đặt cứ đứng nguyên, hiện chồng lên #login: người dùng
+// thấy cả ô dán token lẫn toàn bộ nội dung Cài đặt bên dưới nó.
+test('Đăng xuất trong khi đang ở Cài đặt → logout() ẩn CẢ màn Cài đặt, không để hai màn chồng nhau', () => {
+  const page = loadAppPage({});
+  page.byId.main.classList.remove('hidden'); // đã đăng nhập, đang ở màn chính
+  page.byId['settings-open'].onclick();       // mở Cài đặt (như bấm ⚙)
+  assert.equal(page.byId.settings.classList.contains('hidden'), false, 'tiền đề: đang ở Cài đặt');
+
+  page.byId['logout'].onclick();
+
+  assert.equal(page.byId.settings.classList.contains('hidden'), true,
+    'màn Cài đặt phải biến mất cùng phiên đăng nhập');
+  assert.equal(page.byId.login.classList.contains('hidden'), false, 'và thẻ đăng nhập phải hiện ra');
+  assert.equal(page.localStorage.getItem('ccrc_token'), null);
+});
+
+// Follow-on: đăng xuất từ Cài đặt xong đăng nhập lại không được để #main và
+// #settings hiện cùng nhau. Đây là bằng chứng settingsOpen thực sự bị đưa về
+// false (không chỉ #settings được ẩn TAY một lần) — showMain()/closeSettings()
+// không tự ẩn #settings, nên nếu settingsOpen còn kẹt ở true thì việc mở lại
+// #main ở đây sẽ vẽ đè lên một #settings không hidden.
+test('đăng xuất lúc đang ở Cài đặt rồi đăng nhập lại → #main và #settings không hiện cùng nhau', async () => {
+  const fetchImpl = makeFetch(async (url) => {
+    if (url === '/api/me') return { status: 200, body: { user: 'huy', pushDevices: 0 } };
+    if (url === '/api/terminal') return { status: 200, body: { sessions: [] } };
+    return { status: 404, body: {} };
+  });
+  // Không truyền token vào loadAppPage(): bootstrap tự chạy showMain() nếu có,
+  // và ở đây luồng đăng nhập được lái bằng tay qua login-btn.
+  const page = loadAppPage({ fetchImpl });
+  page.byId.main.classList.remove('hidden');
+  page.byId['settings-open'].onclick();
+  page.byId['logout'].onclick();
+
+  page.byId['token'].value = 'tok-moi';
+  await page.byId['login-btn'].onclick();
+
+  assert.equal(page.byId.main.classList.contains('hidden'), false, 'màn chính phải hiện sau khi đăng nhập lại');
+  assert.equal(page.byId.settings.classList.contains('hidden'), true, 'Cài đặt không được hiện lại theo');
+});
+
 // --- thẻ "Duyệt máy dev" trong app ------------------------------------------
 //
 // Trang /link ở trên chỉ với tới được người mở bằng trình duyệt. Người đã cài

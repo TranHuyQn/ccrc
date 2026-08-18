@@ -79,6 +79,16 @@ function logout() {
   // nhập: người dùng thấy cả ô nhập mã lẫn ô dán token, không biết cái nào
   // đang có tác dụng.
   $('link-card').classList.add('hidden');
+  // #settings cũng phải ẩn, và settingsOpen đưa về false. Nút "Đăng xuất" nằm
+  // BÊN TRONG #settings, nên một cú đăng xuất bấm từ đó phải đóng cả màn Cài
+  // đặt — thiếu hai dòng này thì #login hiện ra trong khi #settings vẫn còn
+  // nguyên, chồng lên dưới nó. settingsOpen khai báo Ở DƯỚI hàm này trong
+  // file (là `let` cấp module) nhưng đọc/ghi được bình thường ở đây vì hàm
+  // chỉ THỰC THI sau khi cả file đã nạp xong. Không unwind lịch sử: một
+  // popstate tới sau sẽ gặp settingsOpen === false trong closeSettings() và
+  // return sớm, đúng ý — không cần history.back() ở đây.
+  $('settings').classList.add('hidden');
+  settingsOpen = false;
   $('login').classList.remove('hidden');
 }
 
@@ -137,9 +147,10 @@ function showLink() {
 }
 
 // Duyệt có HAI chỗ vào, cùng một xử lý: trang /link (mở từ trình duyệt) và thẻ
-// gập trong app. Chỗ thứ hai không phải tiện thêm — nó là chỗ vào DUY NHẤT của
-// người đã cài PWA, vì app standalone không gõ được URL và iOS không deep-link
-// vào web app đã cài. Một hàm cho cả hai để hai đường không trôi khỏi nhau.
+// duyệt trong màn hình Cài đặt của app. Chỗ thứ hai không phải tiện thêm — nó
+// là chỗ vào DUY NHẤT của người đã cài PWA, vì app standalone không gõ được
+// URL và iOS không deep-link vào web app đã cài. Một hàm cho cả hai để hai
+// đường không trôi khỏi nhau.
 function bindApprove(codeId, btnId, msgId, errId) {
   $(btnId).onclick = async () => {
     $(errId).classList.add('hidden');
@@ -978,9 +989,15 @@ $('enable-push').onclick = async () => {
 let returnRefreshInFlight = null;
 
 function refreshOnReturn() {
-  // Only relevant once logged in; on the login screen there is no terminal
-  // list, and a stale/absent token would just bounce off 401 → logout().
-  if ($('main').classList.contains('hidden')) return;
+  // Only relevant once logged in. #main is hidden in TWO cases now: the bare
+  // login screen (no terminal list; a stale/absent token would just bounce
+  // off 401 → logout()) and Settings being open (#main is hidden *behind*
+  // it, but the terminal list underneath is still real and worth keeping
+  // fresh). `!settingsOpen` is what tells those two apart — it stays false on
+  // both the logged-out and the /link screens, so this keeps their behaviour
+  // byte-for-byte the same while letting the refresh through while Settings
+  // is open.
+  if ($('main').classList.contains('hidden') && !settingsOpen) return;
   if (returnRefreshInFlight) return returnRefreshInFlight;
   returnRefreshInFlight = (async () => {
     await refreshTerminal();

@@ -341,6 +341,27 @@ test('chưa đăng nhập (màn hình main còn ẩn) → pageshow không gọi 
   assert.equal(terminalCalls, 0, 'không được gọi /api/terminal trước khi đăng nhập');
 });
 
+// openSettings() cũng ẩn #main (xem app.js) nên "#main đang ẩn" không còn
+// đồng nghĩa với "chưa đăng nhập" nữa. refreshOnReturn() phải phân biệt được
+// hai trường hợp: guard của nó phải để refresh chạy khi đang ở Cài đặt, chứ
+// không chỉ khi #main tự nó đang hiện.
+test('đang ở Cài đặt (main ẩn vì Cài đặt, không phải vì chưa đăng nhập) → pageshow vẫn gọi hub', async () => {
+  let terminalCalls = 0;
+  const fetchImpl = makeFetch(async (url) => {
+    if (url === '/api/terminal') { terminalCalls++; return { status: 200, body: { sessions: [] } }; }
+    return { status: 404, body: {} }; // refreshDevices() do openSettings() gọi kèm — không quan trọng ở đây
+  });
+  const { context, byId, window } = loadAppPage({ fetchImpl });
+  byId['main'].classList.remove('hidden'); // đã đăng nhập
+  context.openSettings();
+  assert.equal(byId['main'].classList.contains('hidden'), true, 'tiền đề: #main ẩn vì đang ở Cài đặt');
+
+  await Promise.all(window.dispatch('pageshow', { persisted: true }));
+
+  assert.equal(terminalCalls, 1,
+    'đang ở Cài đặt vẫn phải gọi hub khi quay lại — danh sách không được lỗi thời khi Cài đặt đóng lại');
+});
+
 test('ký thất bại (IndexedDB/WebCrypto lỗi) → báo lỗi, làm mới danh sách, KHÔNG điều hướng', async () => {
   // Task 9 bỏ bước xin vé qua hub, nên "xin vé thất bại" không còn nghĩa gì
   // nữa — thứ có thể thất bại giờ là chính việc KÝ trên điện thoại. Giả lập
