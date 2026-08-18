@@ -436,27 +436,34 @@ async function renderTerminalList(sessions) {
   for (const session of sessions) list.appendChild(await buildTerminalCardAsync(session));
 }
 
-// Một máy chưa ghép không có gì để chấp nhận chữ ký từ điện thoại này — đưa
-// thẳng nút "Mở terminal" vào đó chỉ dẫn tới một token bị daemon từ chối. Nút
-// "Ghép máy này" là LỐI VÀO DUY NHẤT tới startPairing(): bảng ghép cặp (Task 7)
-// không có chỗ nào khác trong UI gọi tới nó, nên thiếu bước này thì tính năng
-// ghép cặp không ai bấm tới được (⚠️ của báo cáo task trước).
-async function buildTerminalCardAsync(session) {
-  const card = buildTerminalCard(session);
-  if (session.alive && !(await pairedMachines()).includes(session.machine)) {
-    const btn = openButtonOf(card);
-    if (btn) {
-      btn.textContent = 'Ghép máy này';
-      btn.onclick = () => startPairing(session.machine);
-    }
-  }
-  return card;
+// Dòng phụ chỉ nói những gì hub THẬT SỰ trả về. Hub không gửi mốc heartbeat
+// cuối (xem toPublic() trong server/src/terminal-sessions.js), nên ở đây không
+// có "2 phút trước" — bịa ra một con số là nói dối về máy của người dùng.
+function terminalMetaText(session, daGhep) {
+  const ve = [];
+  // Tên thẻ đã là machine khi phiên không có nhãn — nhắc lại ngay dưới nó là
+  // chữ thừa.
+  if (session.label) ve.push(session.machine);
+  if (session.alive && !daGhep) ve.push('chưa ghép với máy này');
+  if (hasUnread(session)) ve.push('thông báo lúc ' + gioPhut(session.lastNotifiedAt));
+  return ve.join(' · ');
 }
 
-// `label` and `machine` both originate on the developer's machine — label is
-// a project directory basename the user controls — so both are set with
-// textContent, never innerHTML.
-function buildTerminalCard(session) {
+function gioPhut(ts) {
+  const d = new Date(ts);
+  return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+}
+
+// Hỏi "máy này đã ghép chưa" TRƯỚC khi dựng thẻ, không phải sửa nút sau khi
+// dựng: dòng phụ cũng cần biết câu trả lời đó.
+async function buildTerminalCardAsync(session) {
+  const daGhep = !session.alive || (await pairedMachines()).includes(session.machine);
+  return buildTerminalCard(session, daGhep);
+}
+
+// `label` và `machine` đều đến từ máy dev — label là tên thư mục dự án người
+// dùng tự đặt — nên cả hai đi qua textContent, không bao giờ innerHTML.
+function buildTerminalCard(session, daGhep = true) {
   const card = document.createElement('div');
   card.className = 'card terminal-card';
 
@@ -472,19 +479,28 @@ function buildTerminalCard(session) {
     title.appendChild(dot);
   }
   const name = document.createElement('span');
-  name.textContent = session.label ? `${session.label} · ${session.machine}` : session.machine;
+  name.className = 'terminal-name';
+  name.textContent = session.label || session.machine;
   // Tên LUÔN là span cuối trong hàng, chấm đứng trước nó. Test đọc tên bằng
   // children.at(-1), nên đảo thứ tự ở đây làm đỏ test chứ không hỏng ngầm.
   title.appendChild(name);
   card.appendChild(title);
+
+  const metaText = terminalMetaText(session, daGhep);
+  if (metaText) {
+    const meta = document.createElement('div');
+    meta.className = 'terminal-meta';
+    meta.textContent = metaText;
+    card.appendChild(meta);
+  }
+
   if (unread) {
     card.classList.add('has-unread');
     const dot = title.children[0];
     // Lối thoát DUY NHẤT cho thẻ "máy không phản hồi", vốn không dựng nút nào
     // để bấm: thiếu nó thì chấm kẹt lại cho tới khi hub evict phiên sau 30
     // phút. Gỡ chấm tại chỗ thay vì fetch lại — trạng thái vẫn đúng ở lần dựng
-    // sau vì mốc đã nằm trong localStorage rồi. Click vào nút "Mở terminal"
-    // cũng nổi bọt lên đây; vô hại, openTerminal() đã đánh dấu sẵn.
+    // sau vì mốc đã nằm trong localStorage rồi.
     card.onclick = () => {
       markRead(session.sessionId);
       dot.remove();
@@ -494,14 +510,23 @@ function buildTerminalCard(session) {
 
   if (session.alive) {
     const openBtn = document.createElement('button');
-    openBtn.textContent = 'Mở terminal';
-    openBtn.onclick = () => openTerminal(session, openBtn);
+    if (daGhep) {
+      openBtn.textContent = 'Mở terminal';
+      openBtn.onclick = () => openTerminal(session, openBtn);
+    } else {
+      // Một máy chưa ghép không có gì để chấp nhận chữ ký từ điện thoại này —
+      // nút "Mở terminal" ở đó chỉ dẫn tới một vé bị daemon từ chối. Đây là LỐI
+      // VÀO DUY NHẤT tới startPairing().
+      openBtn.className = 'btn-soft';
+      openBtn.textContent = 'Ghép máy này';
+      openBtn.onclick = () => startPairing(session.machine);
+    }
     card.appendChild(openBtn);
   } else {
-    // Do NOT render a button: a link into a daemon that stopped sending
-    // heartbeats would just hang the tap — see brief.
+    // KHÔNG dựng nút: một đường dẫn vào daemon đã thôi gửi nhịp tim chỉ làm cú
+    // chạm treo lại.
     const note = document.createElement('p');
-    note.className = 'dim small';
+    note.className = 'dim small terminal-note';
     note.textContent = MSG_MAY_KHONG_PHAN_HOI;
     card.appendChild(note);
   }

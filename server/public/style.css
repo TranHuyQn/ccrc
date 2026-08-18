@@ -126,7 +126,10 @@ code { font-family: var(--mono); background: var(--surface-2); padding: 1px 5px;
    `.row` mặc định là justify-content: space-between — để nguyên thì chấm bị
    đẩy sang tận mép phải, xa cái tên nó đang nói về. Quầng sáng mờ quanh chấm
    là thứ làm nó nổi trên nền --card tối mà không phải tô cả thẻ. */
-.terminal-title { justify-content: flex-start; gap: 8px; }
+.terminal-title { justify-content: flex-start; gap: 9px; }
+.terminal-name { font-size: 15px; font-weight: 600; letter-spacing: -.005em; }
+.terminal-meta { color: var(--dim); font-size: 12px; margin-top: 3px; }
+.terminal-note { margin: 6px 0 0; }
 .unread-dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto;
   background: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); }
 
