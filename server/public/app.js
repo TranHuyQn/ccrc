@@ -843,7 +843,13 @@ async function refreshPushState() {
   }
   const on = !!(await currentSub());
   el.textContent = on ? 'đã bật trên thiết bị này' : 'chưa bật';
-  btn.textContent = on ? 'Tắt thông báo trên thiết bị này' : 'Bật thông báo trên thiết bị này';
+  // KHÔNG ghi textContent: cần gạt được vẽ bằng ::after, chữ sẽ đè lên nó.
+  // Trạng thái đọc được qua #push-state cho mắt, và aria-checked cho trình đọc
+  // màn hình — cần gạt không có chữ nên nếu thiếu, nó là một nút không nhãn.
+  btn.classList.toggle('on', on);
+  btn.setAttribute('aria-checked', on ? 'true' : 'false');
+  btn.setAttribute('aria-label',
+    on ? 'Tắt thông báo trên thiết bị này' : 'Bật thông báo trên thiết bị này');
   // Shown even when this device has no subscription of its own: the whole
   // point is being able to see and remove the OTHER devices from here.
   $('devices-wrap').classList.remove('hidden');

@@ -54,10 +54,16 @@
 
   <div class="card">
     <div class="row">
-      <span>Thông báo đẩy</span>
-      <span id="push-state" class="dim small">đang kiểm tra…</span>
+      <div>
+        <div class="field-label">Thông báo đẩy</div>
+        <p id="push-state" class="dim small">đang kiểm tra…</p>
+      </div>
+      <!-- Vẫn là <button>, vẫn cùng id và cùng handler — chỉ đổi cách vẽ. Cần
+           gạt được vẽ hoàn toàn bằng CSS (::after), nên app.js tuyệt đối không
+           được ghi textContent vào nút này. -->
+      <button id="enable-push" class="switch" role="switch" aria-checked="false"
+              aria-label="Bật thông báo trên thiết bị này"></button>
     </div>
-    <button id="enable-push">Bật thông báo trên thiết bị này</button>
   </div>
 
   <div id="pair-panel" class="card hidden">

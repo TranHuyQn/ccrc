@@ -136,3 +136,19 @@ code { font-family: var(--mono); background: var(--surface-2); padding: 1px 5px;
 /* Số so khớp khi ghép cặp thiết bị — to, giãn cách, số đều hàng để không bị
    nhầm hai số cạnh nhau trông giống nhau. */
 .sas { font-size: 2rem; letter-spacing: .4em; text-align: center; font-variant-numeric: tabular-nums; }
+
+.field-label { font-size: 15px; }
+#push-state { margin: 3px 0 0; }
+
+/* Cần gạt vẽ hoàn toàn bằng CSS — app.js không ghi chữ vào nút này. 44px chiều
+   cao vùng bấm dù bản thân cần gạt chỉ cao 26px. */
+button.switch { width: 44px; height: 44px; min-height: 44px; padding: 0;
+  background: transparent; border-radius: 0; position: relative; flex: 0 0 auto; }
+button.switch::before { content: ""; position: absolute; right: 0; top: 9px;
+  width: 44px; height: 26px; border-radius: 13px; background: var(--surface-2);
+  transition: background .15s; }
+button.switch::after { content: ""; position: absolute; top: 12px; left: 3px;
+  width: 20px; height: 20px; border-radius: 50%; background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, .35); transition: left .15s; }
+button.switch.on::before { background: var(--accent); }
+button.switch.on::after { left: 21px; }
