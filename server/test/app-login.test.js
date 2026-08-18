@@ -210,9 +210,8 @@ test("location.pathname === '/link' nhưng CHƯA đăng nhập → quay về mà
 // --- 5. link-btn: duyệt một máy dev đang chờ --------------------------------
 //
 // $('link-btn').onclick được gán đồng bộ ngay lúc script nạp — gọi thẳng
-// page.byId['link-btn'].onclick() và await nó, đúng idiom app-devices.test.js
-// đã dùng cho 'devices-toggle'. Không cần flush(): onclick tự nó là hàm async,
-// await trực tiếp promise nó trả về là đủ.
+// page.byId['link-btn'].onclick() và await nó. Không cần flush(): onclick tự
+// nó là hàm async, await trực tiếp promise nó trả về là đủ.
 
 test('link-btn: duyệt thành công → hiện thông báo, xoá trắng ô nhập mã', async () => {
   let approveBody = null;
@@ -428,32 +427,15 @@ test('401 khi duyệt → logout() ẩn CẢ thẻ duyệt, không để hai th�
 // Trang /link ở trên chỉ với tới được người mở bằng trình duyệt. Người đã cài
 // PWA — đúng đối tượng hướng dẫn nhắm tới — không gõ được URL trong app
 // standalone, và iOS không deep-link vào web app đã cài, nên với họ /link là
-// ngõ cụt. Thẻ gập trong màn hình chính là chỗ vào duy nhất của họ.
+// ngõ cụt. Thẻ trong màn hình Cài đặt là chỗ vào duy nhất của họ.
 
-function seedApproveCollapsed(page) {
-  // Giống #link-msg ở trên: harness dựng phần tử trần nên "đang gập" và "chưa
-  // ai đụng tới" lẫn vào nhau. Markup thật mở đầu bằng class="hidden".
-  page.byId['approve-body'].classList.add('hidden');
+function seedApprove(page) {
+  // Giống #link-msg ở trên: harness dựng phần tử trần nên "chưa ai đụng tới"
+  // và "vừa xong việc" lẫn vào nhau. Markup thật mở đầu bằng class="hidden".
   page.byId['approve-msg'].classList.add('hidden');
   page.byId['approve-err'].classList.add('hidden');
   return page;
 }
-
-test('thẻ duyệt trong app: bấm Mở thì bung ra, đổi nhãn, và đưa con trỏ vào ô nhập', () => {
-  const page = seedApproveCollapsed(loadAppPage({ token: 'tok-x' }));
-
-  assert.equal(page.byId['approve-body'].classList.contains('hidden'), true, 'mặc định phải gập');
-
-  page.byId['approve-toggle'].onclick();
-  assert.equal(page.byId['approve-body'].classList.contains('hidden'), false, 'bấm Mở phải bung ra');
-  assert.equal(page.byId['approve-toggle'].textContent, 'Đóng');
-  assert.equal(page.byId['approve-code'].focused, true,
-    'phải focus ô nhập — mở xong còn phải chạm thêm lần nữa là mất đúng cái tiện của thẻ này');
-
-  page.byId['approve-toggle'].onclick();
-  assert.equal(page.byId['approve-body'].classList.contains('hidden'), true, 'bấm lần nữa phải gập lại');
-  assert.equal(page.byId['approve-toggle'].textContent, 'Mở');
-});
 
 test('thẻ duyệt trong app: duyệt thành công gọi đúng API và dọn ô nhập', async () => {
   let approveBody = null;
@@ -464,7 +446,7 @@ test('thẻ duyệt trong app: duyệt thành công gọi đúng API và dọn �
     }
     return { status: 404, body: {} };
   });
-  const page = seedApproveCollapsed(loadAppPage({ fetchImpl, token: 'tok-x' }));
+  const page = seedApprove(loadAppPage({ fetchImpl, token: 'tok-x' }));
   page.byId['approve-code'].value = '  ABCD-1234  ';
 
   await page.byId['approve-btn'].onclick();
@@ -481,7 +463,7 @@ test('thẻ duyệt trong app: mã sai thì hiện lỗi của hub và GIỮ NGU
     if (url === '/api/device/approve') return { status: 400, body: { error: 'Mã không đúng hoặc đã hết hạn.' } };
     return { status: 404, body: {} };
   });
-  const page = seedApproveCollapsed(loadAppPage({ fetchImpl, token: 'tok-x' }));
+  const page = seedApprove(loadAppPage({ fetchImpl, token: 'tok-x' }));
   page.byId['approve-code'].value = 'WRNG-0000';
 
   await page.byId['approve-btn'].onclick();
@@ -498,7 +480,7 @@ test('hai đường duyệt độc lập: bấm ở thẻ trong app không đụ
     if (url === '/api/device/approve') return { status: 200, body: { ok: true } };
     return { status: 404, body: {} };
   });
-  const page = seedApproveCollapsed(loadAppPage({ fetchImpl, token: 'tok-x' }));
+  const page = seedApprove(loadAppPage({ fetchImpl, token: 'tok-x' }));
   page.byId['link-msg'].classList.add('hidden');
   page.byId['approve-code'].value = 'ABCD-1234';
 

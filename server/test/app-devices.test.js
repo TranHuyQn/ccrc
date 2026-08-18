@@ -47,17 +47,16 @@ async function openDevices(devices = DEVICES, { endpoint = 'https://web.push.app
   });
   const page = loadAppPage({ fetchImpl, navigatorImpl: navigatorWith(endpoint) });
   page.context.window.PushManager = function () {};
-  await page.byId['devices-toggle'].onclick();
+  await page.context.refreshDevices();
   return { page, calls };
 }
 
 const rows = (page) => page.byId.devices.children.filter((c) => c.className.includes('device'));
 
-test('bấm Xem thì hiện danh sách, mỗi thiết bị một dòng', async () => {
+test('danh sách thiết bị: mỗi thiết bị một dòng', async () => {
   const { page } = await openDevices();
   assert.equal(page.byId.devices.classList.contains('hidden'), false);
   assert.equal(rows(page).length, 3);
-  assert.equal(page.byId['devices-toggle'].textContent, 'Ẩn');
 });
 
 test('đánh dấu rõ thiết bị đang cầm trên tay', async () => {
@@ -127,7 +126,7 @@ test('xoá chính thiết bị này thì HUỶ luôn đăng ký trong trình duy
   };
   const page = loadAppPage({ fetchImpl, navigatorImpl: nav });
   page.context.window.PushManager = function () {};
-  await page.byId['devices-toggle'].onclick();
+  await page.context.refreshDevices();
 
   const mine = rows(page).find((r) => r.className.includes('device-current'));
   await mine.children.find((c) => c.tagName === 'BUTTON').onclick();
@@ -176,18 +175,9 @@ test('hub lỗi → báo rõ, KHÔNG xoá trắng danh sách đang hiện', asyn
   });
   const page = loadAppPage({ fetchImpl, navigatorImpl: navigatorWith('https://web.push.apple.com/b') });
   page.context.window.PushManager = function () {};
-  await page.byId['devices-toggle'].onclick();
+  await page.context.refreshDevices();
   assert.equal(page.byId['devices-err'].classList.contains('hidden'), false);
   assert.match(page.byId['devices-err'].textContent, /không lấy được/i);
-});
-
-test('bấm Ẩn thì đóng lại và không gọi hub nữa', async () => {
-  const { page, calls } = await openDevices();
-  const before = calls.length;
-  await page.byId['devices-toggle'].onclick();
-  assert.equal(page.byId.devices.classList.contains('hidden'), true);
-  assert.equal(page.byId['devices-toggle'].textContent, 'Xem');
-  assert.equal(calls.length, before, 'đóng rồi mà vẫn gọi hub');
 });
 
 // Everything here comes off the user's own machines, but a device label still

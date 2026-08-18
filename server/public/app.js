@@ -108,17 +108,6 @@ function bindApprove(codeId, btnId, msgId, errId) {
 bindApprove('link-code', 'link-btn', 'link-msg', 'link-err');
 bindApprove('approve-code', 'approve-btn', 'approve-msg', 'approve-err');
 
-let approveOpen = false;
-$('approve-toggle').onclick = () => {
-  approveOpen = !approveOpen;
-  $('approve-body').classList.toggle('hidden', !approveOpen);
-  $('approve-toggle').textContent = approveOpen ? 'Đóng' : 'Mở';
-  // focus() nằm trong handler của một cú chạm thật, nên iOS chịu bật bàn phím
-  // — mở thẻ ra rồi còn phải chạm thêm lần nữa vào ô nhập thì mất đúng cái
-  // tiện mà thẻ này sinh ra để có.
-  if (approveOpen) $('approve-code').focus();
-};
-
 async function showMain() {
   const me = await (await api('/api/me')).json();
   $('who').textContent = `${me.user} · ${me.pushDevices} thiết bị`;
@@ -271,6 +260,9 @@ function openButtonOf(card) {
 // nói thế là nói dối về máy của người dùng.
 async function consumePendingOpen(sessions) {
   if (!pendingOpen || !sessions) return;
+  // Bấm thông báo trong lúc đang ở Cài đặt: điều hướng thẳng đi từ một màn hình
+  // không liên quan là chuyện khó hiểu. Đóng trước, rồi mới mở phiên.
+  if (settingsOpen) history.back();
   const sid = pendingOpen;
   // Tiêu thụ TRƯỚC khi hành động: openTerminal() có nhánh lỗi tự gọi
   // refreshTerminal() lại, và một yêu cầu chưa tiêu thụ ở đây sẽ thành vòng
@@ -598,10 +590,7 @@ async function openTerminal(session, btn) {
 // CAN be known — which push service, and (for devices added from now on) a
 // label and a date — and marks the row belonging to the phone reading it.
 
-let devicesOpen = false;
-
 async function refreshDevices() {
-  if (!devicesOpen) return;
   const err = $('devices-err');
   const box = $('devices');
   err.classList.add('hidden');
@@ -755,13 +744,6 @@ async function refreshWho() {
   } catch (e) { /* header is cosmetic — never let it break an action */ }
 }
 
-$('devices-toggle').onclick = async () => {
-  devicesOpen = !devicesOpen;
-  $('devices').classList.toggle('hidden', !devicesOpen);
-  $('devices-toggle').textContent = devicesOpen ? 'Ẩn' : 'Xem';
-  await refreshDevices();
-};
-
 async function currentSub() {
   const reg = await navigator.serviceWorker.getRegistration();
   return (reg && await reg.pushManager.getSubscription()) || null;
@@ -782,7 +764,6 @@ async function refreshPushState() {
   // Shown even when this device has no subscription of its own: the whole
   // point is being able to see and remove the OTHER devices from here.
   $('devices-wrap').classList.remove('hidden');
-  await refreshDevices();
 }
 
 function urlBase64ToUint8Array(b64) {
@@ -1331,6 +1312,38 @@ async function cancelPairing() {
   $('pair-panel').classList.add('hidden');
   await refreshTerminal();
 }
+
+// --- Màn hình Cài đặt -------------------------------------------------------
+//
+// pushState chứ KHÔNG replaceState: mục được thêm vào lịch sử chính là thứ nút
+// Back của điện thoại tiêu thụ để đóng trang này. replaceState sẽ làm Back rời
+// khỏi trang — đúng cái người dùng không định làm.
+//
+// URL giữ nguyên `location.pathname`. /link dùng chung file này và showLink()
+// rẽ nhánh trên đúng giá trị đó.
+let settingsOpen = false;
+
+function openSettings() {
+  if (settingsOpen) return;   // bấm hai lần thì phải Back hai lần mới ra
+  settingsOpen = true;
+  history.pushState({ ccrc: 'settings' }, '', location.pathname);
+  $('main').classList.add('hidden');
+  $('settings').classList.remove('hidden');
+  refreshDevices();
+}
+
+// Chỉ ĐÓNG, không đụng lịch sử — nó được gọi TỪ popstate. Nút ‹ gọi
+// history.back() để cả hai đường đóng đều đi qua đúng một chỗ này.
+function closeSettings() {
+  if (!settingsOpen) return;
+  settingsOpen = false;
+  $('settings').classList.add('hidden');
+  $('main').classList.remove('hidden');
+}
+
+$('settings-open').onclick = () => openSettings();
+$('settings-close').onclick = () => history.back();
+window.addEventListener('popstate', () => closeSettings());
 
 $('pair-cancel').onclick = () => cancelPairing();
 
