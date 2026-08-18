@@ -200,7 +200,14 @@ done
 
 # Mã thoát của Claude phải là mã thoát của `ccrc` — tmux chỉ trả về mã của
 # CHÍNH NÓ, nên lệnh bên trong tự ghi mã ra một file rồi đọc lại.
-RC_FILE=$(mktemp -t ccrc-rc)
+#
+# Cú pháp template (không dùng `-t prefix`): `-t prefix` là lối viết của BSD
+# mktemp (macOS) — nhận một tiền tố trần. mktemp GNU (mọi bản Linux, kể cả
+# Arch) hiểu tham số của `-t` là một TEMPLATE bắt buộc có "XXXXXX" ở cuối, nên
+# `mktemp -t ccrc-rc` chết ngay với "too few X's in template" — và vì có
+# `set -eu`, cả lệnh `ccrc` chết theo trước khi kịp mở Claude. Template đầy đủ
+# kèm "XXXXXX" bên dưới là cú pháp cả hai đều hiểu giống nhau.
+RC_FILE=$(mktemp "${TMPDIR:-/tmp}/ccrc-rc.XXXXXX")
 trap 'rm -f "$RC_FILE"' EXIT INT TERM
 CMD="$CMD; printf %s \$? > $(quote "$RC_FILE")"
 
