@@ -13,6 +13,33 @@
   --err: #f87171;
   --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
+/* Ba khối, không phải hai. Khối media lo trường hợp "theo thiết bị"; hai khối
+   [data-theme] lo trường hợp người dùng tự chọn — và phải có CẢ dark, không chỉ
+   light, nếu không thì chọn "Tối" trên một máy đang để sáng sẽ không thắng
+   được khối media ở trên. */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --bg: #f6f4f2; --card: #ffffff; --surface-2: #eee9e5; --border: #e3dcd6;
+    --text: #1b1917; --dim: #6d6660;
+    --accent: #c05f3c; --accent-soft: rgba(192, 95, 60, .12); --on-accent: #ffffff;
+    --err: #c0392b;
+  }
+}
+:root[data-theme="light"] {
+  --bg: #f6f4f2; --card: #ffffff; --surface-2: #eee9e5; --border: #e3dcd6;
+  --text: #1b1917; --dim: #6d6660;
+  --accent: #c05f3c; --accent-soft: rgba(192, 95, 60, .12); --on-accent: #ffffff;
+  --err: #c0392b;
+}
+:root[data-theme="dark"] {
+  --bg: #101318; --card: #191d24; --surface-2: #242932; --border: #262b34;
+  --text: #edeff2; --dim: #98a1b0;
+  --accent: #e0805f; --accent-soft: rgba(224, 119, 87, .16); --on-accent: #1a0e08;
+  --err: #f87171;
+}
+
+select { width: 100%; min-height: 46px; padding: 12px; background: var(--surface-2);
+  color: var(--text); border: 1px solid var(--border); border-radius: 11px; font-size: 15px; }
 * { box-sizing: border-box; }
 /* `pan-x pan-y` permits scrolling but withholds the pinch and double-tap
    zoom gestures — this is what actually stops zoom on Chrome/Android, where

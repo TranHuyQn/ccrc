@@ -3,6 +3,64 @@
 const $ = (id) => document.getElementById(id);
 let token = localStorage.getItem('ccrc_token') || '';
 
+// --- Giao diện sáng/tối -----------------------------------------------------
+//
+// Ba giá trị: 'light', 'dark', 'auto'. 'auto' GỠ HẲN data-theme chứ không đặt
+// một giá trị nào đó — để lại thuộc tính là khối @media theo cài đặt hệ thống
+// không bao giờ thắng được nữa.
+//
+// Chạy ở đây, trước mọi thứ khác, vì đây là thứ duy nhất trong file này mà độ
+// trễ nhìn thấy được: áp muộn một nhịp là người dùng thấy nền chớp sai màu.
+const THEME_KEY = 'ccrc_theme';
+const MAU_NEN = { light: '#f6f4f2', dark: '#101318' };
+
+function heThongDangToi() {
+  if (!window.matchMedia) return true;   // không hỏi được thì mặc định tối, như bản cũ
+  try { return window.matchMedia('(prefers-color-scheme: dark)').matches; }
+  catch (e) { return true; }
+}
+
+function apDatTheme(giaTri) {
+  const el = document.documentElement;
+  if (giaTri === 'light' || giaTri === 'dark') el.setAttribute('data-theme', giaTri);
+  else el.removeAttribute('data-theme');
+  const dangToi = giaTri === 'dark' || (giaTri !== 'light' && heThongDangToi());
+  const meta = $('theme-meta');
+  if (meta) meta.setAttribute('content', dangToi ? MAU_NEN.dark : MAU_NEN.light);
+}
+
+(function khoiTaoTheme() {
+  const luu = localStorage.getItem(THEME_KEY);
+  const giaTri = (luu === 'light' || luu === 'dark') ? luu : 'auto';
+  apDatTheme(giaTri);
+  const sel = $('theme-select');
+  if (sel) {
+    sel.value = giaTri;
+    sel.onchange = () => {
+      const v = sel.value;
+      if (v === 'auto') localStorage.removeItem(THEME_KEY);
+      else localStorage.setItem(THEME_KEY, v);
+      apDatTheme(v);
+    };
+  }
+  // CSS tự đổi khi hệ thống đổi; thẻ theme-color thì không. Không nghe ở đây
+  // thì thanh trạng thái PWA giữ nguyên màu cũ cho tới lần nạp lại trang.
+  if (window.matchMedia) {
+    try {
+      const mq = window.matchMedia('(prefers-color-scheme: dark)');
+      // Đọc e.matches từ sự kiện, KHÔNG hỏi lại matchMedia(): trạng thái mới
+      // nằm trong sự kiện, hỏi lại là một truy vấn riêng có thể lệch nhịp.
+      const doi = (e) => {
+        if (localStorage.getItem(THEME_KEY)) return;
+        const meta = $('theme-meta');
+        if (meta) meta.setAttribute('content', e.matches ? MAU_NEN.dark : MAU_NEN.light);
+      };
+      if (mq.addEventListener) mq.addEventListener('change', doi);
+      else if (mq.addListener) mq.addListener(doi);
+    } catch (e) { /* trình duyệt cũ: cùng lắm là màu thanh trạng thái chậm một nhịp */ }
+  }
+})();
+
 async function api(path, opts = {}) {
   const res = await fetch(path, {
     ...opts,

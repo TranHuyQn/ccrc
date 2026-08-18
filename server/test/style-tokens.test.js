@@ -29,3 +29,23 @@ test('bảng màu tối khai báo đủ bộ biến bắt buộc', () => {
   const thieu = batBuoc.filter((v) => !khaiBao.has(v));
   assert.deepEqual(thieu, [], `thiếu biến: ${thieu.join(', ')}`);
 });
+
+// Bảng sáng thiếu một biến thì biến đó rơi về giá trị của bảng tối — chữ tối
+// trên nền tối, hoặc ngược lại, chỉ với một dòng bị quên.
+function bienTrongKhoi(dauKhoi) {
+  const i = CSS.indexOf(dauKhoi);
+  assert.notEqual(i, -1, `không tìm thấy khối ${dauKhoi}`);
+  const mo = CSS.indexOf('{', i);
+  const dong = CSS.indexOf('}', mo);
+  return new Set(Array.from(CSS.slice(mo, dong).matchAll(/(--[a-z0-9-]+)\s*:/g), (m) => m[1]));
+}
+
+test('mỗi khối theme khai báo đủ đúng bộ biến như :root', () => {
+  const goc = bienTrongKhoi(':root {');
+  for (const khoi of [':root:not([data-theme="dark"])', ':root[data-theme="light"]',
+    ':root[data-theme="dark"]']) {
+    const co = bienTrongKhoi(khoi);
+    const thieu = [...goc].filter((v) => !co.has(v) && v !== '--mono').sort();
+    assert.deepEqual(thieu, [], `${khoi} thiếu: ${thieu.join(', ')}`);
+  }
+});

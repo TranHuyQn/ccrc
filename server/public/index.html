@@ -12,7 +12,9 @@
 <link rel="apple-touch-icon" href="icons/apple-touch-icon-180.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="theme-color" content="#0f1115">
+<!-- Có id để app.js đổi được màu khi người dùng đổi giao diện. CSS tự đổi màu
+     trang, còn thanh trạng thái của PWA trên iPhone lấy màu từ đúng thẻ này. -->
+<meta id="theme-meta" name="theme-color" content="#101318">
 <!-- Bump ?v= whenever app.js or style.css changes. Not optional: the hub sends
      `no-cache` for every asset, but Cloudflare replaces that with its own 4h
      Browser Cache TTL for .js/.css, so a new `?v=` is the only thing that
@@ -92,6 +94,15 @@
   <div id="pwa-note" class="card note">
     <p class="small">iPhone: phải thêm trang này vào màn hình chính rồi mở từ đó
     thì mới nhận được thông báo.</p>
+  </div>
+
+  <h2>Giao diện</h2>
+  <div class="card">
+    <select id="theme-select" aria-label="Giao diện">
+      <option value="auto">Theo thiết bị</option>
+      <option value="light">Sáng</option>
+      <option value="dark">Tối</option>
+    </select>
   </div>
 
   <h2>Thiết bị nhận thông báo</h2>

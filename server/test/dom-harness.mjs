@@ -68,6 +68,9 @@ export class FakeElement {
   // script nổ ngay lúc dựng thẻ.
   setAttribute(name, value) { this._attrs = this._attrs || {}; this._attrs[name] = String(value); }
   getAttribute(name) { return (this._attrs && this._attrs[name]) ?? null; }
+  // apDatTheme() gỡ hẳn data-theme khi người dùng chọn "theo thiết bị" — thiếu
+  // phương thức này thì script nổ ngay lần đầu quay lại "auto".
+  removeAttribute(name) { if (this._attrs) delete this._attrs[name]; }
   get className() { return this._classes.join(' '); }
   set className(v) { this._classes = String(v).split(/\s+/).filter(Boolean); }
   get textContent() { return this._text; }
@@ -95,6 +98,10 @@ export class FakeDocument {
     this.body = new FakeElement('body');
     this.scrollingElement = new FakeElement('html');
     this.scrollingElement.scrollTop = 0;
+    // Trong chế độ chuẩn, document.scrollingElement CHÍNH LÀ documentElement.
+    // Dựng hai đối tượng khác nhau ở đây sẽ làm test về theme xanh trong khi
+    // trang thật đặt data-theme lên một phần tử không ai đọc.
+    this.documentElement = this.scrollingElement;
   }
   getElementById(id) { return this._byId[id]; }
   createElement(tag) { return new FakeElement(tag); }
@@ -134,6 +141,7 @@ export const REQUIRED_IDS = [
   'pair-panel', 'pair-title', 'pair-step', 'pair-sas', 'pair-help',
   'pair-cancel', 'pair-err',
   'pwa-note',
+  'theme-select', 'theme-meta',
 ];
 
 // --- fake IndexedDB, minimal — just enough for one key store ---------------
@@ -211,7 +219,7 @@ export function makeFetch(impl) {
 
 export function loadAppPage({
   token = '', fetchImpl = null, navigatorImpl = null, indexedDBImpl = null, cryptoImpl = null,
-  search = '', pathname = '/', media = {},
+  search = '', pathname = '/', media = {}, storeSeed = {},
 } = {}) {
   const byId = {};
   const BUTTON_IDS = new Set([
@@ -227,6 +235,9 @@ export function loadAppPage({
 
   const store = new Map();
   if (token) store.set('ccrc_token', token);
+  // Nạp sẵn localStorage TRƯỚC khi app.js chạy. Đặt sau khi script đã chạy thì
+  // muộn: theme được đọc và áp ngay dòng đầu, đúng để không chớp nền sai màu.
+  for (const [k, v] of Object.entries(storeSeed)) store.set(k, String(v));
   const localStorage = {
     getItem: (k) => (store.has(k) ? store.get(k) : null),
     setItem: (k, v) => store.set(k, v),
