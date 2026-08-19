@@ -26,8 +26,32 @@ jobs:
       # Bắt buộc, không phải tuỳ chọn: term/ không mô phỏng tmux mà chạy thật —
       # `tmux -C attach-session` là đường tiếp sức giữa daemon và trình duyệt,
       # nên nó phải có mặt hoặc khoảng một nửa suite không chạy được.
+      #
+      # BA THỨ Ở ĐÂY ĐỀU LÀ PHẢN ỨNG VỚI MỘT SỰ CỐ ĐO ĐƯỢC, không phải phòng xa:
+      # bước này treo **15 phút, hai lần liên tiếp, không in một dòng nào**, rồi
+      # bị timeout của job cắt. Im lặng tuyệt đối là dấu hiệu `apt` kẹt chờ lock
+      # `dpkg` — thường là unattended-upgrades đang giữ nó trên runner mới dựng.
+      #
+      #  1. Bỏ qua hẳn nếu máy ĐÃ CÓ tmux. Ảnh runner của GitHub đôi lúc có sẵn,
+      #     và cách rẻ nhất để không hỏng ở một bước là không chạy nó.
+      #  2. `timeout` cho mỗi lệnh apt. Hỏng sau 3 phút kèm câu giải thích thì
+      #     sửa được; im lặng 15 phút rồi bị cắt thì chỉ tốn tiền và trông như
+      #     một bài test treo.
+      #  3. Bỏ `-qq`. Nó giấu đúng thứ output cần để biết apt đang chờ ai.
       - name: Cài tmux
-        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends tmux
+        run: |
+          if command -v tmux >/dev/null 2>&1; then
+            echo "tmux đã có sẵn: $(tmux -V) — bỏ qua bước cài."
+            exit 0
+          fi
+          if ! timeout 180 sudo apt-get update; then
+            echo "::error::apt-get update treo hoặc lỗi (>180s) — thường là kẹt lock dpkg trên runner."
+            exit 1
+          fi
+          if ! timeout 180 sudo apt-get install -y --no-install-recommends tmux; then
+            echo "::error::apt-get install tmux treo hoặc lỗi (>180s)."
+            exit 1
+          fi
 
       - run: tmux -V
 
