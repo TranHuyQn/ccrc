@@ -52,23 +52,30 @@ trị nào — đây là chỗ dễ sai nhất và nó đúng.
 
 Bước 3 quan trọng vì bộ test **không** phủ nửa này (xem mục dưới) — nó được đo bằng tay.
 
+**iPhone — đo trên máy thật, cả ba đều đạt.** Hub thử chạy local, iPhone vào qua Tailscale:
+
+1. Thêm vào màn hình chính rồi mở từ biểu tượng → khối ghi chú iPhone **không** hiện. Đây là
+   nhánh `navigator.standalone`, chỉ iOS mới có — trước lần này chưa lần chạy nào đụng tới nó.
+2. Trong PWA đã cài, đang ở Cài đặt, vuốt từ mép trái → **quay về danh sách terminal**, không
+   thoát app. Rủi ro spec §10 lường trước (`popstate` trong web app đã cài của iOS hoạt động
+   không đồng đều giữa các bản) **không xảy ra** trên bản iOS đã thử.
+3. Bố cục, ba lựa chọn giao diện, màu thanh trạng thái, kích thước nút bấm bằng ngón cái: đạt.
+
 ## Chưa đo được
-
-**iPhone.** Ba việc bắt buộc phải có máy thật, chưa làm:
-
-1. Mở bằng Safari thường → khối ghi chú iPhone có hiện *(đã đo trên Chrome desktop, còn Safari
-   iOS thì chưa)*.
-2. Thêm vào màn hình chính, mở từ đó → khối ghi chú **không** hiện. Đường dò là
-   `navigator.standalone`, chỉ iOS mới có, nên đây là nhánh code duy nhất chưa ai chạy thật.
-3. Trong PWA đã cài: vuốt cạnh để back khi đang ở Cài đặt. `popstate` trong web app đã cài có
-   lịch sử hoạt động không đồng đều giữa các bản iOS — rủi ro này spec đã lường trước
-   (§10). Nếu hỏng, nút ‹ vẫn là đường đóng chắc chắn.
 
 **Thẻ "máy không phản hồi".** Cần đợi 60 giây không có nhịp tim mới dựng được trạng thái đó
 trên hub local. Bộ test đã phủ (`app-terminal.test.js`: máy chết thì không dựng nút nào, và câu
 `Máy không phản hồi — có thể đã ngủ, hoặc /remote đã tắt.` giữ nguyên từng chữ).
 
 **Bấm một thông báo đẩy để mở thẳng phiên.** Cần đăng ký push thật với VAPID, chưa làm.
+
+**Công tắc thông báo trên điện thoại.** Không đo được bằng cách này, và lý do đáng ghi: hub thử
+chạy HTTP thuần trên IP Tailscale, mà đó **không phải secure context** — đo trên Chrome ở đúng
+địa chỉ ấy: `isSecureContext = false` và `navigator.serviceWorker` không tồn tại. Nên
+`refreshPushState()` rẽ vào nhánh "trình duyệt không hỗ trợ" và **ẩn hẳn cần gạt**. Đây là hành
+vi đúng, nhưng nghĩa là mọi thứ liên quan tới push chỉ kiểm được trên `localhost` hoặc trên hub
+thật chạy HTTPS. Vì cùng lý do, thẻ trên điện thoại luôn ra nút "Ghép máy này" chứ không phải
+"Mở terminal": IndexedDB tính theo origin nên máy chưa từng ghép với origin của hub thử.
 
 **Trang `/link`.** Chưa mở bằng tay. `app-login.test.js` có phủ đường "vào /link chưa đăng nhập →
 hiện thẻ đăng nhập → đăng nhập xong quay lại đúng thẻ duyệt".
