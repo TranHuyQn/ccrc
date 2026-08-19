@@ -52,6 +52,13 @@ So: **you can use part 1 today** without Tailscale and without knowing tmux. Par
 - *(part 2 only)* **tmux**, and **Tailscale** — **your own account**, not shared with anyone.
   Section 6 explains why.
 
+> 🪟 **On Windows, read [`windows.md`](windows.md) instead of sections 3 and 6.** You do
+> not need tmux there — Windows has none, so `ccrc` builds its own terminal instead of
+> attaching to a pane. That single difference changes how you start a session and what
+> you can share, so the Windows guide replaces those two sections rather than annotating
+> them. Everything else here — the phone, the Notify half, privacy, uninstalling — is
+> the same on all three platforms.
+
 ---
 
 ## 3. Install on your computer

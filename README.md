@@ -43,7 +43,7 @@ pane and never opens another pane or window.
 > | Run a hub for yourself or a team | [`docs/self-hosting.md`](docs/self-hosting.md) |
 > | Set up a machine and phone | [`docs/user-guide.md`](docs/user-guide.md) · [🇻🇳 tiếng Việt](docs/huong-dan.md) |
 > | Know what this defends against, and what it does not | [`SECURITY.md`](SECURITY.md) |
-> | Run it on Windows | [🇻🇳 `docs/huong-dan-windows.md`](docs/huong-dan-windows.md) |
+> | Run it on Windows | [`docs/windows.md`](docs/windows.md) · [🇻🇳 tiếng Việt](docs/huong-dan-windows.md) |
 >
 > This README covers architecture and operations. A Vietnamese version of it lives at
 > [`README.vi.md`](README.vi.md).
@@ -52,9 +52,12 @@ pane and never opens another pane or window.
 > so `ccrc` **owns** a ConPTY session rather than attaching to a pane that already exists.
 > A session started with plain `claude` can never be shared — you have to open it with
 > `ccrc` from the start. Scrollback also only reaches back to when the session began.
-> Install with `irm <your-hub>/install.ps1 | iex`, or step by step in
-> [`docs/cai-thu-cong-windows.md`](docs/cai-thu-cong-windows.md). Both Windows guides are
-> in Vietnamese for now.
+> Install with
+> `$env:CCRC_HUB_URL='https://<your-hub>'; irm https://<your-hub>/install.ps1 | iex` —
+> the variable is required for the same reason `install.sh` requires it, since a script
+> read from a pipe cannot know where it came from. Details in
+> [`docs/windows.md`](docs/windows.md); a step-by-step manual install is in
+> [`docs/cai-thu-cong-windows.md`](docs/cai-thu-cong-windows.md) (Vietnamese).
 
 ## Status
 

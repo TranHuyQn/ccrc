@@ -35,8 +35,20 @@ mở thêm pane hay cửa sổ nào.
 > | Tự dựng hub cho mình hoặc cho nhóm | [`docs/self-hosting.md`](docs/self-hosting.md) (tiếng Anh) |
 > | Cài máy và điện thoại, khi đã được cấp token | [`docs/huong-dan.md`](docs/huong-dan.md) |
 > | Biết hệ thống chống được gì và KHÔNG chống được gì | [`SECURITY.md`](SECURITY.md) (tiếng Anh) |
+> | Chạy trên Windows | [`docs/huong-dan-windows.md`](docs/huong-dan-windows.md) |
 >
 > README này thiên về kiến trúc và vận hành.
+
+> 🪟 **Windows khác về bản chất, không phải khác cách gọi tên.** Ở đó không có tmux, nên
+> `ccrc` **tự dựng** một phiên ConPTY thay vì gắn vào một pane đã có sẵn. Hệ quả: phiên
+> mở bằng `claude` trần **không bao giờ chia sẻ được** — phải mở bằng `ccrc` ngay từ đầu;
+> và cuộn ngược chỉ tới lúc phiên bắt đầu, không có scrollback cũ.
+>
+> Cài:
+> `$env:CCRC_HUB_URL='https://<hub-cua-ban>'; irm https://<hub-cua-ban>/install.ps1 | iex`
+> — biến ấy **bắt buộc**, cùng lý do với `install.sh`: một script đọc qua ống không biết
+> nó vừa được tải về từ đâu. Từng bước bằng tay:
+> [`docs/cai-thu-cong-windows.md`](docs/cai-thu-cong-windows.md).
 
 ## Ba mảnh
 

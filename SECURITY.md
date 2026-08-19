@@ -67,6 +67,31 @@ party that is not the hub, on input the user read off their own device.
 
 Full reasoning: `docs/superpowers/specs/2026-07-29-ghep-cap-thiet-bi-design.md` §12.2.
 
+### On Windows the local boundary is a named pipe, not a tmux pane
+
+There is no tmux on Windows, so a background host owns the ConPTY and the daemon talks to it
+over a named pipe. That adds one local surface the other platforms do not have, so here is
+exactly what guards it.
+
+Windows named pipes are connectable by any local user by default, and pipe names are
+enumerable — neither is treated as a secret. What gates the pipe is a 32-byte random secret,
+compared with `timingSafeEqual`, with an unauthenticated socket dropped after ten seconds.
+The secret lives in `%USERPROFILE%\.ccrc\hosts\<id>.json`, which the installer ACLs to the
+owning user alone.
+
+That ACL is worth one sentence of detail, because getting it wrong is easy and silent:
+applying `icacls /grant:r user:(F)` to the *directory* does not protect files created inside
+it later — without `(OI)(CI)` the grant covers the directory only, and the file ends up with
+`SYSTEM`, `Administrators`, and a **logon-session SID** instead of the user. That is both
+weaker than intended and fragile, since the session SID changes at the next sign-in. The
+inheritable form is what ships.
+
+Two consequences follow from the same trust boundary. Anyone who can write to
+`%USERPROFILE%\.ccrc` can stop a daemon by dropping a stop-flag file — but they could
+already add themselves to `devices.json` and take the terminal outright, so the flag file
+widens nothing. And a local user who cannot read the secret cannot attach, no matter how
+many times they connect.
+
 ### The hub is treated as untrusted for terminal access
 
 The hub holds no key that opens any session. Attach tokens are signed on the phone with a

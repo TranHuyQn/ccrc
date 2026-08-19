@@ -7,8 +7,17 @@ và nói hết những chỗ khác.
 Cài đặt: [cai-thu-cong-windows.md](cai-thu-cong-windows.md), hoặc một lệnh:
 
 ```powershell
-irm https://<hub-cua-ban>/install.ps1 | iex
+$env:CCRC_HUB_URL='https://<hub-cua-ban>'; irm https://<hub-cua-ban>/install.ps1 | iex
 ```
+
+> **`CCRC_HUB_URL` là bắt buộc, không phải tuỳ chọn** — cùng lý do với
+> `install.sh`: một script đọc qua ống không có cách nào biết nó vừa được tải
+> về từ đâu. Bỏ nó đi thì lệnh dừng ngay với câu "Chưa biết hub nào", chứ không
+> cài dở dang.
+>
+> Và dự án này **không vận hành hub dùng chung** nào cả — mỗi đội tự dựng hub
+> riêng ([`self-hosting.md`](self-hosting.md)), nên không có địa chỉ mặc định
+> nào để điền sẵn. `<hub-cua-ban>` là chỗ trống, không phải địa chỉ có thật.
 
 ---
 

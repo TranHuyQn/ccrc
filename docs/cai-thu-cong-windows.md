@@ -6,8 +6,12 @@ Dành cho ai không muốn chạy `irm ... | iex`, hoặc muốn biết chính x
 Cách tự động vẫn tồn tại song song và làm đúng những việc dưới đây:
 
 ```powershell
-irm https://<hub-cua-ban>/install.ps1 | iex
+$env:CCRC_HUB_URL='https://<hub-cua-ban>'; irm https://<hub-cua-ban>/install.ps1 | iex
 ```
+
+`CCRC_HUB_URL` bắt buộc phải có: script đọc qua ống không biết nó vừa được tải
+từ đâu, và dự án không vận hành hub dùng chung nên không có mặc định nào để
+điền sẵn. Thiếu nó thì lệnh dừng ngay chứ không cài dở.
 
 > **Vì sao cách tự động dùng `irm | iex` chứ không phải một file `.ps1`**
 >
