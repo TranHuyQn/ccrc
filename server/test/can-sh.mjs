@@ -19,11 +19,27 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 
-const LY_DO = 'máy này không chạy được /bin/sh';
+const LY_DO = 'máy này không có môi trường shell POSIX (thiếu /bin/sh hoặc /dev/tty)';
 
-// ĐO chứ không suy từ process.platform: một máy Windows có Git for Windows vẫn
-// có thể có `sh` trên PATH, và ở đó các bài này chạy được thật.
+// ĐO chứ không suy từ process.platform — nhưng phải đo ĐÚNG THỨ CẦN.
+//
+// Bản đầu chỉ hỏi "chạy được `sh` không", và nó SAI trên CI `windows-latest`:
+// runner ấy có cả `sh` LẪN `dash` (Git for Windows ship kèm), nên rào không bắn,
+// 5 bài chạy thật rồi đỏ. Thứ chúng thật sự cần không phải một binary mà là
+// THIẾT BỊ TERMINAL của POSIX:
+//
+//   - `setup-notify.sh` / `remove-notify.sh` đọc câu hỏi từ `/dev/tty`, chứ
+//     không từ stdin — vì dưới `curl | sh` thì stdin CHÍNH LÀ script.
+//   - bài Ctrl-C dựng một pty thật bằng module `pty` của Python, để script đi
+//     vào nhánh `[ -t 0 ] && [ -t 1 ]` thay vì rẽ sang run_plain.
+//
+// Windows không có `/dev/tty` và không có pty kiểu POSIX, nên một `sh.exe` chạy
+// được vẫn không đủ. Hỏi cả hai.
 function coSh() {
+  // `/dev/tty` tồn tại kể cả khi tiến trình không có terminal điều khiển (lúc
+  // ấy MỞ nó mới lỗi) — nhưng nó KHÔNG tồn tại trên Windows, và đó chính là
+  // ranh giới cần phân biệt ở đây.
+  if (!fs.existsSync('/dev/tty')) return false;
   let d;
   try {
     d = fs.mkdtempSync(path.join(os.tmpdir(), 'ccrc-sh-'));
