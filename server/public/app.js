@@ -3,6 +3,64 @@
 const $ = (id) => document.getElementById(id);
 let token = localStorage.getItem('ccrc_token') || '';
 
+// --- Giao diện sáng/tối -----------------------------------------------------
+//
+// Ba giá trị: 'light', 'dark', 'auto'. 'auto' GỠ HẲN data-theme chứ không đặt
+// một giá trị nào đó — để lại thuộc tính là khối @media theo cài đặt hệ thống
+// không bao giờ thắng được nữa.
+//
+// Chạy ở đây, trước mọi thứ khác, vì đây là thứ duy nhất trong file này mà độ
+// trễ nhìn thấy được: áp muộn một nhịp là người dùng thấy nền chớp sai màu.
+const THEME_KEY = 'ccrc_theme';
+const MAU_NEN = { light: '#f6f4f2', dark: '#101318' };
+
+function heThongDangToi() {
+  if (!window.matchMedia) return true;   // không hỏi được thì mặc định tối, như bản cũ
+  try { return window.matchMedia('(prefers-color-scheme: dark)').matches; }
+  catch (e) { return true; }
+}
+
+function apDatTheme(giaTri) {
+  const el = document.documentElement;
+  if (giaTri === 'light' || giaTri === 'dark') el.setAttribute('data-theme', giaTri);
+  else el.removeAttribute('data-theme');
+  const dangToi = giaTri === 'dark' || (giaTri !== 'light' && heThongDangToi());
+  const meta = $('theme-meta');
+  if (meta) meta.setAttribute('content', dangToi ? MAU_NEN.dark : MAU_NEN.light);
+}
+
+(function khoiTaoTheme() {
+  const luu = localStorage.getItem(THEME_KEY);
+  const giaTri = (luu === 'light' || luu === 'dark') ? luu : 'auto';
+  apDatTheme(giaTri);
+  const sel = $('theme-select');
+  if (sel) {
+    sel.value = giaTri;
+    sel.onchange = () => {
+      const v = sel.value;
+      if (v === 'auto') localStorage.removeItem(THEME_KEY);
+      else localStorage.setItem(THEME_KEY, v);
+      apDatTheme(v);
+    };
+  }
+  // CSS tự đổi khi hệ thống đổi; thẻ theme-color thì không. Không nghe ở đây
+  // thì thanh trạng thái PWA giữ nguyên màu cũ cho tới lần nạp lại trang.
+  if (window.matchMedia) {
+    try {
+      const mq = window.matchMedia('(prefers-color-scheme: dark)');
+      // Đọc e.matches từ sự kiện, KHÔNG hỏi lại matchMedia(): trạng thái mới
+      // nằm trong sự kiện, hỏi lại là một truy vấn riêng có thể lệch nhịp.
+      const doi = (e) => {
+        if (localStorage.getItem(THEME_KEY)) return;
+        const meta = $('theme-meta');
+        if (meta) meta.setAttribute('content', e.matches ? MAU_NEN.dark : MAU_NEN.light);
+      };
+      if (mq.addEventListener) mq.addEventListener('change', doi);
+      else if (mq.addListener) mq.addListener(doi);
+    } catch (e) { /* trình duyệt cũ: cùng lắm là màu thanh trạng thái chậm một nhịp */ }
+  }
+})();
+
 async function api(path, opts = {}) {
   const res = await fetch(path, {
     ...opts,
@@ -21,6 +79,16 @@ function logout() {
   // nhập: người dùng thấy cả ô nhập mã lẫn ô dán token, không biết cái nào
   // đang có tác dụng.
   $('link-card').classList.add('hidden');
+  // #settings cũng phải ẩn, và settingsOpen đưa về false. Nút "Đăng xuất" nằm
+  // BÊN TRONG #settings, nên một cú đăng xuất bấm từ đó phải đóng cả màn Cài
+  // đặt — thiếu hai dòng này thì #login hiện ra trong khi #settings vẫn còn
+  // nguyên, chồng lên dưới nó. settingsOpen khai báo Ở DƯỚI hàm này trong
+  // file (là `let` cấp module) nhưng đọc/ghi được bình thường ở đây vì hàm
+  // chỉ THỰC THI sau khi cả file đã nạp xong. Không unwind lịch sử: một
+  // popstate tới sau sẽ gặp settingsOpen === false trong closeSettings() và
+  // return sớm, đúng ý — không cần history.back() ở đây.
+  $('settings').classList.add('hidden');
+  settingsOpen = false;
   $('login').classList.remove('hidden');
 }
 
@@ -79,9 +147,10 @@ function showLink() {
 }
 
 // Duyệt có HAI chỗ vào, cùng một xử lý: trang /link (mở từ trình duyệt) và thẻ
-// gập trong app. Chỗ thứ hai không phải tiện thêm — nó là chỗ vào DUY NHẤT của
-// người đã cài PWA, vì app standalone không gõ được URL và iOS không deep-link
-// vào web app đã cài. Một hàm cho cả hai để hai đường không trôi khỏi nhau.
+// duyệt trong màn hình Cài đặt của app. Chỗ thứ hai không phải tiện thêm — nó
+// là chỗ vào DUY NHẤT của người đã cài PWA, vì app standalone không gõ được
+// URL và iOS không deep-link vào web app đã cài. Một hàm cho cả hai để hai
+// đường không trôi khỏi nhau.
 function bindApprove(codeId, btnId, msgId, errId) {
   $(btnId).onclick = async () => {
     $(errId).classList.add('hidden');
@@ -107,17 +176,6 @@ function bindApprove(codeId, btnId, msgId, errId) {
 
 bindApprove('link-code', 'link-btn', 'link-msg', 'link-err');
 bindApprove('approve-code', 'approve-btn', 'approve-msg', 'approve-err');
-
-let approveOpen = false;
-$('approve-toggle').onclick = () => {
-  approveOpen = !approveOpen;
-  $('approve-body').classList.toggle('hidden', !approveOpen);
-  $('approve-toggle').textContent = approveOpen ? 'Đóng' : 'Mở';
-  // focus() nằm trong handler của một cú chạm thật, nên iOS chịu bật bàn phím
-  // — mở thẻ ra rồi còn phải chạm thêm lần nữa vào ô nhập thì mất đúng cái
-  // tiện mà thẻ này sinh ra để có.
-  if (approveOpen) $('approve-code').focus();
-};
 
 async function showMain() {
   const me = await (await api('/api/me')).json();
@@ -243,8 +301,13 @@ if (navigator.serviceWorker && typeof navigator.serviceWorker.addEventListener =
     // đang ẩn — người dùng bấm thông báo và thấy đúng không có gì xảy ra.
     // `pendingOpen` cố ý được GIỮ NGUYÊN: showMain() kết thúc bằng
     // refreshTerminal(), nên đăng nhập xong là phiên họ vừa bấm mở ra ngay.
-    // Cùng phép thử mà refreshOnReturn() dùng, vì cùng một lý do.
-    if ($('main').classList.contains('hidden')) return;
+    // #main cũng ẩn khi đang ở Cài đặt, không chỉ khi chưa đăng nhập —
+    // `!settingsOpen` phân biệt hai trường hợp đó, đúng phép thử mà
+    // refreshOnReturn() dùng, vì cùng một lý do: đang ở Cài đặt vẫn là đã
+    // đăng nhập, và consumePendingOpen() bên dưới đã biết tự đóng Cài đặt
+    // (history.back()) trước khi điều hướng, nên gọi hub ở đây là đúng, không
+    // phải chỉ riêng logout mới cần loại trừ.
+    if ($('main').classList.contains('hidden') && !settingsOpen) return;
     refreshTerminal();
   });
   // Hôm nay không có dòng này vẫn chạy, nhưng chỉ vì app.js là script CỔ ĐIỂN,
@@ -271,6 +334,9 @@ function openButtonOf(card) {
 // nói thế là nói dối về máy của người dùng.
 async function consumePendingOpen(sessions) {
   if (!pendingOpen || !sessions) return;
+  // Bấm thông báo trong lúc đang ở Cài đặt: điều hướng thẳng đi từ một màn hình
+  // không liên quan là chuyện khó hiểu. Đóng trước, rồi mới mở phiên.
+  if (settingsOpen) history.back();
   const sid = pendingOpen;
   // Tiêu thụ TRƯỚC khi hành động: openTerminal() có nhánh lỗi tự gọi
   // refreshTerminal() lại, và một yêu cầu chưa tiêu thụ ở đây sẽ thành vòng
@@ -386,27 +452,34 @@ async function renderTerminalList(sessions) {
   for (const session of sessions) list.appendChild(await buildTerminalCardAsync(session));
 }
 
-// Một máy chưa ghép không có gì để chấp nhận chữ ký từ điện thoại này — đưa
-// thẳng nút "Mở terminal" vào đó chỉ dẫn tới một token bị daemon từ chối. Nút
-// "Ghép máy này" là LỐI VÀO DUY NHẤT tới startPairing(): bảng ghép cặp (Task 7)
-// không có chỗ nào khác trong UI gọi tới nó, nên thiếu bước này thì tính năng
-// ghép cặp không ai bấm tới được (⚠️ của báo cáo task trước).
-async function buildTerminalCardAsync(session) {
-  const card = buildTerminalCard(session);
-  if (session.alive && !(await pairedMachines()).includes(session.machine)) {
-    const btn = openButtonOf(card);
-    if (btn) {
-      btn.textContent = 'Ghép máy này';
-      btn.onclick = () => startPairing(session.machine);
-    }
-  }
-  return card;
+// Dòng phụ chỉ nói những gì hub THẬT SỰ trả về. Hub không gửi mốc heartbeat
+// cuối (xem toPublic() trong server/src/terminal-sessions.js), nên ở đây không
+// có "2 phút trước" — bịa ra một con số là nói dối về máy của người dùng.
+function terminalMetaText(session, daGhep) {
+  const ve = [];
+  // Tên thẻ đã là machine khi phiên không có nhãn — nhắc lại ngay dưới nó là
+  // chữ thừa.
+  if (session.label) ve.push(session.machine);
+  if (session.alive && !daGhep) ve.push('chưa ghép với máy này');
+  if (hasUnread(session)) ve.push('thông báo lúc ' + gioPhut(session.lastNotifiedAt));
+  return ve.join(' · ');
 }
 
-// `label` and `machine` both originate on the developer's machine — label is
-// a project directory basename the user controls — so both are set with
-// textContent, never innerHTML.
-function buildTerminalCard(session) {
+function gioPhut(ts) {
+  const d = new Date(ts);
+  return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+}
+
+// Hỏi "máy này đã ghép chưa" TRƯỚC khi dựng thẻ, không phải sửa nút sau khi
+// dựng: dòng phụ cũng cần biết câu trả lời đó.
+async function buildTerminalCardAsync(session) {
+  const daGhep = !session.alive || (await pairedMachines()).includes(session.machine);
+  return buildTerminalCard(session, daGhep);
+}
+
+// `label` và `machine` đều đến từ máy dev — label là tên thư mục dự án người
+// dùng tự đặt — nên cả hai đi qua textContent, không bao giờ innerHTML.
+function buildTerminalCard(session, daGhep = true) {
   const card = document.createElement('div');
   card.className = 'card terminal-card';
 
@@ -422,19 +495,28 @@ function buildTerminalCard(session) {
     title.appendChild(dot);
   }
   const name = document.createElement('span');
-  name.textContent = session.label ? `${session.label} · ${session.machine}` : session.machine;
+  name.className = 'terminal-name';
+  name.textContent = session.label || session.machine;
   // Tên LUÔN là span cuối trong hàng, chấm đứng trước nó. Test đọc tên bằng
   // children.at(-1), nên đảo thứ tự ở đây làm đỏ test chứ không hỏng ngầm.
   title.appendChild(name);
   card.appendChild(title);
+
+  const metaText = terminalMetaText(session, daGhep);
+  if (metaText) {
+    const meta = document.createElement('div');
+    meta.className = 'terminal-meta';
+    meta.textContent = metaText;
+    card.appendChild(meta);
+  }
+
   if (unread) {
     card.classList.add('has-unread');
     const dot = title.children[0];
     // Lối thoát DUY NHẤT cho thẻ "máy không phản hồi", vốn không dựng nút nào
     // để bấm: thiếu nó thì chấm kẹt lại cho tới khi hub evict phiên sau 30
     // phút. Gỡ chấm tại chỗ thay vì fetch lại — trạng thái vẫn đúng ở lần dựng
-    // sau vì mốc đã nằm trong localStorage rồi. Click vào nút "Mở terminal"
-    // cũng nổi bọt lên đây; vô hại, openTerminal() đã đánh dấu sẵn.
+    // sau vì mốc đã nằm trong localStorage rồi.
     card.onclick = () => {
       markRead(session.sessionId);
       dot.remove();
@@ -444,14 +526,23 @@ function buildTerminalCard(session) {
 
   if (session.alive) {
     const openBtn = document.createElement('button');
-    openBtn.textContent = 'Mở terminal';
-    openBtn.onclick = () => openTerminal(session, openBtn);
+    if (daGhep) {
+      openBtn.textContent = 'Mở terminal';
+      openBtn.onclick = () => openTerminal(session, openBtn);
+    } else {
+      // Một máy chưa ghép không có gì để chấp nhận chữ ký từ điện thoại này —
+      // nút "Mở terminal" ở đó chỉ dẫn tới một vé bị daemon từ chối. Đây là LỐI
+      // VÀO DUY NHẤT tới startPairing().
+      openBtn.className = 'btn-soft';
+      openBtn.textContent = 'Ghép máy này';
+      openBtn.onclick = () => startPairing(session.machine);
+    }
     card.appendChild(openBtn);
   } else {
-    // Do NOT render a button: a link into a daemon that stopped sending
-    // heartbeats would just hang the tap — see brief.
+    // KHÔNG dựng nút: một đường dẫn vào daemon đã thôi gửi nhịp tim chỉ làm cú
+    // chạm treo lại.
     const note = document.createElement('p');
-    note.className = 'dim small';
+    note.className = 'dim small terminal-note';
     note.textContent = MSG_MAY_KHONG_PHAN_HOI;
     card.appendChild(note);
   }
@@ -598,10 +689,7 @@ async function openTerminal(session, btn) {
 // CAN be known — which push service, and (for devices added from now on) a
 // label and a date — and marks the row belonging to the phone reading it.
 
-let devicesOpen = false;
-
 async function refreshDevices() {
-  if (!devicesOpen) return;
   const err = $('devices-err');
   const box = $('devices');
   err.classList.add('hidden');
@@ -755,13 +843,6 @@ async function refreshWho() {
   } catch (e) { /* header is cosmetic — never let it break an action */ }
 }
 
-$('devices-toggle').onclick = async () => {
-  devicesOpen = !devicesOpen;
-  $('devices').classList.toggle('hidden', !devicesOpen);
-  $('devices-toggle').textContent = devicesOpen ? 'Ẩn' : 'Xem';
-  await refreshDevices();
-};
-
 async function currentSub() {
   const reg = await navigator.serviceWorker.getRegistration();
   return (reg && await reg.pushManager.getSubscription()) || null;
@@ -778,11 +859,16 @@ async function refreshPushState() {
   }
   const on = !!(await currentSub());
   el.textContent = on ? 'đã bật trên thiết bị này' : 'chưa bật';
-  btn.textContent = on ? 'Tắt thông báo trên thiết bị này' : 'Bật thông báo trên thiết bị này';
+  // KHÔNG ghi textContent: cần gạt được vẽ bằng ::after, chữ sẽ đè lên nó.
+  // Trạng thái đọc được qua #push-state cho mắt, và aria-checked cho trình đọc
+  // màn hình — cần gạt không có chữ nên nếu thiếu, nó là một nút không nhãn.
+  btn.classList.toggle('on', on);
+  btn.setAttribute('aria-checked', on ? 'true' : 'false');
+  btn.setAttribute('aria-label',
+    on ? 'Tắt thông báo trên thiết bị này' : 'Bật thông báo trên thiết bị này');
   // Shown even when this device has no subscription of its own: the whole
   // point is being able to see and remove the OTHER devices from here.
   $('devices-wrap').classList.remove('hidden');
-  await refreshDevices();
 }
 
 function urlBase64ToUint8Array(b64) {
@@ -908,9 +994,15 @@ $('enable-push').onclick = async () => {
 let returnRefreshInFlight = null;
 
 function refreshOnReturn() {
-  // Only relevant once logged in; on the login screen there is no terminal
-  // list, and a stale/absent token would just bounce off 401 → logout().
-  if ($('main').classList.contains('hidden')) return;
+  // Only relevant once logged in. #main is hidden in TWO cases now: the bare
+  // login screen (no terminal list; a stale/absent token would just bounce
+  // off 401 → logout()) and Settings being open (#main is hidden *behind*
+  // it, but the terminal list underneath is still real and worth keeping
+  // fresh). `!settingsOpen` is what tells those two apart — it stays false on
+  // both the logged-out and the /link screens, so this keeps their behaviour
+  // byte-for-byte the same while letting the refresh through while Settings
+  // is open.
+  if ($('main').classList.contains('hidden') && !settingsOpen) return;
   if (returnRefreshInFlight) return returnRefreshInFlight;
   returnRefreshInFlight = (async () => {
     await refreshTerminal();
@@ -983,7 +1075,12 @@ function ptrReset() {
 
 // At the very top of the page, and logged in. Both matter: mid-page this
 // gesture is an ordinary upward scroll and must not be stolen, and on the
-// login screen there is nothing worth reloading for.
+// login screen there is nothing worth reloading for. #main is also hidden
+// while Settings is open, and unlike the `!settingsOpen` guards elsewhere in
+// this file (refreshOnReturn() and the ccrc_open listener above both check
+// it; logout() resets it), leaving this check bare here is correct AS IS —
+// there is no terminal list under the user's finger on the Settings screen
+// for this gesture to refresh, so this isn't a spot that was missed.
 function ptrEligible() {
   if ($('main').classList.contains('hidden')) return false;
   const scrolled = (typeof window.scrollY === 'number' ? window.scrollY : 0)
@@ -1331,6 +1428,51 @@ async function cancelPairing() {
   $('pair-panel').classList.add('hidden');
   await refreshTerminal();
 }
+
+// --- Màn hình Cài đặt -------------------------------------------------------
+//
+// pushState chứ KHÔNG replaceState: mục được thêm vào lịch sử chính là thứ nút
+// Back của điện thoại tiêu thụ để đóng trang này. replaceState sẽ làm Back rời
+// khỏi trang — đúng cái người dùng không định làm.
+//
+// URL giữ nguyên `location.pathname`. /link dùng chung file này và showLink()
+// rẽ nhánh trên đúng giá trị đó.
+let settingsOpen = false;
+
+function openSettings() {
+  if (settingsOpen) return;   // bấm hai lần thì phải Back hai lần mới ra
+  settingsOpen = true;
+  history.pushState({ ccrc: 'settings' }, '', location.pathname);
+  $('main').classList.add('hidden');
+  $('settings').classList.remove('hidden');
+  refreshDevices();
+}
+
+// Chỉ ĐÓNG, không đụng lịch sử — nó được gọi TỪ popstate. Nút ‹ gọi
+// history.back() để cả hai đường đóng đều đi qua đúng một chỗ này.
+function closeSettings() {
+  if (!settingsOpen) return;
+  settingsOpen = false;
+  $('settings').classList.add('hidden');
+  $('main').classList.remove('hidden');
+}
+
+$('settings-open').onclick = () => openSettings();
+$('settings-close').onclick = () => history.back();
+window.addEventListener('popstate', () => closeSettings());
+
+// Một tab trình duyệt không tự biến thành PWA giữa chừng, nên hỏi một lần lúc
+// nạp trang là đủ. iOS Safari không hỗ trợ `display-mode`, nó có
+// `navigator.standalone` riêng — thiếu nhánh đó thì đúng cái máy mà ghi chú
+// này nhắm tới lại là máy vẫn bị nhắc.
+function dangChayTrongPwa() {
+  if (navigator.standalone === true) return true;
+  if (!window.matchMedia) return false;
+  try { return window.matchMedia('(display-mode: standalone)').matches; }
+  catch (e) { return false; }
+}
+
+if (dangChayTrongPwa()) $('pwa-note').classList.add('hidden');
 
 $('pair-cancel').onclick = () => cancelPairing();
 

@@ -12,7 +12,9 @@
 <link rel="apple-touch-icon" href="icons/apple-touch-icon-180.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="theme-color" content="#0f1115">
+<!-- Có id để app.js đổi được màu khi người dùng đổi giao diện. CSS tự đổi màu
+     trang, còn thanh trạng thái của PWA trên iPhone lấy màu từ đúng thẻ này. -->
+<meta id="theme-meta" name="theme-color" content="#101318">
 <!-- Bump ?v= whenever app.js or style.css changes. Not optional: the hub sends
      `no-cache` for every asset, but Cloudflare replaces that with its own 4h
      Browser Cache TTL for .js/.css, so a new `?v=` is the only thing that
@@ -21,7 +23,7 @@
      markup change lands on the next open, and the installed PWA sees the new
      `?v=` immediately. No reinstall needed (an earlier version of this comment
      claimed otherwise; the service worker caches nothing at all). -->
-<link rel="stylesheet" href="style.css?v=14">
+<link rel="stylesheet" href="style.css?v=15">
 </head>
 <body>
 
@@ -46,44 +48,21 @@
 
 <div id="main" class="hidden">
   <header>
-    <span id="who"></span>
-    <button id="logout" class="ghost">Đăng xuất</button>
+    <h1>Terminal</h1>
+    <button id="settings-open" class="icon-btn" aria-label="Cài đặt">⚙</button>
   </header>
+
   <div class="card">
     <div class="row">
-      <span>Thông báo đẩy</span>
-      <span id="push-state" class="dim">đang kiểm tra…</span>
-    </div>
-    <button id="enable-push">Bật thông báo trên thiết bị này</button>
-    <p class="dim small">iPhone: phải thêm vào màn hình chính rồi mở từ đó thì mới nhận được.</p>
-
-    <div id="devices-wrap" class="hidden">
-      <div class="row devices-head">
-        <span class="dim small">Thiết bị đang nhận thông báo</span>
-        <button id="devices-toggle" class="ghost">Xem</button>
+      <div>
+        <div class="field-label">Thông báo đẩy</div>
+        <p id="push-state" class="dim small">đang kiểm tra…</p>
       </div>
-      <div id="devices" class="hidden"></div>
-      <p id="devices-err" class="err small hidden"></p>
-    </div>
-  </div>
-
-  <!-- Duyệt máy dev ngay trong app. Trang /link vẫn còn cho đường trình duyệt,
-       nhưng nó KHÔNG với tới được người đã cài PWA: app standalone không có
-       thanh địa chỉ để gõ /link, và iOS không deep-link vào web app đã cài —
-       nên đúng người mà hướng dẫn nhắm tới lại là người không vào được. Gập
-       mặc định: cài máy mới là việc hoạ hoằn, không đáng chiếm chỗ mỗi ngày. -->
-  <div class="card">
-    <div class="row">
-      <span>Duyệt máy dev</span>
-      <button id="approve-toggle" class="ghost">Mở</button>
-    </div>
-    <div id="approve-body" class="hidden">
-      <p class="dim small">Nhập mã đang hiện trên terminal của máy dev.</p>
-      <input id="approve-code" type="text" placeholder="XXXX-XXXX" autocomplete="off"
-             autocapitalize="characters" spellcheck="false">
-      <button id="approve-btn">Duyệt</button>
-      <p id="approve-msg" class="dim hidden"></p>
-      <p id="approve-err" class="err hidden"></p>
+      <!-- Vẫn là <button>, vẫn cùng id và cùng handler — chỉ đổi cách vẽ. Cần
+           gạt được vẽ hoàn toàn bằng CSS (::after), nên app.js tuyệt đối không
+           được ghi textContent vào nút này. -->
+      <button id="enable-push" class="switch" role="switch" aria-checked="false"
+              aria-label="Bật thông báo trên thiết bị này"></button>
     </div>
   </div>
 
@@ -96,13 +75,61 @@
     <p id="pair-err" class="err hidden"></p>
   </div>
 
-  <h2>Terminal</h2>
   <div id="terminal-list" class="hidden"></div>
   <p id="terminal-empty" class="dim small hidden">Chưa có terminal nào đang mở. Gõ <code>/remote on</code> trên máy để bật.</p>
   <p id="terminal-err" class="err hidden"></p>
-
 </div>
 
-<script src="app.js?v=14"></script>
+<!-- Màn hình thứ hai trong CÙNG một file, không phải route mới: /link dùng
+     chung file này và showLink() rẽ nhánh trên location.pathname, nên đổi path
+     là làm nó hiểu sai màn hình. -->
+<div id="settings" class="hidden">
+  <header>
+    <button id="settings-close" class="icon-btn" aria-label="Quay lại">‹</button>
+    <h1>Cài đặt</h1>
+    <span class="icon-btn" style="visibility:hidden" aria-hidden="true"></span>
+  </header>
+
+  <div class="card">
+    <div class="row">
+      <span id="who"></span>
+      <button id="logout" class="ghost">Đăng xuất</button>
+    </div>
+  </div>
+
+  <div id="pwa-note" class="card note">
+    <p class="small">iPhone: phải thêm trang này vào màn hình chính rồi mở từ đó
+    thì mới nhận được thông báo.</p>
+  </div>
+
+  <h2>Giao diện</h2>
+  <div class="card">
+    <select id="theme-select" aria-label="Giao diện">
+      <option value="auto">Theo thiết bị</option>
+      <option value="light">Sáng</option>
+      <option value="dark">Tối</option>
+    </select>
+  </div>
+
+  <h2>Thiết bị nhận thông báo</h2>
+  <div id="devices-wrap" class="card hidden">
+    <div id="devices"></div>
+    <p id="devices-err" class="err small hidden"></p>
+  </div>
+
+  <!-- Lối vào DUY NHẤT của người đã cài PWA: app standalone không có thanh địa
+       chỉ để gõ /link, và iOS không deep-link vào web app đã cài. -->
+  <h2>Duyệt máy dev</h2>
+  <div class="card">
+    <p class="dim small">Nhập mã đang hiện trên terminal của máy dev.</p>
+    <input id="approve-code" type="text" placeholder="XXXX-XXXX" autocomplete="off"
+           autocapitalize="characters" spellcheck="false">
+    <button id="approve-btn">Duyệt</button>
+    <p id="approve-msg" class="dim hidden"></p>
+    <p id="approve-err" class="err hidden"></p>
+  </div>
+</div>
+
+<script src="app.js?v=15"></script>
 </body>
 </html>

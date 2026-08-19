@@ -68,6 +68,9 @@ export class FakeElement {
   // script nổ ngay lúc dựng thẻ.
   setAttribute(name, value) { this._attrs = this._attrs || {}; this._attrs[name] = String(value); }
   getAttribute(name) { return (this._attrs && this._attrs[name]) ?? null; }
+  // apDatTheme() gỡ hẳn data-theme khi người dùng chọn "theo thiết bị" — thiếu
+  // phương thức này thì script nổ ngay lần đầu quay lại "auto".
+  removeAttribute(name) { if (this._attrs) delete this._attrs[name]; }
   get className() { return this._classes.join(' '); }
   set className(v) { this._classes = String(v).split(/\s+/).filter(Boolean); }
   get textContent() { return this._text; }
@@ -95,6 +98,10 @@ export class FakeDocument {
     this.body = new FakeElement('body');
     this.scrollingElement = new FakeElement('html');
     this.scrollingElement.scrollTop = 0;
+    // Trong chế độ chuẩn, document.scrollingElement CHÍNH LÀ documentElement.
+    // Dựng hai đối tượng khác nhau ở đây sẽ làm test về theme xanh trong khi
+    // trang thật đặt data-theme lên một phần tử không ai đọc.
+    this.documentElement = this.scrollingElement;
   }
   getElementById(id) { return this._byId[id]; }
   createElement(tag) { return new FakeElement(tag); }
@@ -127,11 +134,14 @@ export const REQUIRED_IDS = [
   'token', 'login-btn', 'login-err', 'logout',
   'slack-login', 'login-or',
   'link-card', 'link-code', 'link-btn', 'link-msg', 'link-err',
-  'approve-toggle', 'approve-body', 'approve-code', 'approve-btn', 'approve-msg', 'approve-err',
+  'approve-code', 'approve-btn', 'approve-msg', 'approve-err',
   'terminal-list', 'terminal-err', 'terminal-empty',
-  'devices-wrap', 'devices', 'devices-toggle', 'devices-err',
+  'devices-wrap', 'devices', 'devices-err',
+  'settings', 'settings-open', 'settings-close',
   'pair-panel', 'pair-title', 'pair-step', 'pair-sas', 'pair-help',
   'pair-cancel', 'pair-err',
+  'pwa-note',
+  'theme-select', 'theme-meta',
 ];
 
 // --- fake IndexedDB, minimal — just enough for one key store ---------------
@@ -209,12 +219,13 @@ export function makeFetch(impl) {
 
 export function loadAppPage({
   token = '', fetchImpl = null, navigatorImpl = null, indexedDBImpl = null, cryptoImpl = null,
-  search = '', pathname = '/',
+  search = '', pathname = '/', media = {}, storeSeed = {},
 } = {}) {
   const byId = {};
   const BUTTON_IDS = new Set([
-    'login-btn', 'logout', 'enable-push', 'devices-toggle',
-    'approve-toggle', 'approve-btn',
+    'login-btn', 'logout', 'enable-push',
+    'settings-open', 'settings-close',
+    'approve-btn',
     'pair-cancel', 'slack-login', 'link-btn',
   ]);
   for (const id of REQUIRED_IDS) byId[id] = new FakeElement(BUTTON_IDS.has(id) ? 'button' : 'div');
@@ -224,6 +235,9 @@ export function loadAppPage({
 
   const store = new Map();
   if (token) store.set('ccrc_token', token);
+  // Nạp sẵn localStorage TRƯỚC khi app.js chạy. Đặt sau khi script đã chạy thì
+  // muộn: theme được đọc và áp ngay dòng đầu, đúng để không chớp nền sai màu.
+  for (const [k, v] of Object.entries(storeSeed)) store.set(k, String(v));
   const localStorage = {
     getItem: (k) => (store.has(k) ? store.get(k) : null),
     setItem: (k, v) => store.set(k, v),
@@ -267,14 +281,45 @@ export function loadAppPage({
   const window_ = new FakeWindow();
   window_.scrollY = 0;
 
+  // matchMedia thật trả về một MediaQueryList có addEventListener. app.js dùng
+  // nó cho hai việc khác hẳn nhau — dò PWA đã cài, và nghe hệ thống đổi
+  // sáng/tối — nên cái giả này phải nhận truy vấn nào cũng được, mặc định
+  // `matches: false`, chứ không cứng hoá một truy vấn cụ thể.
+  // `media: null` = trình duyệt KHÔNG có matchMedia. Cần một cách nói điều đó,
+  // vì gán undefined sau khi trang đã nạp thì muộn — dò PWA và áp theme đều
+  // chạy đúng một lần, lúc nạp.
+  window_.mediaListeners = [];
+  if (media) {
+    window_.matchMedia = (query) => ({
+      media: query,
+      matches: !!media[query],
+      addEventListener: (type, fn) => window_.mediaListeners.push({ query, type, fn }),
+      addListener: (fn) => window_.mediaListeners.push({ query, type: 'change', fn }),
+    });
+  }
+
   // app.js xoá `?open=` khỏi thanh địa chỉ ngay sau khi đọc, để một lần nạp
   // lại trang (kéo xuống để nạp lại, chẳng hạn) không được mở lại terminal
   // lần nữa. Test đọc `replaceCalls` để chứng minh việc xoá đó có xảy ra.
   const replaceCalls = [];
+  const pushCalls = [];
+  // Một chồng lịch sử tí hon. back() bắn 'popstate' trên window đúng như trình
+  // duyệt, vì đó chính là thứ nút Back của điện thoại tiêu thụ — không có nó,
+  // test không chứng minh được trang Cài đặt đóng lại bằng cử chỉ vuốt cạnh.
+  const stack = [];
   const history = {
     replaceState(state, title, url) {
       replaceCalls.push({ state, title, url });
       location.search = '';
+    },
+    pushState(state, title, url) {
+      pushCalls.push({ state, title, url });
+      stack.push(state);
+    },
+    back() {
+      if (!stack.length) return;
+      stack.pop();
+      window_.dispatch('popstate', { state: stack[stack.length - 1] ?? null });
     },
   };
 
@@ -336,6 +381,7 @@ export function loadAppPage({
     window: window_,
     location,
     replaceCalls,
+    pushCalls,
     localStorage,
     sessionStorage,
     fetch: fetchFn,

@@ -45,6 +45,7 @@ function makeSession(sessionId, { alive = true, label = '', machine = 'may-dev' 
 const SESSION_ALIVE = makeSession('s-1', { alive: true, label: 'cc-remote-control' });
 const SESSION_ALIVE_2 = makeSession('s-2', { alive: true, label: 'workspace', machine: 'may-dev' });
 const SESSION_DEAD = makeSession('s-1', { alive: false, label: 'cc-remote-control' });
+const SESSION_KHONG_NHAN = makeSession('s-3', { alive: true, label: '', machine: 'may-dev' });
 
 // No token is passed to loadAppPage() in these tests: app.js auto-runs
 // `showMain()` at load time when a token is already in localStorage (the
@@ -61,10 +62,16 @@ const SESSION_DEAD = makeSession('s-1', { alive: false, label: 'cc-remote-contro
 // Hàng tiêu đề giờ chứa tối đa hai span: chấm "chưa đọc" (chỉ khi có) rồi
 // tên. Tên LUÔN là span cuối — hợp đồng này giữ cho helper không phải đoán
 // chỉ số theo việc có chấm hay không.
+//
+// Cấu trúc thẻ: [hàng tên] [dòng phụ?] [nút | câu "máy không phản hồi"?].
+// Tìm theo class chứ KHÔNG theo kiểu loại trừ ("phần tử không phải hàng tên và
+// không phải button"): dòng phụ mới sẽ lọt vào đúng cái lưới loại trừ đó, và
+// test sẽ xanh trong khi nó đang soi nhầm phần tử.
 const titleOf = (card) => card.children[0].children.at(-1).textContent;
 const dotOf = (card) => card.children[0].children.find((c) => c.classList.contains('unread-dot'));
 const openButtonOf = (card) => card.children.find((c) => c.tagName === 'BUTTON');
-const noteOf = (card) => card.children.find((c) => c !== card.children[0] && c.tagName !== 'BUTTON');
+const metaOf = (card) => card.children.find((c) => c.classList.contains('terminal-meta'));
+const noteOf = (card) => card.children.find((c) => c.classList.contains('terminal-note'));
 
 // Card gating (Task 9): buildTerminalCardAsync() only shows "Mở terminal" for
 // a machine already remembered as paired — otherwise the card offers "Ghép
@@ -91,7 +98,7 @@ test('không có phiên nào → danh sách ẩn, dòng trống hiện ra', asyn
   assert.equal(byId['terminal-empty'].classList.contains('hidden'), false);
 });
 
-test('một phiên alive, máy đã ghép → một thẻ, tiêu đề "label · machine", nút Mở terminal hiện', async () => {
+test('một phiên alive, máy đã ghép → một thẻ, tiêu đề là nhãn, tên máy xuống dòng phụ, nút Mở terminal hiện', async () => {
   const fetchImpl = makeFetch(async () => ({ status: 200, body: { sessions: [SESSION_ALIVE] } }));
   const { context, byId } = loadAppPage({ fetchImpl });
   await pairMachine(context, SESSION_ALIVE.machine);
@@ -100,7 +107,8 @@ test('một phiên alive, máy đã ghép → một thẻ, tiêu đề "label ·
   assert.equal(byId['terminal-empty'].classList.contains('hidden'), true);
   assert.equal(byId['terminal-list'].children.length, 1);
   const card = byId['terminal-list'].children[0];
-  assert.equal(titleOf(card), 'cc-remote-control · may-dev');
+  assert.equal(titleOf(card), 'cc-remote-control');
+  assert.equal(metaOf(card).textContent, 'may-dev');
   assert.ok(openButtonOf(card), 'phải có nút mở');
   assert.equal(openButtonOf(card).textContent, 'Mở terminal');
 });
@@ -114,8 +122,10 @@ test('nhiều phiên alive → mỗi phiên một thẻ riêng, đúng thứ t�
   await pairMachine(context, 'may-dev'); // cả hai phiên đều chạy trên máy này
   await context.refreshTerminal();
   assert.equal(byId['terminal-list'].children.length, 2);
-  assert.equal(titleOf(byId['terminal-list'].children[0]), 'cc-remote-control · may-dev');
-  assert.equal(titleOf(byId['terminal-list'].children[1]), 'workspace · may-dev');
+  assert.equal(titleOf(byId['terminal-list'].children[0]), 'cc-remote-control');
+  assert.equal(metaOf(byId['terminal-list'].children[0]).textContent, 'may-dev');
+  assert.equal(titleOf(byId['terminal-list'].children[1]), 'workspace');
+  assert.equal(metaOf(byId['terminal-list'].children[1]).textContent, 'may-dev');
 });
 
 test('alive:false → thẻ đó không có nút, nói rõ máy không phản hồi', async () => {
@@ -329,6 +339,27 @@ test('chưa đăng nhập (màn hình main còn ẩn) → pageshow không gọi 
   await Promise.all(window.dispatch('pageshow', { persisted: true }));
 
   assert.equal(terminalCalls, 0, 'không được gọi /api/terminal trước khi đăng nhập');
+});
+
+// openSettings() cũng ẩn #main (xem app.js) nên "#main đang ẩn" không còn
+// đồng nghĩa với "chưa đăng nhập" nữa. refreshOnReturn() phải phân biệt được
+// hai trường hợp: guard của nó phải để refresh chạy khi đang ở Cài đặt, chứ
+// không chỉ khi #main tự nó đang hiện.
+test('đang ở Cài đặt (main ẩn vì Cài đặt, không phải vì chưa đăng nhập) → pageshow vẫn gọi hub', async () => {
+  let terminalCalls = 0;
+  const fetchImpl = makeFetch(async (url) => {
+    if (url === '/api/terminal') { terminalCalls++; return { status: 200, body: { sessions: [] } }; }
+    return { status: 404, body: {} }; // refreshDevices() do openSettings() gọi kèm — không quan trọng ở đây
+  });
+  const { context, byId, window } = loadAppPage({ fetchImpl });
+  byId['main'].classList.remove('hidden'); // đã đăng nhập
+  context.openSettings();
+  assert.equal(byId['main'].classList.contains('hidden'), true, 'tiền đề: #main ẩn vì đang ở Cài đặt');
+
+  await Promise.all(window.dispatch('pageshow', { persisted: true }));
+
+  assert.equal(terminalCalls, 1,
+    'đang ở Cài đặt vẫn phải gọi hub khi quay lại — danh sách không được lỗi thời khi Cài đặt đóng lại');
 });
 
 test('ký thất bại (IndexedDB/WebCrypto lỗi) → báo lỗi, làm mới danh sách, KHÔNG điều hướng', async () => {
@@ -608,7 +639,7 @@ test('thông báo mới hơn mốc đã đọc → thẻ của đúng phiên đ�
   const card = byId['terminal-list'].children[0];
   assert.ok(dotOf(card), 'phải có chấm chưa đọc');
   assert.equal(card.classList.contains('has-unread'), true);
-  assert.equal(titleOf(card), 'cc-remote-control · may-dev', 'tên vẫn phải là span cuối');
+  assert.equal(titleOf(card), 'cc-remote-control', 'tên vẫn phải là span cuối');
 });
 
 test('thông báo cũ hơn mốc đã đọc → không có chấm', async () => {
@@ -1003,6 +1034,31 @@ test('ccrc_open lúc còn ở màn hình đăng nhập → không gọi hub, và
     'yêu cầu mở phải sống sót qua lần đăng nhập, đã có: ' + location.href);
 });
 
+// Cùng lớp bug như refreshOnReturn(): #main cũng ẩn khi đang ở Cài đặt, không
+// chỉ khi chưa đăng nhập. Không await refreshTerminal() một cách tường minh ở
+// đây — nếu làm vậy, chính lời gọi tường minh đó (chứ không phải listener) có
+// thể là thứ tạo ra request, và test sẽ xanh dù bug còn nguyên. terminalCalls
+// tăng ĐỒNG BỘ ngay trong dispatchMessage() khi guard cho qua (fetch() gọi
+// impl() của fetchImpl đồng bộ trước await đầu tiên), nên chỉ cần kiểm tra nó
+// ngay sau dispatchMessage() là đủ để phân biệt.
+test('ccrc_open lúc đang ở Cài đặt (main ẩn vì Cài đặt, không phải vì chưa đăng nhập) → vẫn gọi hub', async () => {
+  let terminalCalls = 0;
+  const fetchImpl = makeFetch(async (url) => {
+    if (url === '/api/terminal') { terminalCalls += 1; return { status: 200, body: { sessions: [SESSION_ALIVE] } }; }
+    return { status: 404, body: {} }; // refreshDevices() do openSettings() gọi kèm — không quan trọng ở đây
+  });
+  const { navigatorImpl, dispatchMessage } = makeSwNavigator();
+  const { context, byId } = loadAppPage({ fetchImpl, navigatorImpl });
+  byId['main'].classList.remove('hidden'); // đã đăng nhập
+  context.openSettings();
+  assert.equal(byId['main'].classList.contains('hidden'), true, 'tiền đề: #main ẩn vì đang ở Cài đặt');
+
+  dispatchMessage({ type: 'ccrc_open', sessionId: SESSION_ALIVE.sessionId });
+  await Promise.resolve();
+
+  assert.equal(terminalCalls, 1, 'đang ở Cài đặt vẫn phải gọi hub khi có thông báo ccrc_open tới');
+});
+
 // app.js là script cổ điển, không `async`, nên listener 'message' được gắn
 // trước khi trình duyệt bơm hàng đợi tin nhắn — hôm nay nó chạy được là nhờ
 // đúng điều đó. Thêm `async` vào thẻ <script> sau này sẽ âm thầm làm rơi mọi
@@ -1049,4 +1105,33 @@ test('postMessage với type sai, thiếu sessionId, hoặc sessionId không ph�
   // mở muộn ở lượt sau.
   await context.refreshTerminal();
   assert.equal(location.href, '', 'không có payload nào ở trên là hợp lệ — không được điều hướng đi đâu cả');
+});
+
+test('phiên không có nhãn: tên là tên máy, và KHÔNG lặp lại nó ở dòng phụ', async () => {
+  const fetchImpl = makeFetch(async () => ({ status: 200, body: { sessions: [SESSION_KHONG_NHAN] } }));
+  const { context, byId } = loadAppPage({ fetchImpl });
+  await pairMachine(context, SESSION_KHONG_NHAN.machine);
+  await context.refreshTerminal();
+  const card = byId['terminal-list'].children[0];
+  assert.equal(titleOf(card), 'may-dev');
+  assert.equal(metaOf(card), undefined, 'lặp lại tên máy ngay dưới chính nó là chữ thừa');
+});
+
+test('máy không phản hồi: giữ nguyên từng chữ của câu dùng chung, không rút gọn', async () => {
+  const fetchImpl = makeFetch(async () => ({ status: 200, body: { sessions: [SESSION_DEAD] } }));
+  const { context, byId } = loadAppPage({ fetchImpl });
+  await context.refreshTerminal();
+  const card = byId['terminal-list'].children[0];
+  assert.equal(openButtonOf(card), undefined, 'máy chết thì không dựng nút nào');
+  assert.match(noteOf(card).textContent, /có thể đã ngủ/,
+    'vế "có thể đã ngủ" là thứ nói cho người dùng biết phải làm gì — không được rút gọn đi');
+});
+
+test('máy chưa ghép: dòng phụ nói rõ, nút đổi thành Ghép máy này', async () => {
+  const fetchImpl = makeFetch(async () => ({ status: 200, body: { sessions: [SESSION_ALIVE] } }));
+  const { context, byId } = loadAppPage({ fetchImpl });   // KHÔNG gọi pairMachine
+  await context.refreshTerminal();
+  const card = byId['terminal-list'].children[0];
+  assert.match(metaOf(card).textContent, /chưa ghép với máy này/);
+  assert.equal(openButtonOf(card).textContent, 'Ghép máy này');
 });

@@ -1,8 +1,45 @@
 :root {
-  --bg: #0f1115; --card: #161a21; --border: #23262d;
-  --text: #e6e8eb; --dim: #9aa3b2; --accent: #d97757; --err: #f87171;
+  /* Bảng "Đất nung", bản tối. Tên biến giữ nguyên như bản cũ để không file nào
+     khác phải đổi theo; ba biến cuối là biến mới. */
+  --bg: #101318;
+  --card: #191d24;
+  --surface-2: #242932;
+  --border: #262b34;
+  --text: #edeff2;
+  --dim: #98a1b0;
+  --accent: #e0805f;
+  --accent-soft: rgba(224, 119, 87, .16);
+  --on-accent: #1a0e08;
+  --err: #f87171;
   --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
+/* Ba khối, không phải hai. Khối media lo trường hợp "theo thiết bị"; hai khối
+   [data-theme] lo trường hợp người dùng tự chọn — và phải có CẢ dark, không chỉ
+   light, nếu không thì chọn "Tối" trên một máy đang để sáng sẽ không thắng
+   được khối media ở trên. */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --bg: #f6f4f2; --card: #ffffff; --surface-2: #eee9e5; --border: #e3dcd6;
+    --text: #1b1917; --dim: #6d6660;
+    --accent: #c05f3c; --accent-soft: rgba(192, 95, 60, .12); --on-accent: #ffffff;
+    --err: #c0392b;
+  }
+}
+:root[data-theme="light"] {
+  --bg: #f6f4f2; --card: #ffffff; --surface-2: #eee9e5; --border: #e3dcd6;
+  --text: #1b1917; --dim: #6d6660;
+  --accent: #c05f3c; --accent-soft: rgba(192, 95, 60, .12); --on-accent: #ffffff;
+  --err: #c0392b;
+}
+:root[data-theme="dark"] {
+  --bg: #101318; --card: #191d24; --surface-2: #242932; --border: #262b34;
+  --text: #edeff2; --dim: #98a1b0;
+  --accent: #e0805f; --accent-soft: rgba(224, 119, 87, .16); --on-accent: #1a0e08;
+  --err: #f87171;
+}
+
+select { width: 100%; min-height: 46px; padding: 12px; background: var(--surface-2);
+  color: var(--text); border: 1px solid var(--border); border-radius: 11px; font-size: 15px; }
 * { box-sizing: border-box; }
 /* `pan-x pan-y` permits scrolling but withholds the pinch and double-tap
    zoom gestures — this is what actually stops zoom on Chrome/Android, where
@@ -24,22 +61,46 @@ body { padding: calc(16px + env(safe-area-inset-top, 0px))
   calc(16px + env(safe-area-inset-right, 0px))
   calc(16px + env(safe-area-inset-bottom, 0px))
   calc(16px + env(safe-area-inset-left, 0px)); }
-h1 { font-size: 20px; margin: 0 0 4px; }
-h2 { font-size: 14px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); margin: 24px 0 8px; }
+h1 { font-size: 19px; font-weight: 650; letter-spacing: -.01em; margin: 0; }
+h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; font-weight: 600;
+  color: var(--dim); margin: 18px 2px 8px; }
 .hidden { display: none; }
 .dim { color: var(--dim); }
 .small { font-size: 13px; }
 .err { color: var(--err); }
-.card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 16px; margin-bottom: 12px; }
-.row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
-input { width: 100%; padding: 12px; margin: 12px 0; background: var(--bg); color: var(--text);
-  border: 1px solid var(--border); border-radius: 8px; font-family: var(--mono); }
-button { width: 100%; padding: 12px; background: var(--accent); color: #fff; border: 0;
-  border-radius: 8px; font-size: 15px; cursor: pointer; }
-button.ghost { width: auto; background: transparent; color: var(--dim); border: 1px solid var(--border); padding: 6px 12px; font-size: 13px; }
-code { font-family: var(--mono); background: var(--bg); padding: 1px 5px; border-radius: 4px; }
-.terminal-card button { margin-top: 4px; }
+.card { background: var(--card); border: 1px solid var(--border); border-radius: 14px;
+  padding: 14px; margin-bottom: 10px; }
+.row { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+
+/* Ghi chú: không phải lỗi, nhưng cũng không phải chữ nền — viền nhấn nhạt là
+   đủ để mắt dừng lại một nhịp mà không kêu như một cảnh báo. */
+.card.note { background: var(--accent-soft); border-color: var(--accent); }
+.card.note p { margin: 0; }
+
+/* Nút chính. 46px là chiều cao mà ngón cái bấm được mà không phải nhìn — đây là
+   nút được bấm nhiều nhất trong cả app. */
+button { width: 100%; min-height: 46px; padding: 13px; background: var(--accent);
+  color: var(--on-accent); border: 0; border-radius: 11px; font-size: 15px;
+  font-weight: 600; cursor: pointer; }
+button:active { filter: brightness(.94); }
+button.ghost { width: auto; min-height: 0; background: transparent; color: var(--dim);
+  border: 1px solid var(--border); padding: 8px 12px; font-size: 13px; font-weight: 500; }
+/* Nút phụ: cùng hình dáng nút chính nhưng nền nhạt — dùng cho việc có thật
+   nhưng không phải việc người ta vào đây để làm. */
+button.btn-soft { background: var(--accent-soft); color: var(--accent); }
+/* Nút biểu tượng ở header. 44×44 là vùng bấm nhỏ nhất còn bấm trúng được. */
+button.icon-btn { width: 44px; height: 44px; min-height: 44px; padding: 0;
+  border-radius: 50%; background: var(--surface-2); color: var(--dim);
+  font-size: 17px; font-weight: 400; }
+
+header { display: flex; justify-content: space-between; align-items: center;
+  gap: 10px; margin-bottom: 16px; }
+input { width: 100%; min-height: 46px; padding: 13px; margin: 10px 0;
+  background: var(--bg); color: var(--text); border: 1px solid var(--border);
+  border-radius: 11px; font-family: var(--mono); font-size: 15px; }
+code { font-family: var(--mono); background: var(--surface-2); padding: 1px 5px; border-radius: 4px; }
+
+.terminal-card button { margin-top: 12px; }
 .terminal-card button:disabled { opacity: .6; cursor: default; }
 
 /* Chỉ báo "kéo xuống để nạp lại" (app.js). Sits above the top edge and is
@@ -65,10 +126,29 @@ code { font-family: var(--mono); background: var(--bg); padding: 1px 5px; border
    `.row` mặc định là justify-content: space-between — để nguyên thì chấm bị
    đẩy sang tận mép phải, xa cái tên nó đang nói về. Quầng sáng mờ quanh chấm
    là thứ làm nó nổi trên nền --card tối mà không phải tô cả thẻ. */
-.terminal-title { justify-content: flex-start; gap: 8px; }
-.unread-dot { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto;
-  background: var(--accent); box-shadow: 0 0 0 3px rgba(217, 119, 87, .20); }
+.terminal-title { justify-content: flex-start; gap: 9px; }
+.terminal-name { font-size: 15px; font-weight: 600; letter-spacing: -.005em; }
+.terminal-meta { color: var(--dim); font-size: 12px; margin-top: 3px; }
+.terminal-note { margin: 6px 0 0; }
+.unread-dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto;
+  background: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); }
 
 /* Số so khớp khi ghép cặp thiết bị — to, giãn cách, số đều hàng để không bị
    nhầm hai số cạnh nhau trông giống nhau. */
 .sas { font-size: 2rem; letter-spacing: .4em; text-align: center; font-variant-numeric: tabular-nums; }
+
+.field-label { font-size: 15px; }
+#push-state { margin: 3px 0 0; }
+
+/* Cần gạt vẽ hoàn toàn bằng CSS — app.js không ghi chữ vào nút này. 44px chiều
+   cao vùng bấm dù bản thân cần gạt chỉ cao 26px. */
+button.switch { width: 44px; height: 44px; min-height: 44px; padding: 0;
+  background: transparent; border-radius: 0; position: relative; flex: 0 0 auto; }
+button.switch::before { content: ""; position: absolute; right: 0; top: 9px;
+  width: 44px; height: 26px; border-radius: 13px; background: var(--surface-2);
+  transition: background .15s; }
+button.switch::after { content: ""; position: absolute; top: 12px; left: 3px;
+  width: 20px; height: 20px; border-radius: 50%; background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, .35); transition: left .15s; }
+button.switch.on::before { background: var(--accent); }
+button.switch.on::after { left: 21px; }
