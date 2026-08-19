@@ -1,0 +1,31 @@
+# Kết thúc dòng, ép ở tầng checkout chứ không nhờ từng công cụ tự chịu.
+#
+# VÌ SAO CẦN: git trên Windows mặc định `core.autocrlf=true`, nên mọi file text
+# được checkout với CRLF. Với script shell điều đó không phải chuyện thẩm mỹ —
+# `\r` dính vào cuối MỖI LỆNH, và dòng shebang thành `#!/bin/sh\r`, thứ mà
+# kernel/loader không hiểu. Script đơn giản là không chạy.
+#
+# Đo được, không phải phòng xa: CI `windows-latest` đỏ 10 bài ngay lần chạy đầu,
+# tất cả đều là `shell-scripts.test.js` — kể cả một bài chỉ so dòng đầu với
+# `'#!/bin/sh'`. Cùng lớp lỗi đã làm `docker-image.test.js` đỏ: trong JavaScript
+# `.` không khớp `\r` (nó là ký tự kết thúc dòng), nên regex dừng sớm.
+#
+# Và nó không chỉ là chuyện của test: người dùng clone repo này trên Windows rồi
+# chạy `install.sh` dưới WSL hay Git Bash sẽ đâm vào đúng bức tường ấy.
+*.sh    text eol=lf
+*.mjs   text eol=lf
+*.js    text eol=lf
+
+# Dockerfile được PARSE bằng regex trong docker-image.test.js, và `docker build`
+# cũng đọc theo dòng. Giữ LF cho nhất quán với mọi thứ khác nó COPY.
+Dockerfile*        text eol=lf
+docker/Dockerfile* text eol=lf
+
+# Ngược lại: `.cmd` là file của cmd.exe, nơi CRLF là dạng bản địa và một file
+# toàn LF có thể chạy sai ở nhánh nhiều dòng. Ép CRLF thay vì để tuỳ máy.
+*.cmd   text eol=crlf
+
+# `.ps1` CỐ Ý không có mặt ở đây. PowerShell đọc được cả hai, và hub phục vụ
+# install.ps1 từ đĩa — ép một dạng kết thúc dòng ở đó là đổi byte của một file
+# đang chạy tốt, để lấy một tính nhất quán chưa ai đo là có ích. Thêm vào đây
+# khi nào có một phép đo nói rằng cần.

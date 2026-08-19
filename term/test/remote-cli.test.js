@@ -773,7 +773,7 @@ test('không có lsof: daemon thật khởi động bằng đường dẫn TƯƠ
   const pidfile = pidFilePath(home, tp.pane);
   const proc = spawn(process.execPath, ['ccrc-term.js'], {
     cwd: path.dirname(DAEMON_PATH),
-    env: daemonEnv(tp.pane, 8796),
+    env: daemonEnv(tp.pane, 8796, home),
     stdio: 'ignore',
   });
   try {
