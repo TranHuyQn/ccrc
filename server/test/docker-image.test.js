@@ -26,7 +26,16 @@ const DOCKERFILE = path.join(GOC, 'docker', 'Dockerfile.hub');
 function duongDanConLai() {
   const noi = fs.readFileSync(DOCKERFILE, 'utf8');
   const ra = [];
-  for (const dong of noi.split('\n')) {
+  // `/\r?\n/` chứ không phải `'\n'`: git trên Windows mặc định checkout CRLF
+  // (core.autocrlf=true), và khi ấy mỗi dòng còn sót lại một `\r` ở cuối. Cái
+  // đó làm regex bên dưới KHÔNG khớp gì cả — trong JavaScript `.` không khớp
+  // `\r` (nó là ký tự kết thúc dòng), nên `(.+)` dừng trước `\r` và `$` không
+  // còn ở cuối chuỗi. Kết quả: danh sách COPY rỗng, và bài test báo rằng MỌI
+  // module đều thiếu trong image.
+  //
+  // Đo được: đỏ trên Windows, xanh trên macOS, cùng một Dockerfile không sai gì
+  // — và tái hiện lại được trên macOS chỉ bằng cách nối thêm một `\r`.
+  for (const dong of noi.split(/\r?\n/)) {
     const m = dong.match(/^\s*COPY\s+(.+)$/);
     if (!m) continue;
     const phan = m[1].trim().split(/\s+/);
@@ -47,7 +56,13 @@ function importRaNgoai() {
     const noi = fs.readFileSync(path.join(thuMuc, ten), 'utf8');
     for (const m of noi.matchAll(/^\s*import\s[^'"]*['"](\.\.[^'"]+)['"]/gm)) {
       const tuyetDoi = path.resolve(thuMuc, m[1]);
-      const tuongDoi = path.relative(GOC, tuyetDoi);
+      // Chuẩn hoá về gạch chéo xuôi: `path.relative` trên Windows trả về
+      // `server\src\…`, nên phép so với `'server/'` bên dưới KHÔNG BAO GIỜ khớp
+      // và mọi import bị coi là nằm ngoài server/. Đo được trên Windows: bài
+      // này đỏ ở đó và xanh trên macOS, thuần tuý vì dấu phân cách — chính
+      // Dockerfile thì không sai gì. Dockerfile luôn dùng gạch xuôi, nên đây là
+      // dạng đúng để so.
+      const tuongDoi = path.relative(GOC, tuyetDoi).split(path.sep).join('/');
       if (tuongDoi.startsWith('server/')) continue; // đã nằm trong COPY server/src
       ra.push({ file: `server/src/${ten}`, can: tuongDoi });
     }

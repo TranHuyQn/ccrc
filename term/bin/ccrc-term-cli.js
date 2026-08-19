@@ -7,19 +7,28 @@
 
 import crypto from 'node:crypto';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { spawn, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { readConfig } from '../src/config.js';
 import { docDauVanTayHub } from '../src/hub-version.js';
 import { dauVanTay } from '../../shared/bundle-fingerprint.js';
-import { requestedPortLabel } from '../src/env.js';
+import { requestedPortLabel, parsePositiveMs } from '../src/env.js';
+import { duongDanFileDung } from '../src/win-stop-file.js';
 import { currentPane, paneAlive, listPanes, GROUP_SESSION_SUFFIX } from '../src/tmux.js';
 import { cleanSessionName } from '../src/session-name.js';
 import { randomNonce, commitMatches, shortAuthString } from '../src/pairing.js';
 import { addDevice, listDevices, removeDevice } from '../src/devices.js';
 import { writePending, readPending, clearPending } from '../src/pending-pair.js';
+import { ccrcHome } from '../../shared/home.js';
+import { readHost } from '../src/host-registry.js';
+import { laDaemonWindows } from '../src/win-daemon-id.js';
+
+// Windows không có tmux, nên "phiên này" là một thứ khác hẳn: không phải một
+// pane, mà một phiên ConPTY do `ccrc` (bin/ccrc-win.js) mở và ghi vào sổ host.
+// Mọi chỗ hai nền tảng trả lời khác nhau đều rẽ ở đúng cờ này, để đường
+// macOS/Linux còn nguyên từng dòng một.
+const LA_WINDOWS = process.platform === 'win32';
 
 const DAEMON = path.join(path.dirname(fileURLToPath(import.meta.url)), 'ccrc-term.js');
 const say = (s) => process.stdout.write(s + '\n');
@@ -31,11 +40,17 @@ const say = (s) => process.stdout.write(s + '\n');
 // while its daemon kept running and serving a shell on the tailnet. Keying
 // the file by pane id means each pane's `on`/`off` only ever reads and
 // writes its own file and can never see, let alone touch, another pane's.
+//
+// `ccrcHome()` chứ không `os.homedir()`: trên Windows, đặt HOME KHÔNG đổi được
+// os.homedir() (nó đọc USERPROFILE), nên bộ test không có cách nào cô lập —
+// và một lần đã ghi thẳng vào hồ sơ thật của người dùng vì thế. Khi CCRC_HOME
+// không được đặt, ccrcHome() trả đúng os.homedir(): trên macOS/Linux không có
+// gì đổi. Lý do đầy đủ ở shared/home.js.
 function pidFilePath(paneId) {
-  return path.join(os.homedir(), '.ccrc', `term-pane-${paneId}.pid`);
+  return path.join(ccrcHome(), '.ccrc', `term-pane-${paneId}.pid`);
 }
 
-const cfg = readConfig(os.homedir());
+const cfg = readConfig(ccrcHome());
 if (!cfg) {
   say('Chưa cấu hình — chạy ./setup-notify.sh trước.');
   process.exit(1);
@@ -203,7 +218,57 @@ function processCwd(pid) {
 // string, so an argument containing whitespace is indistinguishable from two
 // arguments. The daemon's own path contains none, and every mis-split lands
 // on "not ours" (a refusal), never on a wrong kill.
+// Bản Windows của cùng câu hỏi. `ps` và `lsof` không tồn tại ở đó — bỏ trống
+// thì `execFileSync` ném, `isOurDaemon` trả false cho MỌI pid, và `off` sẽ
+// luôn nói "vốn đã tắt" rồi xoá file pid trong khi daemon vẫn chạy và vẫn phục
+// vụ một shell trên tailnet: đúng cái hướng hỏng tệ nhất mà vòng 3 bên trên đã
+// mô tả. `Win32_Process` là chỗ Windows cất dòng lệnh của một tiến trình.
+//
+// `-EncodedCommand` (Base64 của UTF-16LE) chứ không phải `-Command` với chuỗi
+// trần: cùng lý do đã ghi ở src/win-launch.js — script tới PowerShell nguyên
+// vẹn, không phụ thuộc lớp shell nào ở giữa đã nuốt mất dấu nháy nào.
+// `-NoProfile` để một profile của người dùng không in thêm gì vào stdout.
+//
+// Hạn riêng, dài hơn PROBE_TIMEOUT_MS: `ps` trả lời trong vài mili giây, còn
+// đây là khởi động cả một tiến trình PowerShell — đo được ~200ms trên máy thử,
+// nhưng một máy vừa bật thì lâu hơn nhiều. Vẫn phải CÓ hạn, vì lý do y hệt:
+// một cú treo làm người dùng mất luôn đường tắt daemon.
+const PROBE_TIMEOUT_WIN_MS = 15_000;
+
+function isOurDaemonWindows(pid) {
+  const script = 'Get-CimInstance -ClassName Win32_Process -Filter '
+    + `"ProcessId=${Number(pid)}" | Select-Object ExecutablePath,CommandLine`
+    + ' | ConvertTo-Json -Compress';
+  let out;
+  try {
+    out = execFileSync('powershell.exe',
+      ['-NoProfile', '-NonInteractive', '-EncodedCommand',
+        Buffer.from(script, 'utf16le').toString('base64')],
+      { encoding: 'utf8', timeout: PROBE_TIMEOUT_WIN_MS, stdio: ['ignore', 'pipe', 'pipe'] });
+  } catch {
+    // Kể cả quá hạn: không đọc được dòng lệnh nghĩa là không biết pid này của
+    // ai, nên nó không phải của ta. Fail closed, y như bản macOS.
+    return false;
+  }
+  let j;
+  try {
+    j = JSON.parse(out);
+  } catch {
+    // Pid không còn thì Get-CimInstance in ra RỖNG, và `JSON.parse('')` ném.
+    return false;
+  }
+  // Một mảng nghĩa là bộ lọc khớp nhiều tiến trình — không thể xảy ra với
+  // ProcessId, nên nếu xảy ra thì ta đang hiểu sai thứ mình đọc: từ chối.
+  if (!j || typeof j !== 'object' || Array.isArray(j)) return false;
+  return laDaemonWindows({
+    executablePath: j.ExecutablePath,
+    commandLine: j.CommandLine,
+    daemonPath: DAEMON_REAL,
+  });
+}
+
 function isOurDaemon(pid) {
+  if (LA_WINDOWS) return isOurDaemonWindows(pid);
   let cmd;
   try {
     cmd = execFileSync('ps', ['-ww', '-p', String(pid), '-o', 'command='],
@@ -356,16 +421,66 @@ function waitForDaemonStart(child) {
   });
 }
 
+// Ai là "phiên này", trên Windows.
+//
+// Trên macOS câu trả lời là `$TMUX_PANE`. Ở đây nó là phiên ConPTY mà `ccrc`
+// (bin/ccrc-win.js) đã mở: nó đặt CCRC_HOST_SESSION_ID lúc dựng host, host
+// truyền cả môi trường ấy vào ConPTY, nên Claude Code — và cái CLI này, chạy
+// bên trong Claude Code — nhìn thấy nó.
+//
+// CHÚ Ý hai chữ "sessionId" khác nhau trong file này: cái trả về ở đây là id
+// phiên CONPTY (thứ daemon dùng để biết nối vào host nào, đi qua
+// CCRC_TERM_PANE). `CCRC_TERM_SESSION_ID` bên dưới là id phiên REMOTE mà hub
+// biết, vẫn sinh ngẫu nhiên như trên mọi nền tảng. Trộn hai cái là hỏng câm.
+function phienHostHienTai() {
+  return process.env.CCRC_HOST_SESSION_ID || '';
+}
+
 async function cmdOn(rawName, explicitPane = null) {
-  const pane = explicitPane || currentPane();
-  if (!pane || !paneAlive(pane)) {
+  let pane;
+  if (LA_WINDOWS) {
     if (explicitPane) {
-      say(`✗ Pane ${explicitPane} không tồn tại hoặc đã đóng.`);
-    } else {
-      say('✗ Không chạy trong tmux — /remote cần một phiên tmux để nối vào.');
-      say('  Khởi động lại Claude Code bên trong tmux rồi thử lại.');
+      // `--pane` là khái niệm của tmux, và trên macOS nó có một người gọi thật
+      // (`deploy/ccrc`, bật remote hộ một pane khác). Ở đây không có pane, nên
+      // không có gì để ánh xạ nó sang. Nhận rồi âm thầm bật cho phiên HIỆN TẠI
+      // là đúng hạng lỗi `off --pane` đã gây ra một lần: lệnh báo thành công,
+      // chỉ là nó vừa làm chuyện khác với chuyện được bảo.
+      say('✗ `--pane` là khái niệm của tmux — trên Windows không có pane để chỉ.');
+      say('  `/remote on` luôn bật cho chính phiên `ccrc` bạn đang ngồi trong.');
+      process.exit(1);
     }
-    process.exit(1);
+    pane = phienHostHienTai();
+    // KHÔNG dùng `paneAlive()`: nó hỏi tmux, và trên Windows trả false cho tất
+    // cả, nên mọi `/remote on` sẽ chết với một câu nói về tmux.
+    //
+    // `readHost()` chứng minh ĐÚNG MỘT điều: có một file hồ sơ đọc được cho id
+    // này. Nó KHÔNG hỏi pid trong hồ sơ còn sống không — `listHosts()` mới làm
+    // việc ấy, và nó dọn luôn hồ sơ nào đã chết. Nên phép kiểm ở đây là "có ai
+    // đó từng mở phiên này", không phải "phiên này đang chạy".
+    //
+    // Hậu quả, ghi ra để không ai tưởng là bug: một hồ sơ mồ côi (host bị
+    // TerminateProcess nên `stop()` không chạy, và chưa có lệnh `ccrc` nào
+    // chạy lại để quét dọn) sẽ cho `on` đi tiếp, spawn daemon, rồi daemon tự
+    // chết ở `paneChung.alive()` với câu "Pane <id> không tồn tại." — mơ hồ hơn
+    // hẳn câu từ chối ngay tại đây. Chấp nhận có chủ ý: hướng ngược lại — đòi
+    // pid còn sống — làm `on` từ chối trong một cửa sổ đua mà host còn sống
+    // thật, và đó mới là hỏng nặng.
+    if (!pane || !readHost(pane, { home: ccrcHome() })) {
+      say('✗ Không ở trong một phiên `ccrc` — /remote cần một phiên do `ccrc` mở.');
+      say('  Chạy `ccrc` trước, rồi gõ lại lệnh này bên trong nó.');
+      process.exit(1);
+    }
+  } else {
+    pane = explicitPane || currentPane();
+    if (!pane || !paneAlive(pane)) {
+      if (explicitPane) {
+        say(`✗ Pane ${explicitPane} không tồn tại hoặc đã đóng.`);
+      } else {
+        say('✗ Không chạy trong tmux — /remote cần một phiên tmux để nối vào.');
+        say('  Khởi động lại Claude Code bên trong tmux rồi thử lại.');
+      }
+      process.exit(1);
+    }
   }
   const pidfile = pidFilePath(pane);
   if (daemonInfo(pane)) { say('✓ Remote đã bật sẵn cho phiên này'); return; }
@@ -687,17 +802,158 @@ async function cmdOff() {
   // no pane to key off, so there is nothing safe to do but say so; a pane
   // that is merely no longer alive is not treated the same way (below), an
   // unset TMUX_PANE means "we cannot even name a candidate file".
-  const pane = currentPane();
-  if (!pane) {
-    say('✗ Không chạy trong tmux — không biết phiên nào để tắt.');
-    say('  Dùng `/remote` (không tham số) để xem mọi phiên đang mở.');
+  let pane;
+  // Bộ phân nhánh ở cuối file chỉ đọc `--pane` khi lệnh là `on`; với `off` thì
+  // `process.argv.slice(3)` bị bỏ qua SẠCH. Hậu quả không phải lý thuyết:
+  // `/remote off --pane %9` in "✓ ĐÃ TẮT" sau khi tắt một phiên KHÁC — phiên
+  // hiện tại — và đã tắt nhầm phiên của người dùng một lần.
+  //
+  // `off` không nhận tham số nào cả, nên bất cứ thứ gì đứng sau nó đều là một
+  // yêu cầu ta không hiểu. Nói ra, và không làm gì hết.
+  //
+  // ÁP CHO CẢ HAI NỀN TẢNG, và đây LÀ một thay đổi hành vi trên macOS — nói
+  // thẳng ra chứ không giấu trong một nhánh. Nó chỉ có thể ảnh hưởng tới một
+  // lệnh vốn đã sai: `off` trần không đổi gì, còn `off <bất cứ gì>` trước đây
+  // âm thầm tắt nhầm phiên. Đã kiểm không có người gọi nội bộ nào truyền cờ cho
+  // `off` (deploy/ccrc không gọi; deploy/commands/remote.md chuyển $ARGUMENTS
+  // của chính người dùng).
+  const thua = process.argv.slice(3);
+  if (thua.length > 0) {
+    say(`✗ \`off\` không nhận tham số nào — nhận được: ${thua.join(' ')}`);
+    say('  Nó luôn tắt đúng phiên bạn đang ngồi trong, không tắt hộ phiên khác.');
+    say('  Xem mọi phiên đang mở: `/remote` (không tham số).');
     process.exit(1);
+  }
+
+  if (LA_WINDOWS) {
+    pane = phienHostHienTai();
+    if (!pane) {
+      say('✗ Không ở trong một phiên `ccrc` — không biết phiên nào để tắt.');
+      say('  Dùng `/remote` (không tham số) để xem mọi phiên đang mở.');
+      process.exit(1);
+    }
+    // KHÔNG hỏi sổ host xem phiên còn sống không, khác hẳn `on`. Host chết mà
+    // daemon còn sống là đúng lúc người ta cần tắt nó nhất; đòi hồ sơ ở đây là
+    // khoá mất đường tắt. Cùng lý luận với macOS: một pane đã đóng không bị đối
+    // xử như một $TMUX_PANE trống.
+  } else {
+    pane = currentPane();
+    if (!pane) {
+      say('✗ Không chạy trong tmux — không biết phiên nào để tắt.');
+      say('  Dùng `/remote` (không tham số) để xem mọi phiên đang mở.');
+      process.exit(1);
+    }
   }
   const info = daemonInfo(pane);
   if (!info) { say('✓ Remote vốn đã tắt'); return; }
-  try { process.kill(info.pid, 'SIGTERM'); } catch { /* already gone */ }
-  try { fs.unlinkSync(info.file); } catch { /* nothing to remove */ }
+  const daDung = await dungDaemon(info, pane);
+  // CHỈ nhánh Windows đọc giá trị trả về, và đó là cố ý: trên macOS `false`
+  // nghĩa là `kill` ném — tức là daemon vừa TỰ thoát, một kết cục đúng — nên
+  // dựng một câu than ở đó sẽ là đổi hành vi của một nền tảng đang chạy tốt.
+  // Trên Windows `false` mang nghĩa hẹp hơn hẳn: daemon VẪN CÒN SỐNG sau cả
+  // lưới cuối. In "✓ ĐÃ TẮT" cho ca ấy đúng là hạng lỗi mà `off --pane` đã gây
+  // ra một lần — lệnh báo thành công trong khi nó không làm được việc.
+  if (LA_WINDOWS && !daDung) {
+    say(`✗ KHÔNG dừng được daemon (pid ${info.pid}) — nó vẫn đang chạy.`);
+    say(`  Dừng bằng tay: taskkill /PID ${info.pid} /F /T`);
+    say('  File pid được giữ lại để lần sau còn tìm thấy nó.');
+    process.exitCode = 1;
+    return;
+  }
   say('✓ Remote ĐÃ TẮT');
+}
+
+// Trần thời gian `off` cho daemon Windows tự dừng tử tế trước khi rơi về lưới
+// cuối. Đo được trên macOS — cùng hàm `shutdown()`, cùng công việc — là 113ms
+// từ lúc gõ lệnh tới lúc trình duyệt nhận mã 4001, nên 3 giây là rộng rãi cho
+// một máy đang bận, và vẫn là một con số người dùng chịu được khi cơ chế cờ
+// hỏng hẳn. Đè được CHỈ để bộ test không phải ngồi chờ đủ ba giây.
+const CHO_DUNG_MS = parsePositiveMs(process.env.CCRC_TERM_STOP_WAIT_MS, 3000);
+const NHIP_CHO_DUNG_MS = 50;
+// Sau lưới cuối, chờ bấy nhiêu nữa để nói được "nó chết chưa" cho ĐÚNG.
+const CHO_CHET_MS = 1000;
+
+const ngu = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Cùng luật với src/host-registry.js và bin/ccrc-win.js: chỉ ESRCH mới là bằng
+// chứng đã chết, EPERM nghĩa là tiến trình CÓ THẬT nhưng của người khác.
+function conSong(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return Boolean(e && e.code === 'EPERM');
+  }
+}
+
+// DỪNG một daemon mà `daemonInfo()` đã xác thực. Trả `true` khi thật sự có cái
+// để dừng.
+//
+// MỘT hàm cho CẢ `off` LẪN `off-all`, và đó là điểm chính. Hai chỗ ấy trước đây
+// mỗi chỗ tự gọi `process.kill(..., 'SIGTERM')` rồi tự xoá file pid — cùng ba
+// dòng, chép hai lần. Dự án này đã ba lần vá đúng những chỗ được chỉ mà bỏ sót
+// cái hàm dùng chung; ở đây hậu quả của việc bỏ sót là `off` dừng tử tế còn
+// lệnh gỡ cài đặt thì không, và không ai nhận ra vì cả hai đều in ra "đã dừng".
+async function dungDaemon(info, paneId) {
+  if (!LA_WINDOWS) {
+    // macOS/Linux: y NGUYÊN đường cũ, không thêm một bước nào. SIGTERM ở đây là
+    // tín hiệu thật, handler trong ccrc-term.js chạy, `shutdown()` làm nốt.
+    let coDeDung = true;
+    try { process.kill(info.pid, 'SIGTERM'); } catch { coDeDung = false; }
+    try { fs.unlinkSync(info.file); } catch { /* nothing to remove */ }
+    return coDeDung;
+  }
+
+  // Windows: `process.kill(..., 'SIGTERM')` là `TerminateProcess` — không
+  // handler nào chạy. Nên xin tử tế trước, bằng một file cờ mà daemon đang
+  // rình (src/win-stop-file.js), rồi mới tới lưới cuối.
+  const co = duongDanFileDung(paneId, ccrcHome());
+  if (co) {
+    try {
+      fs.writeFileSync(co, String(Date.now()));
+      const han = Date.now() + CHO_DUNG_MS;
+      while (Date.now() < han && conSong(info.pid)) await ngu(NHIP_CHO_DUNG_MS);
+    } catch { /* ghi không được thì rơi thẳng xuống lưới cuối */ }
+  }
+
+  // LƯỚI CUỐI, và nó phải ở lại: cơ chế cờ hỏng — daemon treo, thư mục không
+  // ghi được, một bản daemon cũ chưa biết rình cờ — thì `/remote off` vẫn phải
+  // dừng được daemon. Bản vá này thêm một đường dừng tử tế, nó KHÔNG được phép
+  // biến việc dừng thành thứ dễ vỡ hơn trước.
+  //
+  // Hỏi lại danh tính ngay trước khi bắn, chứ không tin kết quả `daemonInfo()`
+  // đọc vài giây trước: giữa hai thời điểm ấy daemon đã có thể tự thoát tử tế
+  // và hệ điều hành cấp lại đúng con số pid đó cho một tiến trình vô can. Trên
+  // Windows một phát bắn nhầm là `TerminateProcess`, không có cửa cho nạn nhân
+  // dọn dẹp.
+  if (conSong(info.pid) && isOurDaemon(info.pid)) {
+    try { process.kill(info.pid, 'SIGTERM'); } catch { /* vừa tự thoát */ }
+  }
+  if (co) { try { fs.unlinkSync(co); } catch { /* daemon không xoá hộ, nhưng có thể chưa ghi được */ } }
+
+  // `TerminateProcess` trả về ngay, tiến trình chết sau đó một nhịp — nên hỏi
+  // "còn sống không?" ngay lập tức là hỏi quá sớm và sẽ trả lời sai.
+  const hanChet = Date.now() + CHO_CHET_MS;
+  while (Date.now() < hanChet && conSong(info.pid)) await ngu(NHIP_CHO_DUNG_MS);
+
+  // Phán quyết cuối phải dùng ĐÚNG phép kiểm của phát bắn: `conSong` cộng
+  // `isOurDaemon`. Chỉ `conSong` thôi thì một pid vừa được hệ điều hành cấp lại
+  // cho tiến trình vô can trong đúng giây ấy sẽ bị đọc thành "daemon chưa
+  // chết" — lệnh báo thất bại dù đã thành công, và giữ lại một file pid trỏ vào
+  // người ngoài cuộc.
+  //
+  // Chỉ hỏi danh tính Ở ĐÂY, không hỏi trong vòng lặp trên: trên Windows
+  // `isOurDaemon` spawn PowerShell (~200ms), gọi mỗi nhịp là biến một phép chờ
+  // rẻ thành một phép chờ đắt. Vòng lặp cần rẻ; phán quyết cần đúng.
+  if (conSong(info.pid) && isOurDaemon(info.pid)) {
+    // KHÔNG xoá file pid. Nó là thứ DUY NHẤT ghi lại daemon này còn tồn tại;
+    // xoá nó đi là biến một daemon chưa dừng được thành một daemon không ai
+    // tìm thấy để mà dừng — vẫn phục vụ shell trên tailnet, và vô hình với cả
+    // `off` lẫn `off-all` lần sau.
+    return false;
+  }
+  try { fs.unlinkSync(info.file); } catch { /* nothing to remove */ }
+  return true;
 }
 
 async function cmdStatus() {
@@ -705,10 +961,17 @@ async function cmdStatus() {
   // from the hub listing below because the hub can be unreachable, slow, or
   // simply not yet know about a daemon that only just started — the one
   // thing this process can always answer for itself is its own pane.
-  const pane = currentPane();
+  // Windows nhận diện phiên bằng CCRC_HOST_SESSION_ID, đúng thứ `on` và `off`
+  // đã dùng. Trước đây chỗ này gọi thẳng currentPane() — một khái niệm của
+  // tmux — nên trên Windows nó LUÔN trả "không xác định" kể cả khi remote đang
+  // bật, và còn khuyên người dùng đi mở tmux, thứ không tồn tại ở đó.
+  const pane = LA_WINDOWS ? phienHostHienTai() : currentPane();
   const local = pane ? daemonInfo(pane) : null;
   if (pane) {
     say(`Remote (phiên này): ${local ? 'ĐANG BẬT' : 'ĐANG TẮT'}`);
+  } else if (LA_WINDOWS) {
+    say('Remote (phiên này): không xác định — không ở trong một phiên `ccrc`.');
+    say('  Mở bằng `ccrc` thay cho `claude` thì `/remote` mới dùng được.');
   } else {
     say('Remote (phiên này): không xác định — không chạy trong tmux.');
   }
@@ -734,7 +997,9 @@ async function cmdStatus() {
   const body = await res.json();
   const sessions = Array.isArray(body.sessions) ? body.sessions : [];
   if (sessions.length === 0) {
-    say('Phiên: chưa mở phiên nào — gõ `/remote on` trong tmux để mở.');
+    say(LA_WINDOWS
+      ? 'Phiên: chưa mở phiên nào — gõ `/remote on` trong một phiên `ccrc` để mở.'
+      : 'Phiên: chưa mở phiên nào — gõ `/remote on` trong tmux để mở.');
     return;
   }
   say(`Phiên đang mở (${sessions.length}):`);
@@ -757,7 +1022,14 @@ async function cmdStatus() {
 // Không tự dò pid: daemonInfo() đã kiểm pid còn sống VÀ isOurDaemon() để một
 // số pid được cấp lại cho tiến trình khác không bao giờ bị bắn nhầm.
 async function cmdOffAll() {
-  const dir = path.join(os.homedir(), '.ccrc');
+  // `ccrcHome()`, cùng nhà với `pidFilePath()` ở đầu file. Hai chỗ này KHÔNG
+  // được phép trôi khỏi nhau: cái kia ghi file pid, cái này đọc rồi SIGTERM
+  // những gì nó tìm thấy. Lệch nhau nghĩa là một lượt chạy đã cô lập bằng
+  // CCRC_HOME vẫn đọc file pid THẬT của người dùng và giết phiên remote thật
+  // của họ. Chuyện ấy trước đây không xảy ra được trên Windows chỉ vì
+  // `isOurDaemon` ở đó hỏng — mọi pid đều "không phải của ta" — và bản này vừa
+  // sửa đúng chỗ hỏng ấy.
+  const dir = path.join(ccrcHome(), '.ccrc');
   let files;
   try {
     files = fs.readdirSync(dir).filter((f) => f.startsWith('term-pane-') && f.endsWith('.pid'));
@@ -772,8 +1044,11 @@ async function cmdOffAll() {
     const pane = f.slice('term-pane-'.length, -'.pid'.length);
     const info = daemonInfo(pane);
     if (!info) continue;
-    try { process.kill(info.pid, 'SIGTERM'); stopped += 1; } catch { /* vừa tự thoát */ }
-    try { fs.unlinkSync(info.file); } catch { /* nothing to remove */ }
+    // Cùng một hàm với `off` — xem `dungDaemon`. Trên Windows nghĩa là lệnh gỡ
+    // cài đặt cũng dừng tử tế: hub được báo `unregister` và trình duyệt nào
+    // đang mở nhận mã 4001, thay vì bị bỏ lại quay vòng nối lại vào một máy vừa
+    // bị gỡ sạch.
+    if (await dungDaemon(info, pane)) stopped += 1;
   }
   say(stopped ? `✓ Đã dừng ${stopped} phiên remote` : '✓ Không có phiên remote nào đang chạy');
 }

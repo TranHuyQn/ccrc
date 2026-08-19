@@ -94,7 +94,13 @@ export async function startDaemon(extraEnv = {}, opts = {}) {
   const pinnedPort = opts.autoPort ? undefined : await freePort();
   const proc = spawn('node', [DAEMON], {
     env: {
-      ...process.env, HOME: home,
+      // CCRC_HOME BÊN CẠNH HOME, không thay HOME. Trải `...process.env` vào
+      // đây kế thừa luôn một CCRC_HOME của môi trường ngoài, và từ khi daemon
+      // đọc cấu hình bằng `ccrcHome()` thì cái biến kế thừa ấy THẮNG HOME:
+      // daemon chạy dưới nhà của người chạy test chứ không dưới nhà giả. Đo
+      // được: xuất CCRC_HOME rồi chạy bộ term → 8/11 nhóm trong
+      // daemon.test.js đỏ. Xem test/home-boundary.test.js.
+      ...process.env, HOME: home, CCRC_HOME: home,
       ...(pinnedPort !== undefined ? { CCRC_TERM_PORT: String(pinnedPort) } : {}),
       CCRC_TERM_PANE: pane,
       CCRC_TERM_SESSION_ID: sessionId,

@@ -1,4 +1,4 @@
-import test from 'node:test';
+import test, { coTmuxDungDuoc } from './can-tmux.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -12,7 +12,7 @@ import {
   makeRunId, isReclaimableMarker,
 } from '../src/tmux.js';
 
-const T = tmuxBin();
+const T = coTmuxDungDuoc ? tmuxBin() : '';
 const tmux = (...args) => execFileSync(T, args, { encoding: 'utf8' }).trim();
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 

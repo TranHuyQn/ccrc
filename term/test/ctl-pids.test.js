@@ -19,7 +19,7 @@
 //
 // Test dưới đây không cần tải để chứng minh điều đó: nó dựng thẳng hình dạng
 // gây lỗi — một tiến trình tmux con SỐNG LÂU mà không phải ctl.
-import { test } from 'node:test';
+import { test } from './can-tmux.mjs';
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
 import { tmuxBin } from '../src/tmux.js';

@@ -87,7 +87,9 @@ function homeTam(hubUrl) {
 
 function chayCLI(home, args) {
   return new Promise((resolve) => {
-    const p = spawn('node', [CLI, ...args], { env: { ...process.env, HOME: home }, stdio: ['ignore', 'pipe', 'pipe'] });
+    // CCRC_HOME bên cạnh HOME — xem ghi chú cùng nội dung ở remote-cli.test.js.
+    const p = spawn('node', [CLI, ...args],
+      { env: { ...process.env, HOME: home, CCRC_HOME: home }, stdio: ['ignore', 'pipe', 'pipe'] });
     let out = '';
     p.stdout.on('data', (c) => { out += c; });
     p.stderr.on('data', (c) => { out += c; });

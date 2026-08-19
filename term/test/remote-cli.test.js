@@ -1,4 +1,4 @@
-import test from 'node:test';
+import test from './can-tmux.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import http from 'node:http';
@@ -33,10 +33,52 @@ function stubHub(handler) {
   });
 }
 
+// CCRC_HOME ĐI KÈM HOME, không thay HOME.
+//
+// `...process.env` kế thừa luôn một CCRC_HOME của môi trường ngoài, và từ khi
+// `readConfig` mặc định về `ccrcHome()` thì biến kế thừa ấy THẮNG HOME giả mà
+// bài test vừa dựng — CLI đọc cấu hình ở nhà của người chạy test. Đo được:
+// xuất CCRC_HOME rồi chạy bộ term → cả 31 bài trong file này đỏ, rồi lượt chạy
+// treo. Mỗi lời gọi ở đây đều đưa HOME, nên suy CCRC_HOME ra từ chính HOME ấy
+// là đúng một chỗ và không thể trôi khỏi nhau; caller nào tự đặt CCRC_HOME thì
+// vẫn thắng. HOME ở lại vì tmux, shell và mọi thứ khác trong pane vẫn đọc nó.
 function run(args, env, opts = {}) {
-  return new Promise((r) => execFile('node', [CLI, ...args], { env: { ...process.env, ...env }, ...opts },
+  const goi = { ...process.env, ...env };
+  // HOME là BẮT BUỘC, không có ngoại lệ nào — kể cả khi caller đã tự đưa
+  // CCRC_HOME. Đây là chỗ bản trước còn hở, và hở đúng vào ca mà phép kiểm
+  // `in` sinh ra để phục vụ: `run(['off'], { CCRC_HOME: '' })` là một caller
+  // cố tình thử nhánh "coi như chưa đặt" của ccrcHome() — nó đi lọt cửa, thừa
+  // kế HOME THẬT từ `...process.env`, rồi ccrcHome() coi `''` là chưa đặt và
+  // rơi về os.homedir(). Kết quả: CLI đọc VÀ GHI hồ sơ thật, tái tạo đúng sự
+  // cố mà cả đợt việc này sinh ra để đóng, ngay bên trong cái cửa dựng lên để
+  // chặn nó.
+  //
+  // Tách đôi cho rõ: HOME luôn phải là một nhà giả, còn CCRC_HOME thì tôn
+  // trọng nguyên văn nếu caller có nói — `'CCRC_HOME' in env` chứ không
+  // `env.CCRC_HOME`, vì một phép kiểm falsy sẽ lặng lẽ thay mất cái `''` mà
+  // bài test muốn đo.
+  if (!env || typeof env.HOME !== 'string' || env.HOME === '') {
+    throw new Error('run() cần HOME trỏ một nhà giả — không thì CLI đọc hồ sơ thật.');
+  }
+  if (!('CCRC_HOME' in env)) goi.CCRC_HOME = env.HOME;
+  return new Promise((r) => execFile('node', [CLI, ...args], { env: goi, ...opts },
     (err, stdout, stderr) => r({ code: err ? (err.code ?? 1) : 0, stdout, stderr })));
 }
+
+// Canh chính cái cửa ở trên. Không có bài này thì lỗ hở kia im lặng: nó không
+// làm bài nào đỏ, nó chỉ làm CLI ghi vào hồ sơ thật của người chạy test.
+test('run() từ chối một lời gọi không có nhà giả — kể cả khi đã đưa CCRC_HOME', () => {
+  // `assert.throws` chứ không `assert.rejects`: cửa này chốt ĐỒNG BỘ, trước cả
+  // khi có promise nào. Đó là chỗ đúng để chốt — người viết test sai thấy lỗi
+  // ngay tại dòng gọi, không phải trong một promise bị bỏ quên.
+  //
+  // Ca đã hở: CCRC_HOME rỗng nghĩa là "coi như chưa đặt", nên nếu HOME không
+  // được đòi thì CLI rơi thẳng về os.homedir() — hồ sơ THẬT.
+  assert.throws(() => run(['off'], { CCRC_HOME: '' }), /nhà giả/);
+  assert.throws(() => run(['off'], { CCRC_HOME: '/tmp/co-that' }), /nhà giả/);
+  assert.throws(() => run(['off'], {}), /nhà giả/);
+  assert.throws(() => run(['off'], { HOME: '' }), /nhà giả/);
+});
 
 function isAlive(pid) {
   try { process.kill(pid, 0); return true; } catch { return false; }
@@ -130,9 +172,22 @@ const BOUNDED_MS = 8000;
 
 // Env for a real daemon that never touches Tailscale or a real hub — the
 // same pattern daemon.test.js uses for its fakes.
-function daemonEnv(pane, port) {
+//
+// `home` KHÔNG có giá trị mặc định, và đó là chủ ý. Hàm này từng không nhận nhà
+// nào cả: nó trải `...process.env` rồi thôi, nên ba con daemon THẬT nó dựng lên
+// chạy dưới nhà thật của người chạy test và để lại
+// `~/.ccrc/sessions/s-test.json` trong đó. Vòng sửa trước đã vá `run()` trong
+// chính file này mà bỏ sót đúng cái helper không mang tên `run`. Bắt buộc phải
+// truyền thì không ai bỏ sót được nữa — quên là lỗi cú pháp lúc gọi, không phải
+// một file lặng lẽ xuất hiện trong hồ sơ thật.
+function daemonEnv(pane, port, home) {
+  if (typeof home !== 'string' || home === '') {
+    throw new Error('daemonEnv cần một HOME giả — daemon này ghi sổ tra phiên vào đó.');
+  }
   return {
     ...process.env,
+    HOME: home,
+    CCRC_HOME: home,
     CCRC_TERM_PANE: pane,
     CCRC_TERM_SESSION_ID: 's-test',
     CCRC_TERM_PORT: String(port),
@@ -652,7 +707,7 @@ test('daemon thật khởi động bằng đường dẫn TƯƠNG ĐỐI vẫn �
   // "ccrc-term.js" is not the absolute DAEMON path as a bare string.
   const proc = spawn(process.execPath, ['ccrc-term.js'], {
     cwd: path.dirname(DAEMON_PATH),
-    env: daemonEnv(tp.pane, 8797),
+    env: daemonEnv(tp.pane, 8797, home),
     stdio: 'ignore',
   });
   try {
@@ -799,7 +854,7 @@ test('lsof treo: off vẫn trả về trong thời gian có hạn và fail close
   const fakeDir = hangingBin('lsof');
   const proc = spawn(process.execPath, ['ccrc-term.js'], {
     cwd: path.dirname(DAEMON_PATH),
-    env: daemonEnv(tp.pane, 8795),
+    env: daemonEnv(tp.pane, 8795, home),
     stdio: 'ignore',
   });
   try {
@@ -844,7 +899,7 @@ test('daemon thật khởi động kèm CỜ trước đường dẫn script v�
   // DAEMON (the round-2 fix) would refuse to recognise this — the flag sits
   // at argv[1], the daemon path at argv[2].
   const proc = spawn(process.execPath, ['--enable-source-maps', DAEMON_PATH], {
-    env: daemonEnv(tp.pane, 8796),
+    env: daemonEnv(tp.pane, 8796, home),
     stdio: 'ignore',
   });
   try {

@@ -1,4 +1,4 @@
-import test from 'node:test';
+import test from './can-tmux.mjs';
 import assert from 'node:assert/strict';
 import { startDaemon } from './helpers.mjs';
 

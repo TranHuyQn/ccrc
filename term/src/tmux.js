@@ -26,7 +26,14 @@ export function tmuxBin() {
   if (cached) return cached;
   if (process.env.CCRC_TMUX_BIN) return (cached = process.env.CCRC_TMUX_BIN);
   try {
-    const found = execFileSync('command', ['-v', 'tmux'], { encoding: 'utf8', shell: true }).trim();
+    // stderr bị nuốt: đây là một phép DÒ, và thất bại của nó là một câu trả
+    // lời hợp lệ chứ không phải sự cố. Trên Windows `command` không tồn tại,
+    // nên mỗi lần hỏi "máy này có tmux không" lại in ra
+    // `'command' is not recognized...` — đo được, và nó làm bẩn mọi lượt chạy
+    // test trên Windows. macOS không đổi gì: ở đó lệnh này vốn im lặng.
+    const found = execFileSync('command', ['-v', 'tmux'], {
+      encoding: 'utf8', shell: true, stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
     if (found) return (cached = found);
   } catch { /* fall through to the fixed list */ }
   for (const p of CANDIDATES) if (fs.existsSync(p)) return (cached = p);
@@ -519,7 +526,7 @@ function sessionsWithPane(paneId) {
 
 // True if a session by this EXACT name currently exists. Used to tell "the
 // GROUPED session disappeared" apart from "the underlying pane died" when a
-// control-mode client exits unexpectedly — see ccrc-term.js's onCtlGone.
+// control-mode client exits unexpectedly — see bao() in src/pane-source.js.
 export function hasSession(name) {
   return findSession(name) !== null;
 }

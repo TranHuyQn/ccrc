@@ -49,3 +49,83 @@ jobs:
           ps -eo pid,ppid,command | grep -c "[t]mux" || true
           echo "== pty đang dùng =="
           ps -eo tty | grep -c "^pts" || true
+
+  # --- Windows ---------------------------------------------------------------
+  #
+  # Nửa Windows của dự án (ConPTY, named pipe, WMI) không có gì trên Linux kiểm
+  # hộ được, và nó đã hỏng theo những cách CHỈ hiện ra trên máy thật: `npm` phân
+  # giải sang `npm.ps1` rồi bị ExecutionPolicy chặn giữa chừng bước cài; Tailscale
+  # không nằm ở đường dẫn Unix nào nên `/remote on` báo "không tìm thấy" dù nó
+  # đang chạy; `Win32_Process.Create` cấp cho tiến trình con một cửa sổ console.
+  # Không có job này thì mọi lần sửa đều phải nhờ một người có máy Windows ngồi
+  # thử tay.
+  test-windows:
+    runs-on: windows-latest
+    # Đo trên máy Windows thật: workspace `term` chạy hết 25 giây. Cho dư gấp
+    # nhiều lần để runner chậm không bị báo hỏng, nhưng vẫn có trần — một bài
+    # treo thật phải dừng chứ không đốt 6 tiếng mặc định của GitHub.
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # KHÔNG cài tmux, và đó chính là điểm của job này. Các file phụ thuộc tmux
+      # tự skip qua `term/test/can-tmux.mjs`, thứ hỏi NĂNG LỰC (`coTmux()`) chứ
+      # không hỏi nền tảng — nên một runner Linux thiếu tmux cũng được xử lý
+      # đúng như ở đây, thay vì đỏ theo một cách chẳng liên quan gì tới code.
+      - run: npm ci
+
+      # Chạy bộ test MỘT LẦN rồi đọc lại con số từ chính lượt chạy ấy. Một bước
+      # đếm riêng gọi `npm test` lần nữa là chạy đôi toàn bộ suite chỉ để lấy
+      # một số — và tệ hơn, nó đếm một lượt chạy KHÁC với lượt vừa quyết định
+      # xanh hay đỏ.
+      #
+      # Sàn ở đây chống "xanh vì không nhìn". Ba phép rào năng lực (tmux, chế độ
+      # POSIX, shebang) skip khá nhiều bài trên Windows — đo được trên máy thật:
+      # 449 pass / 220 skip cho workspace `term`. Nếu một phép rào hỏng theo
+      # hướng bắn quá rộng, job này vẫn XANH trong khi gần như không kiểm gì, và
+      # không ai nhận ra. Con số sàn biến chuyện đó thành lỗi đỏ.
+      #
+      # Sàn đặt thấp hơn số đo thật khá nhiều: nó để bắt sự SỤP ĐỔ, không phải
+      # để theo dõi từng bài mới thêm vào.
+      - name: npm test (kèm sàn chống skip quá rộng)
+        shell: pwsh
+        run: |
+          $ra = npm test 2>&1 | Tee-Object -Variable moiThu | Out-String
+          $ma = $LASTEXITCODE
+          Write-Host $ra
+          if ($ma -ne 0) { Write-Error "npm test đỏ (exit $ma)"; exit $ma }
+          $pass = 0
+          [regex]::Matches($ra, '(?m)^# pass (\d+)') | ForEach-Object { $pass += [int]$_.Groups[1].Value }
+          Write-Host "Windows chạy thật $pass bài (cộng cả ba workspace)"
+          # Sàn 700 lấy từ số ĐÃ ĐO trên máy Windows thật: 1153 bài, 872 pass,
+          # 281 skip, 0 đỏ, 53 giây. Đặt thấp hơn 872 khá nhiều để một đợt thêm
+          # rào hợp lệ không làm đỏ oan, nhưng đủ cao để bắt được sự sụp đổ —
+          # nếu một phép rào bắn quá rộng thì con số rơi xuống hàng trăm.
+          if ($pass -lt 700) {
+            Write-Error "Chỉ $pass bài chạy thật (sàn 700; đo thật trên Windows là 872). Một phép rào năng lực đang skip quá rộng — CI xanh mà không kiểm gì."
+            exit 1
+          }
+
+      # Chỉ chạy khi đỏ. Hai thứ hay là nguyên nhân thật trên Windows, và cả hai
+      # đều không giống lỗi test: một host ConPTY sót lại từ bài trước, và một
+      # named pipe chưa đóng. Đo được trên máy thật: một host CỐ Ý sống sót thừa
+      # kế handle stdout, và nếu bài test không dọn nó thì tiến trình cha có thể
+      # chờ vĩnh viễn — treo 49 phút một lần trong lúc phát triển, và trông hệt
+      # như một bài test treo.
+      - name: Nếu đỏ, in ra tiến trình và pipe còn sót
+        if: failure()
+        shell: pwsh
+        run: |
+          Write-Host "== node.exe đang chạy =="
+          Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
+            ForEach-Object { "{0}  {1}" -f $_.ProcessId, $_.CommandLine }
+          Write-Host "== named pipe ccrc =="
+          [System.IO.Directory]::GetFiles("\\.\pipe\") | Where-Object { $_ -match 'ccrc' }
+          Write-Host "== conhost =="
+          (Get-Process conhost -ErrorAction SilentlyContinue).Count

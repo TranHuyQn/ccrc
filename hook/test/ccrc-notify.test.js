@@ -37,7 +37,7 @@ function stubServer() {
 // itself often run from inside tmux, and inheriting the runner's pane would
 // silently give every test a pane id it never asked for.
 function run(stdin, home, extraEnv = {}) {
-  const env = { ...process.env, HOME: home };
+  const env = { ...process.env, HOME: home, CCRC_HOME: home };
   delete env.TMUX;
   delete env.TMUX_PANE;
   return new Promise((resolve) => {

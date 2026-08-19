@@ -16,6 +16,36 @@ const CANDIDATES = [
   '/usr/bin/tailscale',
 ];
 
+// Windows đi đường riêng, KHÔNG thêm vào CANDIDATES ở trên.
+//
+// Vì sao tách hẳn: `where.exe` chỉ có trên Windows, và gọi nó trên macOS là
+// một lần spawn thất bại cho mỗi lần dò. Nhánh này chỉ chạy khi
+// `process.platform === 'win32'` nên đường macOS/Linux không đổi một chút nào
+// — vẫn đúng bốn đường dẫn ấy, vẫn đúng thứ tự ấy.
+//
+// Hỏi `where.exe` TRƯỚC rồi mới tới đường dẫn cố định: người dùng có thể cài
+// Tailscale bằng winget, Scoop, hoặc vào ổ khác, và PATH là chỗ duy nhất biết
+// điều đó. Đường dẫn cố định chỉ là lưới đỡ cho trường hợp Tailscale đã cài
+// nhưng chưa có trên PATH của tiến trình này — daemon được spawn từ Claude
+// Code nên PATH của nó không nhất thiết giống PATH trong PowerShell.
+const CANDIDATES_WIN = [
+  'C:\\Program Files\\Tailscale\\tailscale.exe',
+  'C:\\Program Files (x86)\\Tailscale\\tailscale.exe',
+];
+
+function timTrenWindows() {
+  try {
+    const ra = execFileSync('where.exe', ['tailscale'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const dong = ra.split(/\r?\n/).map((d) => d.trim()).find((d) => d.length > 0);
+    if (dong) return dong;
+  } catch { /* không có trên PATH — thử đường dẫn cố định bên dưới */ }
+  for (const p of CANDIDATES_WIN) if (fs.existsSync(p)) return p;
+  return null;
+}
+
 let cached = null;
 
 // Tailscale's own CGNAT block, 100.64.0.0/10 — every real Tailscale IPv4
@@ -44,6 +74,11 @@ const STATUS_TIMEOUT_MS = 2000;
 export function tailscaleBin() {
   if (cached) return cached;
   if (process.env.CCRC_TAILSCALE_BIN) return (cached = process.env.CCRC_TAILSCALE_BIN);
+  if (process.platform === 'win32') {
+    const tim = timTrenWindows();
+    if (tim) return (cached = tim);
+    throw new Error('Không tìm thấy Tailscale. Đặt CCRC_TAILSCALE_BIN trỏ tới nó.');
+  }
   for (const p of CANDIDATES) if (fs.existsSync(p)) return (cached = p);
   throw new Error('Không tìm thấy Tailscale. Đặt CCRC_TAILSCALE_BIN trỏ tới nó.');
 }

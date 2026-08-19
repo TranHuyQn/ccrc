@@ -17,7 +17,7 @@ function tmpHome(files = {}) {
 }
 
 function run(args, home) {
-  return new Promise((r) => execFile('node', [CLI, ...args], { env: { ...process.env, HOME: home }, timeout: 15000 },
+  return new Promise((r) => execFile('node', [CLI, ...args], { env: { ...process.env, HOME: home, CCRC_HOME: home }, timeout: 15000 },
     (err, stdout, stderr) => r({ code: err ? (err.code ?? 1) : 0, stdout, stderr })));
 }
 

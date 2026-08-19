@@ -1,4 +1,4 @@
-import test from 'node:test';
+import test from './can-tmux.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import http from 'node:http';
@@ -8,7 +8,7 @@ import path from 'node:path';
 import { execFileSync, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { WebSocket } from 'ws';
-import { tmuxBin, paneAlive, hasSession } from '../src/tmux.js';
+import { tmuxBin, paneAlive, hasSession, GROUP_MARKER_OPTION } from '../src/tmux.js';
 import { checkPrereqs } from '../src/tailscale.js';
 import {
   DAEMON, startDaemon, waitExit, childPids, waitCtlPids, EVENT_TIMEOUT_MS, sleep,
@@ -741,6 +741,60 @@ test('daemon tắt hẳn → gửi mã đóng RIÊNG, không phải mã rớt m�
   } finally { d.stop(); }
 });
 
+// Task 2 (pane-source.js) moved the grouped session's teardown OFF the
+// daemon and into the source's own attach()/conn.close(). shutdown()'s old
+// belt-and-suspenders — killing the group directly, synchronously, before
+// process.exit() — had to be rebuilt on top of that: it now closes every
+// live `conn` synchronously (see `liveConns` in ccrc-term.js) instead of
+// relying on each WebSocket's own 'close' event, which is not guaranteed to
+// fire before tellHub().finally(() => process.exit(0)) runs. This test is
+// what proves that guarantee still holds — SIGTERM a daemon with a LIVE
+// connection and confirm the tmux session is actually gone, not merely that
+// the right close code went out over the wire (the test above already
+// covers that half).
+test('daemon tắt hẳn (SIGTERM) → phiên nhóm bị dọn NGAY, không đợi round-trip WebSocket', async () => {
+  const d = await startDaemon();
+  const groupName = `${d.sess}-ccrc-web`;
+  try {
+    const c = await connect(d.url(await d.token()));
+    assert.equal(c.ok, true);
+
+    // Bằng chứng trực tiếp rằng phiên nhóm và ống ctl đã dựng xong — không
+    // phải chỉ HTTP upgrade xong (xem waitCtlPids ở test 'PANE CHẾT' phía
+    // trên để biết vì sao chỉ chờ connect() thôi là chưa đủ).
+    await waitCtlPids(d.proc);
+
+    // Đọc dấu CỦA CHÍNH phiên nhóm này TRƯỚC khi giết daemon. Lọc theo dấu
+    // này ở bước kiểm tra bên dưới, KHÔNG đếm tổng số phiên trên tmux server
+    // — `npm test` chạy nhiều file test cùng lúc trên MỘT server tmux dùng
+    // chung, nên đếm tổng là bài đỏ ngẫu nhiên đang chờ xảy ra.
+    const marker = execFileSync(tmuxBin(),
+      ['list-sessions', '-F', `#{${GROUP_MARKER_OPTION}}\t#{session_name}`], { encoding: 'utf8' })
+      .trim().split('\n')
+      .filter((l) => l.split('\t')[1] === groupName)
+      .map((l) => l.split('\t')[0])[0];
+    assert.ok(marker, 'phiên nhóm phải mang dấu của chính nó trước khi daemon bị giết');
+
+    // SIGTERM đi qua đúng đường shutdown() thật, khác với SIGKILL của d.stop().
+    process.kill(d.proc.pid, 'SIGTERM');
+
+    const conMangDau = () => {
+      let out;
+      try {
+        out = execFileSync(tmuxBin(), ['list-sessions', '-F', `#{${GROUP_MARKER_OPTION}}`], { encoding: 'utf8' });
+      } catch {
+        return 0; // không có tiến trình tmux server nào — chắc chắn không còn
+      }
+      return out.trim().split('\n').filter((l) => l === marker).length;
+    };
+    // Chờ ĐIỀU KIỆN có hạn chót, không phải một con số mili giây cố định.
+    const hetGio = Date.now() + EVENT_TIMEOUT_MS;
+    while (conMangDau() > 0 && Date.now() < hetGio) await sleep(100);
+    assert.equal(conMangDau(), 0,
+      'SIGTERM phải dọn phiên nhóm ĐỒNG BỘ trong shutdown(), không rò rỉ chờ round-trip WebSocket');
+  } finally { d.stop(); }
+});
+
 // --- Cuộn trong ứng dụng MÀN HÌNH PHỤ (hình dạng thật) --------------------
 //
 // The shape the first implementation was never tested against, and the reason
@@ -800,6 +854,7 @@ async function startMouseAppDaemon() {
     proc = spawn('node', [DAEMON], {
       env: {
         ...process.env, HOME: home,
+        CCRC_HOME: home,
         CCRC_TERM_PANE: pane,
         CCRC_TERM_SESSION_ID: 's-mouse',
         CCRC_TERM_PORT: String(port),
@@ -877,6 +932,7 @@ async function startEchoAppDaemon() {
     proc = spawn('node', [DAEMON], {
       env: {
         ...process.env, HOME: home,
+        CCRC_HOME: home,
         CCRC_TERM_PANE: pane, CCRC_TERM_SESSION_ID: 's-echo',
         CCRC_TERM_PORT: String(port), CCRC_TERM_BIND: '127.0.0.1',
         CCRC_TERM_NO_HUB: '1',
@@ -1186,7 +1242,7 @@ test('gửi ô soạn trong lúc đọc lịch sử → tự nhảy về hiện 
   } finally { d.stop(); }
 });
 
-// Daemon phục vụ nhiều client cùng lúc (xem groupClientCount, viewers). Hai
+// Daemon phục vụ nhiều client cùng lúc (xem liveConns, viewers). Hai
 // người cùng bấm Gửi mà dùng chung một tên buffer thì người này dán ra nội
 // dung của người kia, hoặc buffer bị xoá mất trước khi kịp dán.
 test('hai client cùng gửi: không ai nuốt tin nhắn của ai', async () => {
@@ -1740,6 +1796,7 @@ test('daemon bị SIGKILL rồi khởi động lại HAI lần: vẫn đúng M�
       env: {
         ...process.env,
         HOME: home,
+        CCRC_HOME: home,
         CCRC_TERM_PANE: pane,
         CCRC_TERM_SESSION_ID: 's-leak',
         CCRC_TERM_PORT: String(port),
@@ -1877,6 +1934,7 @@ test('phiên THẬT của người dùng tên đuôi -ccrc-web sống sót nguy�
       env: {
         ...process.env,
         HOME: home,
+        CCRC_HOME: home,
         CCRC_TERM_PANE: pane,
         CCRC_TERM_SESSION_ID: 's-nan',
         CCRC_TERM_PORT: String(port),
@@ -2021,6 +2079,7 @@ test('nhãn phiên gửi lên hub là id ngẫu nhiên — KHÔNG có tên thư 
     d = spawn('node', [DAEMON], {
       env: {
         ...process.env, HOME: home,
+        CCRC_HOME: home,
         CCRC_TERM_PANE: pane,
         CCRC_TERM_SESSION_ID: 's-label-hub',
         CCRC_TERM_PORT: String(port),
@@ -2100,6 +2159,7 @@ test('trạng thái ĐANG XEM tới hub ngay khi đổi, không phải chờ nh�
     d = spawn('node', [DAEMON], {
       env: {
         ...process.env, HOME: home,
+        CCRC_HOME: home,
         CCRC_TERM_PANE: pane,
         CCRC_TERM_SESSION_ID: 's-view',
         CCRC_TERM_PORT: String(port),
@@ -2191,6 +2251,7 @@ test('hai daemon ở hai pane của CÙNG một phiên tmux: cả hai trình duy
       env: {
         ...process.env,
         HOME: home,
+        CCRC_HOME: home,
         CCRC_TERM_PANE: pane,
         CCRC_TERM_SESSION_ID: sessionId,
         CCRC_TERM_PORT: String(port),
@@ -2308,6 +2369,7 @@ async function dungCanh({ devices = [], rawDevices } = {}) {
       env: {
         ...process.env,
         HOME: home,
+        CCRC_HOME: home,
         CCRC_TERM_PANE: pane,
         CCRC_TERM_SESSION_ID: 's-pair',
         CCRC_TERM_PORT: String(port),
@@ -2543,6 +2605,7 @@ test('nhịp tim KHÔNG còn mang trường secret', async (t) => {
       env: {
         ...process.env,
         HOME: home,
+        CCRC_HOME: home,
         CCRC_TERM_PANE: pane,
         CCRC_TERM_SESSION_ID: 's-nosecret',
         CCRC_TERM_PORT: String(port),
@@ -2602,6 +2665,7 @@ test('CCRC_TERM_URL: token ký cho đúng host trong CCRC_TERM_URL được ch�
       env: {
         ...process.env,
         HOME: home,
+        CCRC_HOME: home,
         CCRC_TERM_PANE: pane,
         CCRC_TERM_SESSION_ID: 's-turl',
         CCRC_TERM_PORT: String(port),
@@ -2654,12 +2718,25 @@ test('CCRC_TERM_URL hỏng định dạng: daemon thoát ngay với một câu g
   safeguardSessionsAfter(t, sess);
   const pane = execFileSync(T, ['display-message', '-p', '-t', sess, '#{pane_id}'], { encoding: 'utf8' }).trim();
 
+  // Nhà giả, dù bài này KHÔNG mong daemon sống đủ lâu để đụng vào nó.
+  //
+  // Hôm nay nó thật sự không đụng: phép validate CCRC_TERM_URL nằm ở
+  // ccrc-term.js:125-133 và `process.exit(1)` ngay tại đó, còn
+  // `readConfig(ccrcHome())` mãi dòng 144. Nhưng "an toàn vì thứ tự hai khối
+  // lệnh trong một file khác" không phải một sự an toàn — đổi chỗ khối validate
+  // xuống dưới là bài này lặng lẽ chạy một daemon THẬT dưới hồ sơ thật của
+  // người chạy test. Tìm ra bằng một lượt quét CÓ CHỦ Ý cả bộ test, không phải
+  // bằng một bài đỏ.
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccrc-turl-hong-home-'));
+
   let proc;
   let log = '';
   try {
     proc = spawn('node', [DAEMON], {
       env: {
         ...process.env,
+        HOME: home,
+        CCRC_HOME: home,
         CCRC_TERM_PANE: pane,
         CCRC_TERM_SESSION_ID: 's-turl-hong',
         CCRC_TERM_BIND: '127.0.0.1',
@@ -2687,6 +2764,7 @@ test('CCRC_TERM_URL hỏng định dạng: daemon thoát ngay với một câu g
     }
     await sleep(200);
     try { execFileSync(T, ['kill-session', '-t', sess]); } catch {}
+    try { fs.rmSync(home, { recursive: true, force: true }); } catch { /* thôi */ }
   }
 });
 
@@ -2787,7 +2865,7 @@ test('CCRC_TERM_URL cùng lúc với hostIp THẬT (checkPrereqs(), không CCRC_
   let proc;
   try {
     const port = await freePort();
-    const env = { ...process.env, HOME: home };
+    const env = { ...process.env, HOME: home, CCRC_HOME: home };
     delete env.CCRC_TERM_BIND; // rỗng/vắng mặt → nhánh checkPrereqs() thật chạy (ccrc-term.js)
     proc = spawn('node', [DAEMON], {
       env: {

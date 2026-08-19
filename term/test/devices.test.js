@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { coCheDoPosix, LY_DO_POSIX } from './co-che-do-posix.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -106,7 +107,7 @@ test('addDevice từ chối đầu vào dị dạng, không ghi gì', () => {
   assert.deepEqual(listDevices({ home }), []);
 });
 
-test('file ghi với quyền 600 — nó ở trong thư mục nhà người ta', () => {
+test('file ghi với quyền 600 — nó ở trong thư mục nhà người ta', { skip: coCheDoPosix() ? false : LY_DO_POSIX }, () => {
   const home = tmpHome();
   addDevice({ pubKey: PUB_A, label: 'A' }, { home });
   assert.equal(fs.statSync(devicesPath(home)).mode & 0o777, 0o600);

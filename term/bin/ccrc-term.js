@@ -5,7 +5,6 @@
 // started for, and it exits the moment that pane dies — there is no state in
 // which it is listening with nothing to serve.
 
-import { spawn } from 'node:child_process';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
@@ -15,17 +14,12 @@ import { verifyAttachToken } from '../src/ticket.js';
 import { findDevice } from '../src/devices.js';
 import { createNonceStore } from '../src/nonce-store.js';
 import { createSessionKeys } from '../src/session-keys.js';
-import {
-  paneAlive, snapshotPane, tmuxBin,
-  createGroupSession, killGroupSession, hasSession,
-  claimGroupName, reclaimPaneSession, paneCwd, paneSocket, makeRunId,
-  captureHistory, paneHistorySize, paneMouseMode,
-} from '../src/tmux.js';
 import { wheelBytes, notchesForLines, clickBytes } from '../src/mouse.js';
+import { chonNguonPane } from '../src/pane-source-chon.js';
+import { theoDoiFileDung } from '../src/win-stop-file.js';
 import { resolveSessionName } from '../src/session-name.js';
 import { writeSession, removeSession } from '../../shared/session-registry.js';
-import { attachControlOutput } from '../src/control-stream.js';
-import { splitForSendKeys } from '../src/key-chunks.js';
+import { ccrcHome } from '../../shared/home.js';
 import { readConfig } from '../src/config.js';
 import { checkPrereqs } from '../src/tailscale.js';
 import { parsePositiveMs, requestedPortLabel } from '../src/env.js';
@@ -43,6 +37,17 @@ import { dauVanTay } from '../../shared/bundle-fingerprint.js';
 // pins it for tests that need a predictable, pre-known port.
 const PORT = Number(process.env.CCRC_TERM_PORT || 0);
 const PANE = process.env.CCRC_TERM_PANE;
+// Nguồn pane dùng chung cho những câu hỏi KHÔNG thuộc về một kết nối nào: kiểm
+// tra lúc khởi động, vòng poll, và ghi sổ tra phiên — VÀ giờ cũng là nơi vòng
+// đời phiên nhóm thật sự sống (attach/close), dùng chung cho MỌI kết nối.
+//
+// runId không truyền vào đây — pane-source.js tự sinh một cái (mặc định
+// `runId = makeRunId()`) ngay lúc dựng, đúng một lần, trước khi kết nối đầu
+// tiên tới. Cái id đó là thứ tmux.js dùng để phân biệt "phiên nhóm của lượt
+// chạy này" với một phiên bị bỏ rơi bởi daemon đã chết (xem
+// isReclaimableMarker trong src/tmux.js) — nhưng việc sinh và so sánh nó giờ
+// hoàn toàn ở trong pane-source.js, không còn là việc của file này.
+const paneChung = chonNguonPane({ pane: PANE });
 const SESSION_ID = process.env.CCRC_TERM_SESSION_ID;
 let publicUrl = process.env.CCRC_TERM_URL || '';
 const NO_HUB = process.env.CCRC_TERM_NO_HUB === '1';
@@ -82,28 +87,12 @@ const MAX_TERM_ROWS = 500;
 // Bound on a single `ccrc_scroll` request. Same reasoning as the cols/rows
 // bounds above: this number comes from a browser and lands in a tmux command.
 const MAX_SCROLL_LINES = 500;
-// Nhịp nghỉ giữa nội dung dán và cú Enter kết thúc nó. Đủ để TUI phía kia đọc
-// xong đoạn dán trong một lượt riêng, đủ nhỏ để không ai nhận ra. Xem
-// typeIntoPane() bên dưới để biết vì sao phải tách.
-const COMMIT_DELAY_MS = 30;
-
 // Trần cho MỘT lượt dán từ ô soạn. Không phải giới hạn của tmux (buffer nhận
 // thoải mái hơn thế nhiều) mà là trần cho thứ đến từ trình duyệt: nó được ghi
 // vào một tiến trình con và dội thẳng vào phiên đang sống của người dùng.
 // 100 KB rộng hơn mọi tin nhắn viết tay, và vẫn là một con số.
 const MAX_PASTE_BYTES = 100_000;
 
-// Bao lâu thì coi như `tmux load-buffer` treo. Nó ghi vào một tiến trình con,
-// và hàng đợi gõ phím của kết nối đó ĐANG chờ nó xong — treo mà không có trần
-// thì không chỉ tin nhắn ấy mất, mà mọi phím bấm sau đó của cái điện thoại ấy
-// cũng chết câm, không một lời báo.
-const PASTE_LOAD_TIMEOUT_MS = 5000;
-
-// Đếm chung cho cả tiến trình, KHÔNG phải cho từng kết nối: tên buffer sinh ra
-// từ nó phải là duy nhất trên toàn bộ tmux server, mà daemon thì phục vụ nhiều
-// client cùng lúc. Để trong phạm vi kết nối thì hai điện thoại đều bắt đầu từ
-// 0, đặt trùng tên nhau, và người này dán ra nội dung của người kia.
-let pasteSeq = 0;
 // Mã đóng WebSocket cho "phiên này chấm dứt hẳn".
 //
 // Phân biệt với rớt mạng là điều bắt buộc: rớt mạng thì trang phải nối lại,
@@ -143,12 +132,17 @@ if (publicUrl) {
     process.exit(1);
   }
 }
-if (!paneAlive(PANE)) {
+if (!paneChung.alive()) {
   console.error(`Pane ${PANE} không tồn tại.`);
   process.exit(1);
 }
 
-const cfg = readConfig(os.homedir());
+// `ccrcHome()`, cùng nhà với mọi thứ khác daemon này ghi (sổ tra phiên ở
+// dưới). Để `os.homedir()` ở đây nghĩa là daemon KHÔNG cô lập được: một bài
+// test dựng daemon thật dưới CCRC_HOME giả sẽ thấy nó đọc cấu hình thật —
+// hoặc, đúng như đã đo trong task này, không đọc được cấu hình nào và im
+// lặng không đăng ký với hub, mà chẳng có gì báo.
+const cfg = readConfig(ccrcHome());
 const nonces = createNonceStore();
 // Created fresh per daemon process, never shared: a key must die with the
 // daemon it was issued by, and must never open a connection on any other
@@ -157,13 +151,12 @@ const sessionKeys = createSessionKeys();
 
 let shuttingDown = false;
 
-// The GROUPED session (spec §5.5, src/tmux.js) shared by every currently
-// connected browser client. Created on the first connection, destroyed on
-// the last disconnect — never confused with PANE itself: PANE is checked by
-// its own id (see paneAlive below), which is unaffected by this session
-// coming or going.
-let groupSessionName = null;
-let groupClientCount = 0;
+// Vòng đời phiên nhóm (spec §5.5, src/tmux.js) không còn được daemon giữ sổ
+// sách nữa kể từ Task 2 — `paneChung` (attach/close) tự đếm và tự dọn. Cái còn
+// lại ở đây là `conn` của MỌI kết nối đang sống, để shutdown() có thể đóng
+// đồng loạt, ĐỒNG BỘ, ngay trong tiến trình — xem shutdown() bên dưới để biết
+// vì sao không thể chỉ đợi sự kiện 'close' của từng WebSocket tới.
+const liveConns = new Set();
 
 // Which connected clients currently have this page ON SCREEN.
 //
@@ -198,18 +191,6 @@ function watchingChanged() {
   // one, and this must never reject into a WebSocket handler.
   try { Promise.resolve(sendHeartbeat()).catch(() => {}); } catch {}
 }
-
-// Stamped onto every grouped session this process creates (src/tmux.js
-// GROUP_MARKER_OPTION), and passed to every call that might DESTROY one.
-//
-// The marker's presence proves only "ccrc-term created this"; the run id is
-// what turns that into "…and it is ours, or abandoned". Both claimGroupName
-// and reclaimPaneSession compare it (see isReclaimableMarker in src/tmux.js)
-// so a second daemon — another pane of the SAME tmux session, which derives
-// the very same candidate group name — routes around this run's live group
-// instead of killing it. It also stays legible in `tmux list-sessions`, so a
-// group leaked by a crashed daemon is not an anonymous mystery session.
-const RUN_ID = makeRunId();
 
 // Gốc của bản cài này: term/bin/ → term/ → gốc. Cùng cây mà install.sh bung ra,
 // nên dấu vân tay tính ở đây so được thẳng với dấu vân tay hub khai.
@@ -257,7 +238,14 @@ function shutdown(reason) {
   // yet by the time we get here (e.g. the pane died and this was reached
   // straight from the PANE_CHECK_MS poll). A tmux session outlives this
   // process, so skipping this would leak it forever.
-  if (groupSessionName) { killGroupSession(groupSessionName); groupSessionName = null; }
+  //
+  // Since Task 2, the group itself is torn down by `conn.close()` (inside
+  // `paneChung`, once the last connection using it has gone) rather than by
+  // a name this file holds — so belt-and-suspenders now means closing every
+  // live `conn` synchronously, right here, instead of waiting on a WebSocket
+  // round trip that is not guaranteed to finish before this process exits.
+  for (const conn of liveConns) { try { conn.close(); } catch {} }
+  liveConns.clear();
   // Tell every browser this is the END, not a hiccup. Without a distinct code
   // the page cannot tell the two apart and retries for ever — the phone would
   // sit on "đang nối lại…" for a session that no longer exists.
@@ -268,7 +256,7 @@ function shutdown(reason) {
   // so notifications from this directory stop claiming a name that no longer
   // exists. A `kill -9` skips this, which is why every reader also checks
   // that the recorded pid is still alive (shared/session-registry.js).
-  removeSession(SESSION_ID);
+  removeSession(SESSION_ID, { home: ccrcHome() });
   tellHub('/api/terminal/unregister', { sessionId: SESSION_ID }).finally(() => {
     process.exit(0);
   });
@@ -419,7 +407,7 @@ server.on('upgrade', (req, socket, head) => {
   // The pane can die in the (up to PANE_CHECK_MS) gap between polls. A
   // connection that cleared every other check must still not be allowed to
   // open onto a pane that is already gone.
-  if (!paneAlive(PANE)) {
+  if (!paneChung.alive()) {
     socket.write('HTTP/1.1 503 Service Unavailable\r\n\r\n');
     return socket.destroy();
   }
@@ -436,6 +424,12 @@ wss.on('connection', (ws, mintKey) => {
   // "khung đầu tiên là điều khiển". Đoán ấy chỉ đủ cho MỘT khung điều khiển
   // mỗi kết nối: mọi `ccrc_loi` gửi sau đó bị vẽ ra lưới thành cục JSON, tức
   // là kênh báo lỗi thêm vào ngày 2026-08-15 chưa từng tới được người dùng.
+
+  // Nguồn pane dùng chung (paneChung, khai ở đầu file) phục vụ MỌI kết nối —
+  // các phương thức đọc không giữ trạng thái nên dùng chung là an toàn; vòng
+  // đời có trạng thái (phiên nhóm, ctl) sống bên trong attach()/conn.close()
+  // của chính nó, riêng cho từng kết nối (xem pane-source.js, Task 2).
+
   function sendPane(text) {
     if (!text) return;
     try { ws.send(Buffer.from(text, 'utf8'), { binary: true }); } catch {}
@@ -458,106 +452,8 @@ wss.on('connection', (ws, mintKey) => {
   // for the two acceptance-run defects (content scrolled off a shorter
   // browser terminal; a leaked background colour tinting everything after)
   // this fixes.
-  sendPane(snapshotPane(PANE));
+  sendPane(paneChung.snapshot());
 
-  // Every browser client attaches to a shared GROUPED session, never to the
-  // user's real tmux session directly — see spec §5.5 and src/tmux.js
-  // createGroupSession(). Created once, on the first concurrent connection;
-  // torn down once, when the last one leaves (see close() below).
-  if (groupClientCount === 0) {
-    // reclaimPaneSession() answers "which session is really the user's?"
-    // and, on the way, clears out any group a previously crashed daemon
-    // leaked onto this pane — identifying those by the marker it stamped at
-    // creation, never by their names. It returns null when the pane is dead
-    // (spawning `tmux -C -t null` would throw) and also when the only
-    // session left holding the pane is one of ours, which cannot be cleaned
-    // up without destroying the pane itself. Both mean: do not serve this.
-    const base = reclaimPaneSession(PANE, RUN_ID);
-    if (!base) {
-      ws.close(1011, 'pane đã chết');
-      return;
-    }
-    // claimGroupName() never returns a name held by a session we did not
-    // create, so nothing below can destroy a bystander — not even a real
-    // user session called `<something>-ccrc-web`, which is precisely the
-    // live session an earlier name-shape-based version of this code killed.
-    // RUN_ID is what additionally spares another LIVE daemon's group, which
-    // carries our marker but is not this run's to take.
-    const name = claimGroupName(base, RUN_ID);
-    if (!name) {
-      ws.close(1011, 'không đặt được tên cho phiên nhóm terminal');
-      return;
-    }
-    try {
-      createGroupSession(base, name, RUN_ID);
-    } catch (e) {
-      ws.close(1011, 'không tạo được phiên nhóm cho terminal');
-      return;
-    }
-    groupSessionName = name;
-  }
-  // A client that just opened the page is looking at it — anything else
-  // would let one notification through before the first visibility frame.
-  viewers.set(ws, true);
-  watchingChanged();
-  groupClientCount++;
-
-  const ctl = spawn(tmuxBin(), ['-C', 'attach-session', '-t', groupSessionName], {
-    stdio: ['pipe', 'pipe', 'ignore'],
-  });
-
-  // Whether ctl is going away because WE killed it (client disconnected) or
-  // because it died on its own. Only the latter is a daemon-ending event —
-  // a normal disconnect must not take the whole daemon down.
-  let closingByUs = false;
-
-  // The control-mode child is the only pipe into the pane. If it dies or
-  // errors on its own, the socket must not sit there looking OPEN while
-  // keystrokes go nowhere.
-  //
-  // Since Task 5, ctl is attached to the GROUPED session above, not
-  // sessionName directly — so a ctl exit no longer always means "the pane
-  // died." It also happens if something removes just the grouped session
-  // (an external `tmux kill-session` on it, a race, anything) while the
-  // pane and the user's real session are completely untouched. That case
-  // must NOT take the whole daemon down — it only means this one
-  // connection's relay is gone. Only shut the daemon down when the pane
-  // itself is actually gone (confirmed via paneAlive, which checks PANE by
-  // its own id and does not care which session currently references it) —
-  // see task-5-report.md for the reproduction that caught this and why a
-  // ctl exit alone is not sufficient evidence.
-  // Phải quyết định "hỏng tạm" hay "hết phiên" TRƯỚC khi đóng socket, không
-  // phải sau. Đóng bằng 1011 rồi mới gọi shutdown() là mã 1011 thắng: socket
-  // đã ở trạng thái đang đóng, lệnh close(4001) trong shutdown() thành vô
-  // hiệu, và trình duyệt đọc 1011 là "trục trặc, thử lại đi" nên nối lại mãi.
-  //
-  // Đo được trên máy thật: đóng Claude → điện thoại báo "vé đã dùng", đúng
-  // hành vi của nhánh rớt mạng. Test cũ không thấy vì nó bắn SIGTERM — đường
-  // của `/remote off`, ở đó shutdown() chạy trước và 4001 kịp đi. Đường
-  // thường ngày lại là pane chết, và ở đó thứ tự ngược lại.
-  const onCtlGone = (reason) => {
-    if (closingByUs) return;
-    const groupGone = groupSessionName !== null && !hasSession(groupSessionName);
-    if (groupGone && paneAlive(PANE)) {
-      // Chỉ mất đường tiếp sức của riêng kết nối này; pane vẫn sống, nối lại
-      // là được — đúng lúc để dùng mã "lỗi máy chủ".
-      try { ws.close(1011, 'tmux control mode đã đóng bất ngờ'); } catch {}
-      close();
-      return;
-    }
-    // Pane không còn: phiên hết thật. Để shutdown() tự nói bằng mã 4001.
-    shutdown(reason);
-  };
-  ctl.on('exit', () => onCtlGone('tmux -C thoát bất ngờ'));
-  ctl.on('error', (err) => onCtlGone(`tmux -C lỗi: ${err.message}`));
-  // Writing to stdin after the child has died raises EPIPE as an 'error'
-  // event; without a handler that is an uncaught exception. onCtlGone above
-  // already reacts to the child dying, so this only needs to not crash.
-  ctl.stdin.on('error', () => {});
-
-  // See src/control-stream.js for why this goes through setEncoding('utf8')
-  // rather than a raw per-chunk `.toString()` — a multi-byte UTF-8 character
-  // split across two 'data' events must not decode to U+FFFD.
   // --- xem lại lịch sử ---------------------------------------------------
   //
   // While the user is looking at scrollback, live output must NOT be written
@@ -567,6 +463,9 @@ wss.on('connection', (ws, mintKey) => {
   //
   // `historyOffset` is how many lines above the live screen's top row the
   // browser is currently parked. 0 means live.
+  //
+  // Khai báo TRƯỚC lời gọi attach() dưới đây: onData của attach() đọc
+  // historyOffset ngay trong closure của nó.
   let historyOffset = 0;
   // The browser's own grid height, learned from its resize report. The
   // history screen must be exactly this tall or it will not line up with
@@ -575,7 +474,7 @@ wss.on('connection', (ws, mintKey) => {
   let clientCols = 80;
 
   function showHistory(want) {
-    const max = paneHistorySize(PANE);
+    const max = paneChung.historySize();
     let offset = want;
     if (offset < 0) offset = 0;
     if (offset > max) offset = max;
@@ -585,10 +484,10 @@ wss.on('connection', (ws, mintKey) => {
       // everything that arrived while they were reading back, then let live
       // output through again.
       historyOffset = 0;
-      sendPane(snapshotPane(PANE));
+      sendPane(paneChung.snapshot());
       return;
     }
-    const screen = captureHistory(PANE, offset, clientRows);
+    const screen = paneChung.history(offset, clientRows);
     // An empty capture means tmux had nothing to give (a pane that just
     // died, a history shorter than claimed). Staying where we are beats
     // blanking the terminal.
@@ -597,22 +496,54 @@ wss.on('connection', (ws, mintKey) => {
     sendPane(screen);
   }
 
-  attachControlOutput(ctl.stdout, PANE, (data) => {
-    // Held back, not dropped: showHistory(0) re-sends the whole current
-    // screen on the way back, so nothing written meanwhile is missed.
-    if (historyOffset > 0) return;
-    sendPane(data);
-  }, (ok, message) => {
-    // Một lời đáp cho lệnh cũ nhất chưa được trả lời. Ghép theo vị trí, vì
-    // tmux trả lời đúng thứ tự nhận — xem ctlCmd() để biết vì sao mọi lệnh
-    // đều phải chiếm một chỗ ở đây.
-    const cb = choLoiDap.shift();
-    if (cb) { cb(ok, String(message || '').slice(0, 200)); return; }
-    // Không ai đăng ký nhận kết quả lệnh này. Xuôi thì chẳng có gì để nói;
-    // hỏng thì vẫn phải nói ra — im lặng ở đây nghĩa là người dùng ngồi chờ
-    // Claude trả lời một câu nó chưa bao giờ nhận.
-    if (!ok) sendCtl({ type: 'ccrc_loi', message: String(message).slice(0, 200) });
+  // Mỗi kết nối một đường tiếp sức riêng vào cùng phiên nhóm — vòng đời (dựng
+  // nhóm ở lần attach() đầu tiên, dọn khi conn cuối cùng đóng) sống bên trong
+  // paneChung từ Task 2. GỌI CHO MỌI KẾT NỐI, không chỉ kết nối đầu tiên — xem
+  // đầu Task 2 (pane-source.js) để biết vì sao gộp lại là hỏng: hai trình
+  // duyệt cần hai ống ctl riêng vào cùng một phiên nhóm.
+  //
+  // Phải quyết định "hỏng tạm" hay "hết phiên" TRƯỚC khi đóng socket, không
+  // phải sau. Đóng bằng 1011 rồi mới gọi shutdown() là mã 1011 thắng: socket
+  // đã ở trạng thái đang đóng, lệnh close(4001) trong shutdown() thành vô
+  // hiệu, và trình duyệt đọc 1011 là "trục trặc, thử lại đi" nên nối lại mãi.
+  //
+  // Đo được trên máy thật: đóng Claude → điện thoại báo "vé đã dùng", đúng
+  // hành vi của nhánh rớt mạng. Test cũ không thấy vì nó bắn SIGTERM — đường
+  // của `/remote off`, ở đó shutdown() chạy trước và 4001 kịp đi. Đường
+  // thường ngày lại là pane chết, và ở đó thứ tự ngược lại.
+  const gan = paneChung.attach({
+    onData: (data) => {
+      // Giữ lại chứ không vứt: showHistory(0) gửi lại nguyên màn hình hiện tại
+      // trên đường quay về, nên không mất gì.
+      if (historyOffset > 0) return;
+      sendPane(data);
+    },
+    onCtlReply: (ok, message) => {
+      // Lời đáp không ai đăng ký nhận. Xuôi thì chẳng có gì để nói; hỏng thì
+      // vẫn phải nói ra — im lặng ở đây nghĩa là người dùng ngồi chờ Claude
+      // trả lời một câu nó chưa bao giờ nhận.
+      if (!ok) sendCtl({ type: 'ccrc_loi', message: String(message).slice(0, 200) });
+    },
+    onGone: ({ fatal, reason }) => {
+      if (!fatal) {
+        // Chỉ mất đường tiếp sức của riêng kết nối này; pane vẫn sống, nối lại
+        // là được — đúng lúc để dùng mã "lỗi máy chủ".
+        try { ws.close(1011, 'tmux control mode đã đóng bất ngờ'); } catch {}
+        close();
+        return;
+      }
+      // Pane không còn: phiên hết thật. Để shutdown() tự nói bằng mã 4001.
+      shutdown(reason);
+    },
   });
+  if (!gan.ok) { ws.close(1011, gan.message); return; }
+  const conn = gan.conn;
+  liveConns.add(conn);
+
+  // A client that just opened the page is looking at it — anything else
+  // would let one notification through before the first visibility frame.
+  viewers.set(ws, true);
+  watchingChanged();
 
   // Binary frames are keystrokes; text frames are control messages (so far
   // just the resize report from spec §5.4). This is a FRAME-TYPE
@@ -634,147 +565,8 @@ wss.on('connection', (ws, mintKey) => {
     // pane whatever the browser is displaying, so leaving a history screen up
     // would show the user their input landing nowhere.
     if (historyOffset > 0) showHistory(0);
-    typeIntoPane(data);
+    conn.type(data);
   });
-
-  // MỌI lệnh gửi vào tmux phải đi qua đây, không có ngoại lệ.
-  //
-  // tmux control mode trả lời mỗi lệnh bằng đúng một khối, theo đúng thứ tự
-  // nhận. Nên hàng đợi này ghép lời đáp với lệnh bằng vị trí — và điều đó chỉ
-  // đúng khi không lệnh nào lọt ra ngoài. Một `ctl.stdin.write()` viết thẳng ở
-  // đâu đó là lệch cả hàng từ điểm ấy trở đi, và từ đó mọi lượt dán đều được
-  // ghép với lời đáp của một lệnh khác — hỏng âm thầm, kiểu tệ nhất.
-  //
-  // `cb` không bắt buộc: phần lớn lệnh (gõ phím, resize) không có gì để mất
-  // nếu tmux từ chối, nhưng chúng VẪN phải chiếm chỗ trong hàng.
-  const choLoiDap = [];
-  function ctlCmd(cmd, cb) {
-    choLoiDap.push(cb || null);
-    ctl.stdin.write(cmd.endsWith('\n') ? cmd : cmd + '\n');
-  }
-
-  // send-keys -H takes hex, which sidesteps every quoting question about
-  // control characters, newlines and UTF-8 the shell would otherwise raise.
-  function sendKeysHex(bytes, cb) {
-    const hex = Buffer.from(bytes).toString('hex').match(/../g) || [];
-    if (hex.length === 0) return;
-    ctlCmd(`send-keys -t ${PANE} -H ${hex.join(' ')}`, cb);
-  }
-
-  // Gõ một khối byte của người dùng vào pane, theo hai kỷ luật mà một lệnh
-  // send-keys duy nhất không giữ được:
-  //
-  //  1. CẮT NHỎ. tmux dựng mỗi byte thành một token, và một khối đủ dài làm
-  //     tràn stack parser của nó (đo được: 8000 byte xuôi, 12000 byte trả
-  //     `%error parse error: yacc stack overflow`). Xem src/key-chunks.js.
-  //
-  //  2. ENTER ĐI RIÊNG. Ô soạn gửi lên "[mở-paste] nội dung [đóng-paste]
-  //     Enter" trong một khối, nên TUI phía kia nhận trọn cả cụm trong một
-  //     lượt đọc và phải tự tách đoạn dán khỏi cú Enter. Người dùng báo lại
-  //     rằng thỉnh thoảng nó không tách: chữ nằm lại trong ô nhập của Claude
-  //     Code, phải tự bấm Enter. KHÔNG tái hiện được — 24/24 lần thử trên
-  //     Claude Code thật (rảnh/bận, một dòng/nhiều dòng) đều gửi bình
-  //     thường, nên đây là PHÒNG NGỪA chứ không phải bản vá cho một nguyên
-  //     nhân đã chứng minh. Việc tách bỏ hẳn khả năng đó khỏi bàn cờ với giá
-  //     một nhịp nghỉ không ai cảm nhận được.
-  // Dán nội dung ô soạn — KHÁC hẳn gõ phím ở trên, và khác vì một lý do đo
-  // được: ứng dụng trong pane có thể hiểu bracketed paste, hoặc không.
-  //
-  //   • Claude Code KHÔNG bật bracketed paste (`?2004h` xuất hiện 0 lần trong
-  //     toàn bộ bản dựng 2.1.233). Trang web trước đây tự bọc `ESC[200~ …
-  //     ESC[201~` nên trong hộp thoại AskUserQuestion cả cụm bị vứt, cú Enter
-  //     đi sau rơi vào ô "Type something." rỗng, và Enter trên ô rỗng bị tính
-  //     là TỪ CHỐI trả lời — hộp thoại đóng, trông y như vừa bấm Esc.
-  //   • zsh thì ngược lại: có bật. Gửi chữ thô nhiều dòng vào đấy là mỗi dòng
-  //     một lệnh chạy luôn.
-  //
-  // Không đoán hộ ai cả: `paste-buffer -p` bọc dấu KHI VÀ CHỈ KHI ứng dụng đã
-  // xin chế độ đó, và tmux là bên duy nhất biết điều ấy. `-r` giữ nguyên LF —
-  // mặc định tmux đổi LF thành CR, tức là gửi dòng đầu đi như một câu hoàn
-  // chỉnh. `-d` xoá buffer ngay sau khi dán để không bỏ rác vào danh sách
-  // buffer của người dùng.
-  //
-  // Nội dung đi qua stdin của `load-buffer`, không qua dòng lệnh: đó là cùng
-  // một kỷ luật đã khiến `send-keys -H` được chọn ở trên — không có câu hỏi
-  // trích dẫn nào để trả lời sai.
-  // Nối tiếp, không song song, và DÙNG CHUNG với typeIntoPane: một cú Enter
-  // của thanh phím chen vào giữa đoạn dán sẽ gửi đi nửa tin nhắn.
-  let typeQueue = Promise.resolve();
-  function pasteIntoPane(text, seq) {
-    const bytes = Buffer.from(text, 'utf8');
-    if (bytes.length === 0) return;
-    if (bytes.length > MAX_PASTE_BYTES) {
-      sendCtl({ type: 'ccrc_loi', seq, message: `tin nhắn quá dài (${bytes.length} byte)` });
-      return;
-    }
-    // Tên buffer riêng cho từng lượt dán: hai client dán cùng lúc mà dùng
-    // chung một tên thì lượt sau đè nội dung lượt trước ngay trước khi nó kịp
-    // được dán. SESSION_ID đã qua bộ lọc ký tự của sổ tra phiên.
-    const name = `ccrc-${SESSION_ID}-${pasteSeq += 1}`;
-    typeQueue = typeQueue.then(() => new Promise((resolve) => {
-      const loader = spawn(tmuxBin(), ['load-buffer', '-b', name, '-'], {
-        stdio: ['pipe', 'ignore', 'ignore'],
-      });
-      // Một lượt dán chỉ được kết thúc ĐÚNG MỘT LẦN. Khi spawn hỏng, Node bắn
-      // 'error' rồi bắn tiếp 'close' với mã null — không chốt lại thì người
-      // dùng nhận hai thông báo, cái thứ hai là "load-buffer trả mã null" vô
-      // nghĩa.
-      let done = false;
-      let treo = null;
-      const finish = () => { if (done) return false; done = true; clearTimeout(treo); resolve(); return true; };
-      const fail = (why) => {
-        // Im lặng ở đây nghĩa là ô soạn phía người dùng vẫn trống đi như đã
-        // gửi, còn tin nhắn thì chưa từng tồn tại — đúng lỗi mà bản vá tin
-        // nhắn dài trước đây đã phải đi sửa.
-        if (!finish()) return;
-        sendCtl({ type: 'ccrc_loi', seq, message: `không dán được: ${why}` });
-      };
-      treo = setTimeout(() => {
-        try { loader.kill('SIGKILL'); } catch {}
-        fail('tmux không phản hồi');
-      }, PASTE_LOAD_TIMEOUT_MS);
-      loader.on('error', (e) => fail(String(e && e.message).slice(0, 120)));
-      loader.on('close', (code) => {
-        if (done) return;
-        if (code !== 0) return fail(`load-buffer trả mã ${code}`);
-        // `load-buffer` xong mới chỉ chứng minh cái BUFFER đã có. Nó không nói
-        // gì về việc pane có nhận được hay không — pane có thể vừa chết trong
-        // đúng khoảnh khắc này. Nên chờ tmux trả lời từng lệnh một, và chỉ xác
-        // nhận với điện thoại khi cả hai lệnh đều được nhận.
-        ctlCmd(`paste-buffer -d -p -r -b ${name} -t ${PANE}`, (ok, message) => {
-          if (!ok) return fail(message || 'tmux từ chối paste-buffer');
-          // Enter đi riêng sau một nhịp nghỉ, cùng lý do như typeIntoPane.
-          setTimeout(() => {
-            sendKeysHex(Buffer.from([0x0d]), (okEnter, loiEnter) => {
-              if (!okEnter) return fail(loiEnter || 'tmux từ chối cú Enter');
-              // ĐÃ dán VÀ đã chốt bằng Enter, cả hai đều được tmux xác nhận —
-              // chỉ tới đây điện thoại mới được phép quên chữ đó đi. Trước bản
-              // này nó quên ngay lúc bấm Gửi; rồi sau đó quên khi mới hết 30ms,
-              // tức vẫn là đoán chứ chưa phải biết.
-              sendCtl({ type: 'ccrc_ack', seq });
-              finish();
-            });
-          }, COMMIT_DELAY_MS);
-        });
-      });
-      loader.stdin.on('error', () => { /* tiến trình chết trước khi ghi xong — 'close' ở trên lo nốt */ });
-      loader.stdin.end(bytes);
-    })).catch(() => { /* một lượt hỏng không được làm nghẽn những lượt sau */ });
-  }
-
-  function typeIntoPane(data) {
-    const { chunks, commit } = splitForSendKeys(data);
-    if (chunks.length === 0 && !commit) return;
-    // Nối tiếp, không song song: hai tin nhắn gửi sát nhau mà đan vào nhau
-    // thì Enter của cái trước có thể gửi đi nửa nội dung của cái sau.
-    typeQueue = typeQueue.then(async () => {
-      for (const chunk of chunks) sendKeysHex(chunk);
-      if (commit) {
-        await new Promise((r) => setTimeout(r, COMMIT_DELAY_MS));
-        sendKeysHex(commit);
-      }
-    }).catch(() => { /* một lượt hỏng không được làm nghẽn những lượt sau */ });
-  }
 
   // A text frame that isn't valid JSON, or whose `type` isn't recognised,
   // is dropped — never typed into the pane, never echoed anywhere. cols/rows
@@ -830,10 +622,20 @@ wss.on('connection', (ws, mintKey) => {
         // đứng im ở đoạn lịch sử đang đọc: người dùng bấm Gửi và không thấy
         // gì xảy ra cả.
         if (historyOffset > 0) showHistory(0);
+        // Kiểm độ dài ở lại đây: MAX_PASTE_BYTES là trần cho giao thức với
+        // trình duyệt, không phải giới hạn của cái pane.
+        const bytes = Buffer.byteLength(msg.text, 'utf8');
+        if (bytes > MAX_PASTE_BYTES) {
+          sendCtl({ type: 'ccrc_loi', seq: msg.seq, message: `tin nhắn quá dài (${bytes} byte)` });
+          return;
+        }
         // `seq` do trang tự đánh số, chỉ để nó ghép lời xác nhận với đúng
         // lượt gửi. Không kiểm kiểu ở đây: nó không bao giờ chạm tới tmux,
         // chỉ đi ngược lại nguyên vẹn trong ccrc_ack/ccrc_loi.
-        pasteIntoPane(msg.text, msg.seq);
+        conn.paste(msg.text, {
+          onAck: () => sendCtl({ type: 'ccrc_ack', seq: msg.seq }),
+          onErr: (m) => sendCtl({ type: 'ccrc_loi', seq: msg.seq, message: m }),
+        });
       }
       return;
     }
@@ -849,16 +651,14 @@ wss.on('connection', (ws, mintKey) => {
       if (col < 1 || col > MAX_TERM_COLS) return;
       if (row < 1 || row > MAX_TERM_ROWS) return;
 
-      const clickMode = paneMouseMode(PANE);
+      const clickMode = paneChung.mouseMode();
       // No mouse reporting means the application has no idea what these bytes
       // are, and they would be TYPED INTO IT. There is no useful fallback for
       // a click — unlike scrolling, which has tmux's own history — so this
       // does nothing at all rather than something wrong.
       if (!clickMode.mouse) return;
 
-      const clickHex = Buffer.from(clickBytes({ sgr: clickMode.sgr, col, row }), 'binary')
-        .toString('hex').match(/../g) || [];
-      ctlCmd(`send-keys -t ${PANE} -H ${clickHex.join(' ')}`);
+      conn.mouse(Buffer.from(clickBytes({ sgr: clickMode.sgr, col, row }), 'binary'));
       return;
     }
     if (msg.type === 'ccrc_scroll') {
@@ -882,7 +682,7 @@ wss.on('connection', (ws, mintKey) => {
       // the user wants to read back is inside the application. Paging tmux's
       // history there returns nothing useful — it is what put a screenful of
       // repeated prompt lines on the phone.
-      const mode = paneMouseMode(PANE);
+      const mode = paneChung.mouseMode();
       if (mode.mouse) {
         // The app is listening for the wheel, so give it one. Sent as INPUT,
         // exactly like a keystroke, because that is what it is.
@@ -897,8 +697,7 @@ wss.on('connection', (ws, mintKey) => {
           row: Math.max(1, Math.round(clientRows / 2)),
           notches: notchesForLines(n),
         });
-        const hex = Buffer.from(bytes, 'binary').toString('hex').match(/../g) || [];
-        ctlCmd(`send-keys -t ${PANE} -H ${hex.join(' ')}`);
+        conn.mouse(Buffer.from(bytes, 'binary'));
         return;
       }
 
@@ -917,36 +716,29 @@ wss.on('connection', (ws, mintKey) => {
     // tall as the browser's grid.
     clientRows = rows;
     clientCols = cols;
-    ctlCmd(`refresh-client -C ${cols}x${rows}`);
+    conn.resize(cols, rows);
   }
 
-  // Guards against running twice: onCtlGone can call this directly (the
+  // Guards against running twice: onGone can call this directly (the
   // "grouped session merely disappeared" branch above), and ws.close()
   // called from there also fires the 'close' event bound below — both
   // paths must be safe to hit for the same connection without double-
-  // decrementing groupClientCount.
+  // closing conn.
   let cleanedUp = false;
   const close = () => {
     if (cleanedUp) return;
     cleanedUp = true;
-    closingByUs = true;
-    try { ctl.kill(); } catch {}
-    // Last browser client gone — the grouped session has no reason to
-    // exist and, left behind, leaks forever (spec §5.5: "remove the
-    // grouped session when the last browser client disconnects"). This
-    // never touches PANE or sessionName — killing a grouped session
-    // unlinks it from the shared window, it does not touch the window or
-    // pane itself.
+    // conn.close() kills this connection's tmux -C child and, if it was the
+    // last one still using the grouped session, tears that session down too
+    // (Task 2, pane-source.js) — this never touches PANE or the user's real
+    // session, only the grouped one this connection was borrowing.
+    conn.close();
+    liveConns.delete(conn);
     // A client that has gone is not watching. Dropped here rather than left
     // behind, or the map would keep a dead socket's `true` forever and
     // notifications would never resume.
     viewers.delete(ws);
     watchingChanged();
-    groupClientCount = Math.max(0, groupClientCount - 1);
-    if (groupClientCount === 0 && groupSessionName) {
-      killGroupSession(groupSessionName);
-      groupSessionName = null;
-    }
   };
   ws.on('close', close);
   ws.on('error', close);
@@ -1068,6 +860,38 @@ server.listen(PORT, bindAddr, async () => {
   // fires from right here, after publicUrl has been built from the real
   // bound port, so the hub never sees a URL with the wrong (or absent) port.
   const beat = () => {
+    // MỘT NHỊP TIM SAU KHI ĐÃ ĐÓNG LÀ MỘT LỜI NÓI DỐI — và tệ hơn, nó DỰNG LẠI
+    // đúng những thứ `shutdown()` vừa dọn: `writeSession` ngay dưới đây ghi lại
+    // file sổ phiên, và `/api/terminal/register` ghi lại phiên vào hub.
+    //
+    // Đường đi: `shutdown()` đóng mọi client bằng mã 4001 rồi gọi
+    // `removeSession()` NGAY trong cùng một lượt. Sự kiện `close` của WebSocket
+    // thì tới ở lượt SAU, và handler của nó gọi `watchingChanged()` →
+    // `sendHeartbeat()` → chính hàm này. Ai xong trước là do
+    // `tellHub('/unregister')` quyết: hub trả lời nhanh thì `process.exit(0)`
+    // chạy trước cả cuộc đua; hub trả lời chậm thì nhịp tim kịp ghi lại.
+    //
+    // ĐÂY LÀ LỖI CỦA CẢ HAI NỀN TẢNG, không riêng Windows. Bản đầu của chốt này
+    // ghi rằng "trên macOS cuộc đua chưa từng thắng" — SAI, và cái sai đến từ
+    // một phép đo hỏng: hub giả trong bộ đo trả lời trong 0ms. Đo lại với hub
+    // trả lời chậm (mọi hub thật, qua Tailscale hay internet, đều trên 5ms):
+    //
+    //   độ trễ `/unregister`   chưa có chốt                       có chốt
+    //   0ms                    sạch (cái phép đo hỏng nhìn thấy)  sạch
+    //   5ms                    file sổ phiên còn lại              sạch
+    //   30ms                   còn lại + hub nhận `register`      sạch
+    //                          SAU `unregister`
+    //
+    // Nghĩa là trước chốt này, `/remote off` trên macOS cũng để lại file sổ
+    // phiên, và với RTT ≥30ms còn đăng ký lại một phiên đã chết lên hub — điện
+    // thoại tiếp tục thấy nó trong danh sách tới giây thứ 60. Bài canh:
+    // test/off-nhip-tim-hoi-sinh.test.js (macOS, giữ `/unregister` lại 500ms) và
+    // test/win-off-tu-te.test.js (Windows).
+    //
+    // Chốt đặt Ở ĐÂY chứ không ở `watchingChanged()`: đây là chỗ DUY NHẤT ghi sổ
+    // phiên và gọi hub, nên mọi người gọi — vòng 20 giây, đổi trạng thái người
+    // xem, và bất cứ ai thêm sau này — đều được che, thay vì phải nhớ tự che.
+    if (shuttingDown) return Promise.resolve();
     // The registry is refreshed on every heartbeat, not written once: the
     // pane's directory changes whenever the user `cd`s, and the hook matches
     // on that directory. Written before the hub call so a notification
@@ -1081,9 +905,9 @@ server.listen(PORT, bindAddr, async () => {
     // $TMUX — see paneSocket() for why the daemon's own environment is the
     // wrong place to ask.
     writeSession({
-      sessionId: SESSION_ID, cwd: paneCwd(PANE), name: SESSION_NAME,
-      pane: PANE, tmux: paneSocket(PANE), pid: process.pid,
-    });
+      sessionId: SESSION_ID, cwd: paneChung.cwd(), name: SESSION_NAME,
+      pane: PANE, tmux: paneChung.socket(), pid: process.pid,
+    }, { home: ccrcHome() });
     return tellHub('/api/terminal/register', {
       sessionId: SESSION_ID,
       machine: cfg ? cfg.machine : os.hostname(),
@@ -1108,8 +932,32 @@ server.listen(PORT, bindAddr, async () => {
 
 // The pane dying is the primary close signal — see spec §4.2.
 setInterval(() => {
-  if (!paneAlive(PANE)) shutdown('pane tmux đã chết');
+  if (!paneChung.alive()) shutdown('pane tmux đã chết');
 }, PANE_CHECK_MS);
 
 process.on('SIGTERM', () => shutdown('nhận SIGTERM'));
 process.on('SIGINT', () => shutdown('nhận SIGINT'));
+
+// Đường dừng thứ hai, CHỈ trên Windows — và nó tồn tại vì hai handler ngay
+// trên KHÔNG chạy ở đó. `process.kill(pid, 'SIGTERM')` trên Windows là
+// `TerminateProcess`; đo được ngày 2026-08-18 trên máy Windows thật, `/remote
+// off` bỏ qua trọn vẹn `shutdown()`: hub không nhận `unregister`, file sổ phiên
+// còn nguyên, và trình duyệt đang mở nhận mã 1006 (đứt bất thường, y hệt rớt
+// wifi) thay vì 4001, nên nó quay vòng "đang nối lại…" cho một phiên đã chết.
+// Cùng kịch bản trên macOS: 4001 sau 113ms, unregister có, sổ phiên đã xoá.
+//
+// `theoDoiFileDung` trả `null` trên mọi nền tảng khác — không watcher, không
+// timer, không một dòng nào chạy thêm — nên đường macOS/Linux ở trên còn
+// nguyên vẹn từng byte. Luật ấy là tham số `platform`, và có bài test chạy
+// được trên chính máy macOS (test/win-stop-file.test.js).
+theoDoiFileDung({
+  paneId: PANE,
+  home: ccrcHome(),
+  // Van chỉ dành cho bộ test, để chứng minh lưới cuối (TerminateProcess) vẫn
+  // còn nguyên khi cơ chế cờ hỏng — xem src/win-stop-file.js.
+  tat: process.env.CCRC_TERM_NO_STOP_WATCH === '1',
+  // Đi thẳng vào `shutdown()`, không sao chép lại một phần việc của nó: đó là
+  // toàn bộ lý do chọn hướng file cờ thay vì để CLI tự dọn — chỉ tiến trình
+  // này mới gửi được mã 4001 cho những trình duyệt nó đang phục vụ.
+  khiThay: () => shutdown('nhận cờ dừng từ /remote off'),
+});

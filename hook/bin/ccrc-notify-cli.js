@@ -8,10 +8,10 @@
 // declaring "looks fine" would defeat the one diagnostic the user has.
 
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
+import { ccrcHome } from '../../shared/home.js';
 
-const CFG_DIR = path.join(os.homedir(), '.ccrc');
+const CFG_DIR = path.join(ccrcHome(), '.ccrc');
 const NOTIFY_FILE = path.join(CFG_DIR, 'notify');
 
 function readConfig() {

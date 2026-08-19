@@ -13,7 +13,16 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { resolveWithinRoot } from '../src/static.js';
 
-const ROOT = '/tmp/ccrc-static-unit-root';
+// path.resolve() chứ không phải chuỗi trần: trên Windows `/tmp/...` được giải
+// thành `C:\tmp\...`, nên so sánh kết quả của resolveWithinRoot (đã resolve)
+// với một ROOT chưa resolve là so hai thứ khác nhau và bài test đỏ ở chỗ chẳng
+// có lỗi nào. Đo được trên Windows: đúng hai bài "đường dẫn thường" đỏ, còn
+// HAI BÀI CHẶN TRAVERSAL VÀ CHẶN THƯ MỤC ANH EM VẪN XANH — tức là phép kiểm
+// bảo mật hoạt động bình thường ở đó, chỉ fixture là POSIX-only.
+//
+// Vẫn là một đường dẫn TUYỆT ĐỐI và không tồn tại thật: hàm này thuần tính
+// toán chuỗi, không chạm đĩa, nên không cần thư mục thật.
+const ROOT = path.resolve('/tmp/ccrc-static-unit-root');
 
 test('resolveWithinRoot: đường dẫn thường bên trong root được trả về', () => {
   assert.equal(resolveWithinRoot(ROOT, '/index.html'), path.join(ROOT, 'index.html'));

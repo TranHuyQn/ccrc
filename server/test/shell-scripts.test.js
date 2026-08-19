@@ -7,7 +7,7 @@
 // directly, and with `set -u` under /bin/sh the shell read those UTF-8 bytes
 // as part of the variable NAME. Every user-facing string here is Vietnamese,
 // so this is one careless space away from happening again.
-import test from 'node:test';
+import test from './can-sh.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';

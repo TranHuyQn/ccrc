@@ -16,8 +16,9 @@ import http from 'node:http';
 import https from 'node:https';
 import { buildNotification } from '../src/notify-payload.js';
 import { findByCwd, findByPane } from '../../shared/session-registry.js';
+import { ccrcHome } from '../../shared/home.js';
 
-const CFG_DIR = path.join(os.homedir(), '.ccrc');
+const CFG_DIR = path.join(ccrcHome(), '.ccrc');
 const REQUEST_TIMEOUT_MS = 3000;
 
 function readToggle() {
@@ -85,8 +86,8 @@ process.stdin.on('end', () => {
   // running under tmux at all. Both never throw and return null when the
   // registry is missing, unreadable, or has nothing matching — in which case
   // the notification simply carries no name.
-  const session = findByPane(process.env.TMUX_PANE, { tmux: process.env.TMUX })
-    || findByCwd(payload && payload.cwd);
+  const session = findByPane(process.env.TMUX_PANE, { tmux: process.env.TMUX, home: ccrcHome() })
+    || findByCwd(payload && payload.cwd, { home: ccrcHome() });
   const note = buildNotification(payload, {
     machineName: cfg.CCRC_MACHINE_NAME || os.hostname().replace(/\.local$/, ''),
     session,

@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { lenhHook } from '../bin/install-hook.mjs';
 
 const TOOL = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'install-hook.mjs');
 // DEVIATION from the brief's literal text: the brief hardcodes '/repo/hook/bin/ccrc-notify.js'
@@ -37,7 +38,7 @@ const others = (d) => JSON.stringify(Object.entries(d.hooks || {}).map(([ev, v])
   [ev, v.flatMap((m) => (m.hooks || []).filter((h) => !(h.command || '').includes('ccrc-notify.js')).map((h) => h.command))]));
 
 function run(args, home) {
-  return new Promise((r) => execFile('node', [TOOL, ...args], { env: { ...process.env, HOME: home } },
+  return new Promise((r) => execFile('node', [TOOL, ...args], { env: { ...process.env, HOME: home, CCRC_HOME: home } },
     (err, stdout, stderr) => r({ code: err ? (err.code ?? 1) : 0, stdout, stderr })));
 }
 
@@ -143,4 +144,15 @@ test('giữ định dạng nhưng vẫn cài được hook vào file viết li�
   assert.ok(!raw.includes('\n'), 'file viết liền mà bị xuống dòng — định dạng đã đổi');
   assert.deepEqual(ours(JSON.parse(raw)), ['Notification']);
   assert.equal(JSON.parse(raw).model, 'opus');
+});
+
+test('trên POSIX, lệnh hook là đường dẫn trần — giữ nguyên hành vi cũ', () => {
+  assert.equal(lenhHook('/duong/dan/ccrc-notify.js', 'darwin'), '"/duong/dan/ccrc-notify.js"');
+  assert.equal(lenhHook('/duong/dan/ccrc-notify.js', 'linux'), '"/duong/dan/ccrc-notify.js"');
+});
+
+test('trên Windows phải gọi qua node — không có shebang, không có bit execute', () => {
+  // Thiếu chỗ này thì hook lỗi mỗi lần Claude Code bắn Notification, và người
+  // dùng không thấy gì cả ngoài việc thông báo không bao giờ tới.
+  assert.equal(lenhHook('C:\\d\\ccrc-notify.js', 'win32'), 'node "C:\\d\\ccrc-notify.js"');
 });

@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { coCheDoPosix, LY_DO_POSIX } from './co-che-do-posix.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -57,13 +58,13 @@ test('clearPending khi chưa có file cũng không ném, coi như đã xong', ()
   assert.equal(clearPending({ home }), true);
 });
 
-test('file ghi với quyền 600', () => {
+test('file ghi với quyền 600', { skip: coCheDoPosix() ? false : LY_DO_POSIX }, () => {
   const home = tmpHome();
   writePending(banGhiHopLe(), { home });
   assert.equal(fs.statSync(pendingPairPath(home)).mode & 0o777, 0o600);
 });
 
-test('thư mục .ccrc được tạo với quyền 700', () => {
+test('thư mục .ccrc được tạo với quyền 700', { skip: coCheDoPosix() ? false : LY_DO_POSIX }, () => {
   const home = tmpHome();
   writePending(banGhiHopLe(), { home });
   assert.equal(fs.statSync(path.join(home, '.ccrc')).mode & 0o777, 0o700);
@@ -78,18 +79,26 @@ test('writePending từ chối bản ghi dị dạng, không ghi gì, không né
 });
 
 test('writePending/readPending/clearPending không ném khi opts hoàn toàn vắng mặt', () => {
-  // Không truyền opts nghĩa là dùng os.homedir() thật. Đổi HOME sang một thư
-  // mục tạm cho riêng test này để không ghi đè lên nhà thật của máy chạy
-  // test, nhưng vẫn đi qua đúng nhánh "opts === undefined" của cả ba hàm.
-  const homeThat = process.env.HOME;
+  // Không truyền opts nghĩa là dùng nhà mặc định. Trỏ nhà mặc định ấy vào một
+  // thư mục tạm cho riêng bài này, nhưng vẫn đi qua đúng nhánh "opts ===
+  // undefined" của cả ba hàm.
+  //
+  // CCRC_HOME chứ KHÔNG phải HOME. Đặt HOME là vô tác dụng trên Windows —
+  // os.homedir() ở đó đọc USERPROFILE — nên bài này từng cô lập trên giấy mà
+  // không cô lập thật: đo được trên máy Windows với một USERPROFILE mồi, nó
+  // tạo `.ccrc` trong hồ sơ và `writePending()` rồi `clearPending()` sẽ GHI RỒI
+  // XOÁ đúng file `pairing-pending.json` thật của người dùng. Xem
+  // shared/home.js và test/home-boundary.test.js.
+  const cu = process.env.CCRC_HOME;
   const homeTam = tmpHome();
-  process.env.HOME = homeTam;
+  process.env.CCRC_HOME = homeTam;
   try {
     assert.equal(typeof writePending(banGhiHopLe()), 'boolean');
     assert.doesNotThrow(() => readPending());
     assert.doesNotThrow(() => clearPending());
   } finally {
-    process.env.HOME = homeThat;
+    if (cu === undefined) delete process.env.CCRC_HOME;
+    else process.env.CCRC_HOME = cu;
   }
 });
 

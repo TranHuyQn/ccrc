@@ -13,6 +13,14 @@ Bạn tự dựng hub? Đọc [`self-hosting.md`](self-hosting.md) (tiếng Anh)
 >
 > Gõ nguyên cả dấu ngoặc nhọn vào terminal thì lệnh sẽ hỏng — bỏ chúng đi luôn.
 
+> 🪟 **Đang dùng Windows?** Tài liệu này viết cho macOS và Linux. Trên Windows,
+> phần Báo giống hệt, nhưng phần Terminal khác về bản chất: không có tmux, nên
+> `ccrc` **tự dựng** terminal riêng thay vì gắn vào một phiên đang chạy sẵn —
+> nghĩa là bạn phải mở bằng `ccrc` ngay từ đầu, không bật thêm giữa chừng được.
+>
+> Đọc [`huong-dan-windows.md`](huong-dan-windows.md) thay cho mục 3 và mục 6 ở
+> đây. Muốn cài từng bước bằng tay: [`cai-thu-cong-windows.md`](cai-thu-cong-windows.md).
+
 ---
 
 ## 1. Hệ thống này làm gì

@@ -32,6 +32,15 @@ COPY shared ./bundle/shared
 COPY deploy/commands ./bundle/deploy/commands
 COPY deploy/ccrc ./bundle/deploy/ccrc
 COPY setup-notify.sh remove-notify.sh ./bundle/
+# Nửa Windows. `install.ps1` KHÔNG nằm ở đây — nó được phục vụ tĩnh từ
+# server/public, giống install.sh. Nhưng bước cấu hình thì phải đi theo gói,
+# vì install.ps1 gọi đúng đường dẫn này sau khi bung gói ra.
+#
+# Bỏ sót dòng dưới là hỏng CÂM: mọi test xanh, hub chạy khoẻ, và bản cài
+# Windows chết ở bước cuối với "cannot find module" — cây nguồn không phải
+# hình dạng gói cài. Đã từng mất một buổi vì đúng lớp lỗi này.
+COPY tools/setup-notify-win.mjs tools/remove-notify-win.mjs ./bundle/tools/
+COPY deploy/ccrc.cmd ./bundle/deploy/ccrc.cmd
 # Dấu vân tay được tính Ở ĐÂY, trên đúng cây tạo ra gói cài và ngay trước khi
 # cây đó bị xoá — lúc chạy thì container không còn gì để tính lại. Máy dev tính
 # cùng một cách trên thư mục cài của nó, nên hai bên so được với nhau và biết

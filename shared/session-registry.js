@@ -12,11 +12,17 @@
 // two places is how the two sides drift apart, and drift here is silent (a
 // notification simply stops carrying a name, and nothing fails).
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
+import { ccrcHome } from './home.js';
 
+// Mặc định là `ccrcHome()`, KHÔNG phải `os.homedir()`. Cùng một lỗi đã xảy ra
+// ba lần trong dự án này, và luôn ở đúng chỗ này: một người gọi quên truyền
+// `home`, tưởng mình đang trong hộp cát, và ghi thẳng vào hồ sơ thật của người
+// dùng. Đặt mặc định ở đây thì cái bẫy không còn nằm lại cho người gọi sau.
+// `ccrcHome()` trả đúng `os.homedir()` khi CCRC_HOME không đặt, nên
+// macOS/Linux không đổi gì (có bài đo riêng trong test/home-boundary.test.js).
 export function registryDir(home) {
-  return path.join(home || os.homedir(), '.ccrc', 'sessions');
+  return path.join(home || ccrcHome(), '.ccrc', 'sessions');
 }
 
 // A session id comes from this project's own code, but it lands in a

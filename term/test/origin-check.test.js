@@ -13,7 +13,7 @@
 //
 // Ca "không có Origin" cố ý được CHO QUA — xem test cuối cùng cho lý do đầy đủ.
 
-import test from 'node:test';
+import test from './can-tmux.mjs';
 import assert from 'node:assert/strict';
 import { WebSocket } from 'ws';
 import { startDaemon } from './helpers.mjs';

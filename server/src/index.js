@@ -363,6 +363,24 @@ if (TRUST_PROXY) app.set('trust proxy', 1);
 
 app.use(express.static(path.join(__dirname, '..', 'public'), {
   setHeaders: (res, filePath) => {
+    // `.ps1` PHẢI khai charset=utf-8, và đây không phải chuyện gọn gàng.
+    //
+    // Đường cài Windows là `irm <hub>/install.ps1 | iex`. Khi Content-Type
+    // KHÔNG khai charset, PowerShell 5.1 giải mã body bằng ISO-8859-1 — đúng
+    // theo mặc định của HTTP, và sai với file này. Mỗi ký tự tiếng Việt biến
+    // thành 2-3 ký tự rác NGAY LÚC TẢI, trước khi in ra bất cứ đâu:
+    //
+    //     Mở  →  Má»Ÿ        • → â€¢
+    //
+    // Đo được trên máy thật: cùng một file, `irm` cho mã ký tự 226,128,162
+    // (ba byte UTF-8 thô), còn `curl` rồi đọc UTF-8 tường minh cho 8226 (đúng).
+    // Không sửa được ở phía script — chuỗi đã hỏng trước khi script chạy.
+    //
+    // Express suy Content-Type từ đuôi file, mà `.ps1` không có trong bảng
+    // mime nên rơi vào `application/octet-stream`: không charset, không gợi ý.
+    if (filePath.endsWith('.ps1')) {
+      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    }
     // Express's default here is "public, max-age=0", which is weak/ambiguous
     // enough that behind Cloudflare Tunnel it gets replaced by Cloudflare's
     // own default Browser Cache TTL (4h), making deploys of app.js/

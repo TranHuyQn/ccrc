@@ -597,7 +597,7 @@
   //
   // Whether to bracket is not this page's call to make: tmux is the one that
   // knows whether the application in the pane asked for bracketed paste, and
-  // the daemon lets it decide (see pasteIntoPane in bin/ccrc-term.js). So the
+  // the daemon lets it decide (see paste() in src/pane-source.js). So the
   // text goes down as-is, on a control frame, with no trailing Enter — the
   // daemon sends that separately once the paste has landed.
   //
