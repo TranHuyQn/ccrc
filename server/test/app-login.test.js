@@ -441,10 +441,14 @@ test('Đăng xuất trong khi đang ở Cài đặt → logout() ẩn CẢ màn 
 });
 
 // Follow-on: đăng xuất từ Cài đặt xong đăng nhập lại không được để #main và
-// #settings hiện cùng nhau. Đây là bằng chứng settingsOpen thực sự bị đưa về
-// false (không chỉ #settings được ẩn TAY một lần) — showMain()/closeSettings()
-// không tự ẩn #settings, nên nếu settingsOpen còn kẹt ở true thì việc mở lại
-// #main ở đây sẽ vẽ đè lên một #settings không hidden.
+// #settings hiện cùng nhau. Bài kiểm này CHỈ chứng minh #settings còn giữ
+// class hidden ở thời điểm đó — nó KHÔNG phân biệt được settingsOpen thực sự
+// bị logout() đưa về false với việc chỉ dòng
+// `$('settings').classList.add('hidden')` (nửa DOM) chạy còn `settingsOpen =
+// false;` thì không. Đã tự kiểm: xoá riêng dòng `settingsOpen = false;` khỏi
+// logout(), giữ nguyên dòng ẩn DOM — bài kiểm này vẫn xanh y nguyên. Bằng
+// chứng settingsOpen thật sự về false (bấm ⚙ lại sau khi đăng nhập lại xem
+// nó có mở được Cài đặt không) nằm ở bài kiểm ngay dưới đây.
 test('đăng xuất lúc đang ở Cài đặt rồi đăng nhập lại → #main và #settings không hiện cùng nhau', async () => {
   const fetchImpl = makeFetch(async (url) => {
     if (url === '/api/me') return { status: 200, body: { user: 'huy', pushDevices: 0 } };
@@ -463,6 +467,37 @@ test('đăng xuất lúc đang ở Cài đặt rồi đăng nhập lại → #ma
 
   assert.equal(page.byId.main.classList.contains('hidden'), false, 'màn chính phải hiện sau khi đăng nhập lại');
   assert.equal(page.byId.settings.classList.contains('hidden'), true, 'Cài đặt không được hiện lại theo');
+});
+
+// Bài kiểm trên chỉ soi DOM ngay sau khi đăng nhập lại — chưa từng bấm ⚙ lại
+// — nên không bắt được settingsOpen bị kẹt ở true. openSettings() mở đầu
+// bằng `if (settingsOpen) return;`: nếu logout() chỉ ẩn #settings bằng DOM mà
+// không đưa settingsOpen về false, thì sau khi đăng nhập lại, bấm ⚙ sẽ im
+// lặng không làm gì — #settings không bao giờ hiện lại, #main vẫn đứng
+// nguyên. Đây là hệ quả HÀNH VI phân biệt được với bài kiểm ở trên (bài đó
+// chỉ đọc lại class do chính logout() ghi, không thử tương tác gì thêm sau
+// khi đăng nhập lại).
+test('đăng xuất lúc đang ở Cài đặt rồi đăng nhập lại → bấm ⚙ lần nữa vẫn mở được Cài đặt', async () => {
+  const fetchImpl = makeFetch(async (url) => {
+    if (url === '/api/me') return { status: 200, body: { user: 'huy', pushDevices: 0 } };
+    if (url === '/api/terminal') return { status: 200, body: { sessions: [] } };
+    return { status: 404, body: {} };
+  });
+  const page = loadAppPage({ fetchImpl });
+  page.byId.main.classList.remove('hidden');
+  page.byId['settings-open'].onclick();
+  page.byId['logout'].onclick();
+
+  page.byId['token'].value = 'tok-moi';
+  await page.byId['login-btn'].onclick();
+
+  // Bấm ⚙ lần nữa, y hệt người dùng thật sau khi đăng nhập lại.
+  page.byId['settings-open'].onclick();
+
+  assert.equal(page.byId.settings.classList.contains('hidden'), false,
+    'bấm ⚙ sau khi đăng nhập lại phải mở được Cài đặt — settingsOpen phải thật sự về false trong logout(), không chỉ #settings bị ẩn DOM một lần');
+  assert.equal(page.byId.main.classList.contains('hidden'), true,
+    'mở Cài đặt phải ẩn lại màn chính');
 });
 
 // --- thẻ "Duyệt máy dev" trong app ------------------------------------------
